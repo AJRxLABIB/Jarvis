@@ -31,6 +31,8 @@ _log = get_logger("tools")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 CAPTURE_TOOLS = frozenset({"take_screenshot", "read_screen", "describe_screen", "click_text", "click_thing",
                            "screen_recording"})
+MAX_ARGUMENT_CHARS = 200_000  # a model-written call this large is a runaway, not a request
+
 # Tools whose effect must not be repeated by a retry or a model repeating itself within ONE request: an identical call
 # (same tool, same arguments) that already succeeded in this request returns the earlier result instead of running
 # again. A separate request can still repeat it. Tools where repeating is normal (keys, volume, next track) are not here.
@@ -191,10 +193,21 @@ class ToolExecutor:
 
         tool = self.registry.get(call.name)
         if tool is None:
-            names = ", ".join(t.name for t in self.registry.tools) or "none"
-            return done(ToolResult.failure("unknown_tool", f"There is no tool named '{call.name}'. Available: {names}."))
+            import difflib
+
+            all_names = [t.name for t in self.registry.tools]
+            close = difflib.get_close_matches(str(call.name), all_names, n=3, cutoff=0.6)
+            hint = f" Did you mean: {', '.join(close)}?" if close else f" Available: {', '.join(all_names) or 'none'}."
+            return done(ToolResult.failure("unknown_tool", f"There is no tool named '{call.name}'.{hint}"))
         if call.parse_error:
             return done(ToolResult.failure("invalid_arguments", f"The arguments were malformed: {call.parse_error}."))
+        try:
+            too_big = len(json.dumps(call.arguments, default=str)) > MAX_ARGUMENT_CHARS
+        except (TypeError, ValueError):
+            too_big = True
+        if too_big:
+            return done(ToolResult.failure("invalid_arguments", "The tool was NOT run: its arguments are far too large "
+                                           "or not plain data. Send smaller, simpler arguments."))
         try:
             args = tool.args_model.model_validate(dict(call.arguments))
         except ValidationError as exc:

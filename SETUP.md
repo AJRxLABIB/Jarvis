@@ -67,7 +67,7 @@ python run.py --voice       # push-to-talk
 python run.py               # desktop app
 ```
 
-The first start upgrades the database to schema v23 and writes a copy first (`data\assistant.v<N>.bak.db`).
+The first start upgrades the database to schema v24 and writes a copy first (`data\assistant.v<N>.bak.db`).
 
 ## 7. Backup and restore
 
@@ -87,6 +87,14 @@ A restore checks the backup, refuses while Jarvis is using the database and keep
 - "How is my day?" / "what did I complete today?" (command center; no calendar is assumed).
 - Documents: index with "index my documents", ask with "what does the tender say about the deadline?" - answers cite
   `[1] file`.
+- Files: "when a new PDF appears in my Downloads folder, ..." (file-change trigger); steps can run only on weekdays,
+  on battery, or if the previous step worked/failed.
+- "Search everything about the tender" (memories + documents + past chats, ranked), "show integrations",
+  "trace my last request", "try this change in an experiment" (separate branch; merge or discard).
+- "resume <workflow>" continues a workflow that stopped; "security scan my project" (read-only checklist).
+- `python run.py --eval-quality` scores the model's answers (including "admit you don't know"); add questions in
+  `data\benchmark\quality.json`.
+- `python run.py --perf` checks that commands are understood and times the main internal steps.
 - Code: "what would changing <function> affect?" (code_impact), safe edits with test checks, commits that never stage
   `.env` / keys.
 

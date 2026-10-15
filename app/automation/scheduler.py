@@ -260,7 +260,7 @@ class Scheduler:
 
     # -------------------------------------------------------------------- run
 
-    async def run(self, task: AutomationTask, *, manual: bool = False) -> RunReport:
+    async def run(self, task: AutomationTask, *, manual: bool = False, resume: bool = False) -> RunReport:
         from app.core.runs import Run, RunStore, running
 
         if task.id in self._running:  # a manual run must not overlap a scheduled one (or itself)
@@ -275,9 +275,9 @@ class Scheduler:
         self._started[task.id] = self.clock()
         database = getattr(getattr(self.executor, "context", None), "database", None)
         with running(Run("automation", task.name), RunStore(database) if database is not None else None):
-            return await self._run(task, manual=manual)
+            return await self._run(task, manual=manual, resume=resume)
 
-    async def _run(self, task: AutomationTask, *, manual: bool = False) -> RunReport:
+    async def _run(self, task: AutomationTask, *, manual: bool = False, resume: bool = False) -> RunReport:
         self._running.add(task.id)
         report = RunReport(task, ok=True)
         try:
@@ -288,7 +288,19 @@ class Scheduler:
             previous_ok: bool | None = None
             from app.core import emergency
 
+            first = 1
+            if task.is_workflow:  # checkpoints: a workflow that stopped can continue from the step it stopped at
+                saved = self.store.progress(task.id) if resume else None
+                if saved is not None and 1 <= saved <= len(task.steps):
+                    first = saved
+                    report.steps.append(f"resumed at step {saved} (steps 1-{saved - 1} were already done)")
+                else:
+                    self.store.clear_progress(task.id)
             for number, step in enumerate(task.steps, start=1):
+                if number < first:
+                    continue
+                if task.is_workflow:
+                    self.store.set_progress(task.id, number)  # written BEFORE the step: a crash resumes AT it
                 if not manual and emergency.STATE.flags.get("automation_disabled"):
                     report.ok, report.failed_step = False, number  # the emergency stop reaches a run already in progress
                     report.message = f"'{task.name}' was stopped before step {number} by the emergency controls."
@@ -313,6 +325,10 @@ class Scheduler:
                     break
             if report.ok:
                 report.message = f"'{task.name}' finished ({len(task.steps)} step(s))."
+                if task.is_workflow:
+                    self.store.clear_progress(task.id)
+            elif task.is_workflow and report.failed_step:
+                report.message += f" Say 'resume {task.name}' to continue from step {report.failed_step}."
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -165,3 +165,16 @@ def test_new_read_only_agents_exist_and_cannot_change_things() -> None:
         contract = AGENTS[name]
         assert contract.max_risk == RiskLevel.SAFE and contract.categories <= KNOWN_CATEGORIES
         assert not contract.allows("git_commit", "dev", RiskLevel.MODERATE)[0]
+
+
+def test_an_agent_cannot_hand_back_more_than_its_output_budget(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from app.core import agents
+
+    ex, log = make()
+    monkeypatch.setitem(agents.AGENTS, "researcher", replace(agents.AGENTS["researcher"], max_tokens=2))
+    steps = plan(ex, search("a"), search("b"))
+    outcome = asyncio.run(orchestrator.run_plan(ex, "g", steps))
+    assert steps[0].state == "done" and steps[1].state == "not_run" and "output budget" in outcome.message
+    assert log == ["web:a"] and agents.estimate_tokens("x" * 8) == 2

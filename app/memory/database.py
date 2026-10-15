@@ -621,6 +621,20 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX idx_metrics_ts ON metrics (ts)",
         ),
     ),
+    Migration(
+        24,
+        "workflow_progress",
+        (
+            # where a workflow stopped, so "resume" continues from that step instead of starting over
+            """
+            CREATE TABLE workflow_progress (
+                task_id    TEXT PRIMARY KEY,
+                next_step  INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

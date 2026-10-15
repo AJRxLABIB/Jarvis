@@ -36,6 +36,7 @@ class AgentContract:
     allow_tools: frozenset[str] = field(default_factory=frozenset)  # specific extra tools (still within max_risk)
     max_steps: int = 6                # most steps one plan may give this agent
     max_seconds: float = 300.0        # most total running time one plan may spend on this agent's steps
+    max_tokens: int = 6000            # estimated tokens (4 characters each) of results this agent may hand back in one plan
 
     def allows(self, tool_name: str, category: str, level: RiskLevel) -> tuple[bool, str]:
         """(may this agent run this tool at this risk, why not). Deterministic - no model involved."""
@@ -98,6 +99,12 @@ AGENTS["analyst"] = AgentContract(
     deny_tools=frozenset({"forget", "forget_everything", "forget_history", "remember", "manage_memory"}))
 
 DEFAULT_AGENT = "researcher"
+
+
+def estimate_tokens(text: str) -> int:
+    """A rough count (4 characters per token). Jarvis agents don't run their own model; this limits how much
+    tool output one agent can pour back into the conversation, which is what costs the real model's tokens."""
+    return (len(text) + 3) // 4
 
 
 def contract_for(name: str) -> AgentContract | None:

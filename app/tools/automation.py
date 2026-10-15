@@ -191,10 +191,14 @@ class NameArgs(ToolArgs):
     name: str = Field(min_length=1, max_length=60, description="Name of the workflow or automation")
 
 
-async def run_workflow(args: NameArgs, ctx: ToolContext) -> ToolResult:
+class RunWorkflowArgs(NameArgs):
+    resume: bool = Field(default=False, description="Continue a workflow that stopped, from the step it stopped at")
+
+
+async def run_workflow(args: RunWorkflowArgs, ctx: ToolContext) -> ToolResult:
     task = _store(ctx).find(args.name)
     scheduler = ctx.get_scheduler()
-    report = await scheduler.run(task, manual=True)
+    report = await scheduler.run(task, manual=True, resume=args.resume)
     data = {"steps": report.steps, "failed_step": report.failed_step}
     if report.ok:
         return ToolResult.success(report.message, **data)
@@ -277,7 +281,8 @@ TOOLS: tuple[Tool, ...] = (
          save_workflow, WorkflowArgs, RiskLevel.MODERATE, "automation",
          precheck=lambda a, c: (check_name(a.name), validate_steps(parse_steps(a.steps), c.get_tool_registry(), c)) and None,
          confirmation=_workflow_question),
-    Tool("run_workflow", "Run a saved workflow, e.g. 'development environment'.", run_workflow, NameArgs,
+    Tool("run_workflow", "Run a saved workflow, e.g. 'development environment'. resume=true continues one that "
+         "stopped, from the step it stopped at.", run_workflow, RunWorkflowArgs,
          RiskLevel.SAFE, "automation", timeout=900),
     Tool("list_automations", "List reminders, scheduled automations and workflows.", list_automations, NoArgs,
          RiskLevel.SAFE, "automation"),

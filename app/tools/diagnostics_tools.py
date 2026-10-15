@@ -72,6 +72,14 @@ def pc_health(_: NoArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success(text, **data)
 
 
+def integrations_status(_: NoArgs, ctx: ToolContext) -> ToolResult:
+    """Which outside services are connected and how to connect the rest. Read-only; never contacts them."""
+    from app.core import integrations
+
+    rows = integrations.evaluate_all(ctx)
+    return ToolResult.success(integrations.describe(rows), integrations=rows)
+
+
 class TraceArgs(ToolArgs):
     request_id: str | None = Field(default=None, max_length=60,
                                    description="The request (run) ID; omit for the most recent request")
@@ -107,6 +115,9 @@ def trace_request(args: TraceArgs, ctx: ToolContext) -> ToolResult:
 
 
 TOOLS: tuple[Tool, ...] = (
+    Tool("integrations", "Which outside services are connected (Home Assistant, the local AI, MCP servers, the phone "
+         "remote, Outlook, the browser) and how to connect the missing ones. Read-only; never contacts them.",
+         integrations_status, NoArgs, RiskLevel.SAFE, "basic", timeout=10),
     Tool("trace_request", "Show everything recorded for one request (by its ID, or the last one): actions with risk "
          "and decisions, mission/task state changes and events. Use for 'what exactly happened with that request?'.",
          trace_request, TraceArgs, RiskLevel.SAFE, "basic", timeout=15),

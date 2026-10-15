@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator
 
 from app.ai.base import ToolCall
-from app.core.agents import AgentContract, contract_for
+from app.core.agents import AgentContract, contract_for, estimate_tokens
 from app.security.permissions import RiskLevel
 from app.tools.base import ToolError
 
@@ -162,8 +162,17 @@ async def run_plan(executor: Any, goal: str, steps: list[AgentStep], *, approved
     done = 0
     deadline = time.monotonic() + budget_seconds
     spent: dict[str, float] = {}  # seconds each agent has used in this plan
+    tokens: dict[str, int] = {}   # estimated tokens of results each agent has handed back
     for step in steps:
         own = contract_for(step.agent)
+        if own is not None and tokens.get(step.agent, 0) >= own.max_tokens:
+            step.state, step.result = "not_run", f"the {step.agent} agent used up its output budget (~{own.max_tokens} tokens)"
+            if stop_on_error:
+                for rest in steps:
+                    if rest.state == "pending":
+                        rest.state, rest.result = "not_run", "an earlier step ran out of budget"
+                return TeamOutcome(goal, steps, False, f"Stopped: {step.result}.")
+            continue
         if own is not None and spent.get(step.agent, 0.0) >= own.max_seconds:
             step.state, step.result = "not_run", f"the {step.agent} agent used up its {int(own.max_seconds)} s budget"
             if stop_on_error:
@@ -192,6 +201,11 @@ async def run_plan(executor: Any, goal: str, steps: list[AgentStep], *, approved
             raise
         result = execution.result
         step.result = result.message or (result.error or "")
+        if own is not None:
+            room = max(own.max_tokens - tokens.get(step.agent, 0), 0) * 4
+            if len(step.result) > room:  # never hand back more than the agent's output budget
+                step.result = step.result[:room] + " ...(cut: the agent's output budget)"
+            tokens[step.agent] = tokens.get(step.agent, 0) + estimate_tokens(step.result)
         if result.ok:
             step.state = "done"
             done += 1

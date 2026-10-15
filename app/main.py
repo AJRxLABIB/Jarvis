@@ -445,6 +445,46 @@ def _health_report(ctx: AppContext) -> int:
             pass
 
 
+def _eval_quality(ctx: AppContext, model: str | None) -> int:
+    from datetime import datetime
+
+    from app import quality_eval
+    from app.ai.base import ChatMessage
+    from app.ai.ollama import strip_think
+    from app.ai.prompts import build_system_prompt
+    from app.cli import create_ai_manager
+    from app.utils.async_runner import AsyncRunner
+
+    ai = create_ai_manager(ctx)
+    runner = AsyncRunner("quality").start()
+    system = build_system_prompt(assistant_name=ctx.settings.assistant_name, now=datetime.now(), reply_language="en",
+                                 spoken=True)
+    used = {"model": model or ctx.settings.ai_model or "?"}
+
+    async def ask(question: str) -> str:
+        reply = await ai.chat([ChatMessage.system(system), ChatMessage.user(question)])
+        used["model"] = reply.model
+        return strip_think(reply.message.content or "")
+
+    questions = quality_eval.load_questions(ctx.paths.data_dir)
+    print(f"Answer quality ({len(questions)} questions)...\n")
+    try:
+        scores = runner.run(quality_eval.evaluate(ask, questions), timeout=1800)
+    finally:
+        try:
+            runner.run(ai.aclose(), timeout=10)
+        except Exception:
+            pass
+    for s in scores:
+        print(f"{'OK  ' if s.ok else 'MISS'} {s.question[:60]!r:64} {s.reason}")
+    before = quality_eval.previous(ctx.paths.data_dir, used["model"])
+    result = quality_eval.save(ctx.paths.data_dir, used["model"], scores)
+    print(f"\n{used['model']}: {result['right']}/{result['questions']} right ({result['score']}%)")
+    for line in quality_eval.compare(before, result):
+        print(line)
+    return EXIT_OK
+
+
 def _eval_bangla(ctx: AppContext, model: str | None) -> int:
     from datetime import datetime
 
@@ -646,6 +686,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="make one model called 'jarvis' from the best installed one (or --model), remove the rest")
     mode.add_argument("--backup-db", action="store_true", help="save a verified copy of the database (data\\backups)")
     mode.add_argument("--restore-db", type=Path, metavar="BACKUP", help="replace the database with a backup (close Jarvis first)")
+    mode.add_argument("--eval-quality", action="store_true",
+                      help="score the AI's answers on a reference set (includes 'admit you don't know' questions)")
+    mode.add_argument("--perf", action="store_true",
+                      help="check that written commands are understood and time the main internal steps")
     mode.add_argument("--info", action="store_true", help="print paths and settings instead of opening the app")
     mode.add_argument("--models", action="store_true", help="list installed Ollama models and exit")
     mode.add_argument("--chat", action="store_true", help="text chat with the assistant in this terminal")
@@ -705,6 +749,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code = _compare_models(ctx, args.compare_models or None, args.switch)
         elif args.health_report:
             exit_code = _health_report(ctx)
+        elif args.eval_quality:
+            exit_code = _eval_quality(ctx, getattr(args, "model", None))
+        elif args.perf:
+            from app.core import selfbench
+
+            result = selfbench.run(ctx.paths.data_dir)
+            exit_code = EXIT_OK if not result["suite"]["misses"] else EXIT_CHECK_FAILED
         elif args.backup_db or args.restore_db:
             exit_code = _database_backup(ctx, args.restore_db)
         elif args.make_jarvis_model:

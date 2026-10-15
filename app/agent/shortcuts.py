@@ -226,6 +226,9 @@ def _sounds_like(heard: str, name: str) -> bool:
     return heard == name or heard in name or similarity(heard, name) >= 0.8
 
 
+_RESUME_WORKFLOW = re.compile(r"^(?:please\s+)?(?:resume|continue)\s+(?:the\s+|my\s+)?(?P<name>.+?)(?:\s+workflow)?[.!]?$", re.I)
+
+
 def match_keyword(text: str, known_app: Callable[[str], str | None],
                   known_site: Callable[[str], bool] | None = None,
                   known_workflow: Callable[[str], str | None] | None = None) -> ToolCall | None:
@@ -1348,6 +1351,11 @@ def match_shortcut(
             # a known site: the installed app if there is one (WhatsApp, Instagram...), else the browser
             return ToolCall("open_website", {"site": match.group("name").strip(" ,.")})
     if known_workflow is not None:
+        resume = _RESUME_WORKFLOW.match(cleaned)
+        if resume:
+            workflow = known_workflow(resume.group("name").strip(" ,."))
+            if workflow is not None:
+                return ToolCall("run_workflow", {"name": workflow, "resume": True})
         match = _WORKFLOW.match(cleaned)
         if match:
             workflow = known_workflow(match.group("name").strip(" ,."))

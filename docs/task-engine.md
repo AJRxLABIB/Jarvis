@@ -106,6 +106,18 @@ as `pre-restore-<time>.db` and swaps the file in. Migrations still make their ow
 * CI runs `pip-audit` (informational). On the build machine the latest versions of the project's dependencies showed no
   known vulnerabilities; Windows-only packages (pywin32, pycaw, winrt) could not be audited there.
 
+## Third round (triggers, health, search, experiments, integrations)
+
+* `schedule_task` accepts `when_event=file_changed` with `event_value=C:\\folder|*.pdf`; a step can carry
+  `when` (previous_ok / previous_failed / weekday / weekend / on_battery / plugged_in) and is skipped with a note otherwise.
+  Only names, sizes and times of up to 5,000 files are read; the first look is a baseline, never a trigger.
+* Scheduler: `MAX_CONCURRENT_RUNS = 4` (refused and counted beyond that), `health()` (loop alive, running ages, stalled
+  after 30 min, refused count) feeds `pc_health`.
+* `search_everything`, `trace_request`, `integrations`, `experiment` tools (see `docs/STATUS.md`); agents have
+  `max_steps` / `max_seconds`; `python run.py --perf`.
+* Emergency stop ends background commands and stops an in-progress automation at its next step; manual runs are not
+  blocked by the automations switch (a person asked for them; the executor's rules still apply).
+
 ## Not done yet
 
 See `docs/STATUS.md`. Tests: `tests/test_taskengine.py`, `tests/test_model_health.py`.

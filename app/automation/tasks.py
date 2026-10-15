@@ -212,8 +212,26 @@ class AutomationStore:
                 (utc_now_iso(), status[:300], next_run.isoformat() if next_run else None, int(disable), utc_now_iso(), task_id),
             )
 
+    # -- workflow progress (checkpoints): the step number a workflow stopped at
+
+    def progress(self, task_id: str) -> int | None:
+        with self._db.connect() as conn:
+            row = conn.execute("SELECT next_step FROM workflow_progress WHERE task_id = ?", (task_id,)).fetchone()
+        return int(row[0]) if row else None
+
+    def set_progress(self, task_id: str, next_step: int) -> None:
+        with self._db.transaction() as conn:
+            conn.execute("INSERT INTO workflow_progress (task_id, next_step, updated_at) VALUES (?, ?, ?) "
+                         "ON CONFLICT(task_id) DO UPDATE SET next_step = excluded.next_step, "
+                         "updated_at = excluded.updated_at", (task_id, next_step, utc_now_iso()))
+
+    def clear_progress(self, task_id: str) -> None:
+        with self._db.transaction() as conn:
+            conn.execute("DELETE FROM workflow_progress WHERE task_id = ?", (task_id,))
+
     def delete(self, task_id: str) -> None:
         with self._db.transaction() as conn:
+            conn.execute("DELETE FROM workflow_progress WHERE task_id = ?", (task_id,))
             self._keep_revision(conn, task_id, "deleted")
             conn.execute("DELETE FROM automation_tasks WHERE id = ?", (task_id,))
 
