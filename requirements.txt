@@ -1,0 +1,50 @@
+# Jarvis Assistant - runtime dependencies (grows phase by phase)
+# Phase 1 - foundation
+pydantic>=2.7,<3
+python-dotenv>=1.0,<2
+
+# Phase 2 - local AI (Ollama)
+httpx>=0.27,<1
+
+# Phase 3 - voice
+numpy>=1.26,<3
+sounddevice>=0.5,<1
+faster-whisper>=1.1,<2
+edge-tts>=7.0,<8  # TTS_ENGINE=neural: natural Bangla + English voices (online)
+sherpa-onnx>=1.10,<2  # offline Bangla voice
+aiohttp>=3.9,<4  # phone remote (web page on your home network)
+piper-tts>=1.3,<2
+pywin32>=306; sys_platform == "win32"
+onnxruntime>=1.16,<2  # wake-word detection (already installed by faster-whisper)
+
+# Phase 5 - Windows control and system monitoring
+psutil>=5.9
+pycaw>=20240316; sys_platform == "win32"
+comtypes>=1.2; sys_platform == "win32"
+
+# Phase 9 - desktop interface
+PySide6>=6.7
+
+# Phase 10 - browser automation (drives the installed Microsoft Edge by default)
+playwright>=1.45
+
+# Phase 12 - screen capture and text recognition (Windows' built-in OCR through pywinrt)
+Pillow>=10.3
+
+# 2.0 - search your documents (PDF text), presence detection (camera, optional)
+pypdf>=4.2,<8
+opencv-python-headless>=4.9,<5
+winrt-runtime>=2.3,<4; sys_platform == "win32"
+winrt-Windows.Foundation>=2.3,<4; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.3,<4; sys_platform == "win32"
+winrt-Windows.Globalization>=2.3,<4; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=2.3,<4; sys_platform == "win32"
+winrt-Windows.Media.Ocr>=2.3,<4; sys_platform == "win32"
+winrt-Windows.Devices.Radios>=2.3,<4; sys_platform == "win32"  # 3.7: real Wi-Fi / Bluetooth switches
+winrt-Windows.Storage.Streams>=2.3,<4; sys_platform == "win32"
+
+# Testing
+pytest>=8.0
+cryptography>=42  # https certificate for the phone remote
+qrcode>=7.4,<9  # 3.13.1: QR code to set up the phone remote
+kokoro-onnx>=0.4,<1  # natural offline English voice (TTS_ENGINE=kokoro)

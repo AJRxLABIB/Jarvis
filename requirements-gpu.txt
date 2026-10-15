@@ -1,0 +1,5 @@
+# NVIDIA GPU speech recognition (STT_DEVICE=auto/cuda): the CUDA 12 libraries CTranslate2 needs.
+# Only useful on a PC with an NVIDIA GPU and a current NVIDIA driver. About 1 GB.
+#   pip install -r requirements-gpu.txt
+nvidia-cublas-cu12>=12.4,<13
+nvidia-cudnn-cu12>=9.1,<10

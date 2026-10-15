@@ -1,0 +1,197 @@
+{
+  "version": 1,
+  "confirm_moderate": true,
+  "block_critical": true,
+  "tool_levels": {},
+  "protected_processes": [
+    "audiodg.exe",
+    "csrss.exe",
+    "ctfmon.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "fontdrvhost.exe",
+    "lsaiso.exe",
+    "lsass.exe",
+    "memory compression",
+    "msmpeng.exe",
+    "registry",
+    "securityhealthservice.exe",
+    "services.exe",
+    "sihost.exe",
+    "smss.exe",
+    "spoolsv.exe",
+    "svchost.exe",
+    "system",
+    "wininit.exe",
+    "winlogon.exe"
+  ],
+  "safe_roots": [
+    "{DESKTOP}",
+    "{DOCUMENTS}",
+    "{DOWNLOADS}",
+    "{PICTURES}",
+    "{MUSIC}",
+    "{VIDEOS}"
+  ],
+  "allowed_dev_commands": [
+    {
+      "argv": [
+        "git",
+        "status"
+      ],
+      "level": 0,
+      "description": "Show repository status"
+    },
+    {
+      "argv": [
+        "git",
+        "diff"
+      ],
+      "level": 0,
+      "description": "Show changes"
+    },
+    {
+      "argv": [
+        "git",
+        "log",
+        "--oneline"
+      ],
+      "level": 0,
+      "description": "Show recent commits"
+    },
+    {
+      "argv": [
+        "git",
+        "branch"
+      ],
+      "level": 0,
+      "description": "List branches"
+    },
+    {
+      "argv": [
+        "git",
+        "fetch"
+      ],
+      "level": 0,
+      "description": "Fetch from remotes"
+    },
+    {
+      "argv": [
+        "git",
+        "switch",
+        "-c"
+      ],
+      "level": 1,
+      "description": "Create and switch to a branch"
+    },
+    {
+      "argv": [
+        "git",
+        "pull"
+      ],
+      "level": 1,
+      "description": "Pull from the tracked remote"
+    },
+    {
+      "argv": [
+        "npm",
+        "test"
+      ],
+      "level": 0,
+      "description": "Run npm tests"
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "dev"
+      ],
+      "level": 0,
+      "description": "Start dev server"
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "level": 0,
+      "description": "Build project"
+    },
+    {
+      "argv": [
+        "npm",
+        "install"
+      ],
+      "level": 1,
+      "description": "Install npm dependencies"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pytest"
+      ],
+      "level": 0,
+      "description": "Run Python tests"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "-r",
+        "requirements.txt"
+      ],
+      "level": 1,
+      "description": "Install Python dependencies"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "ruff",
+        "check"
+      ],
+      "level": 0,
+      "description": "Lint Python code (read-only)"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "flake8"
+      ],
+      "level": 0,
+      "description": "Lint Python code (read-only)"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "mypy"
+      ],
+      "level": 0,
+      "description": "Type-check Python code"
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "level": 0,
+      "description": "Run the project's linter"
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "level": 0,
+      "description": "Type-check the project"
+    }
+  ]
+}

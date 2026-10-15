@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and runtime data
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Downloaded voice / speech models
+models/
+
+# Packaging
+build/
+dist/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# test coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# packaging output
+build/
+dist/
+packaging/version_info.txt
+shots/

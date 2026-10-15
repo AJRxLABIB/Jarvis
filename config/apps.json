@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "applications": {
+    "chrome": {
+      "display_name": "Google Chrome",
+      "aliases": [
+        "browser",
+        "chrome browser"
+      ],
+      "launch": {
+        "type": "app_paths",
+        "value": "chrome.exe",
+        "candidates": [
+          "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe",
+          "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe",
+          "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+        ]
+      },
+      "process_names": [
+        "chrome.exe"
+      ],
+      "enabled": true
+    },
+    "edge": {
+      "display_name": "Microsoft Edge",
+      "aliases": [
+        "edge browser"
+      ],
+      "launch": {
+        "type": "app_paths",
+        "value": "msedge.exe",
+        "candidates": [
+          "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe",
+          "%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe"
+        ]
+      },
+      "process_names": [
+        "msedge.exe"
+      ],
+      "enabled": true
+    },
+    "firefox": {
+      "display_name": "Mozilla Firefox",
+      "aliases": [],
+      "launch": {
+        "type": "app_paths",
+        "value": "firefox.exe",
+        "candidates": [
+          "%ProgramFiles%\\Mozilla Firefox\\firefox.exe"
+        ]
+      },
+      "process_names": [
+        "firefox.exe"
+      ],
+      "enabled": true
+    },
+    "vscode": {
+      "display_name": "Visual Studio Code",
+      "aliases": [
+        "code",
+        "vs code",
+        "vscode",
+        "visual code",
+        "editor",
+        "code editor"
+      ],
+      "launch": {
+        "type": "app_paths",
+        "value": "Code.exe",
+        "candidates": [
+          "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe",
+          "%ProgramFiles%\\Microsoft VS Code\\Code.exe"
+        ]
+      },
+      "process_names": [
+        "code.exe"
+      ],
+      "enabled": true
+    },
+    "notepad": {
+      "display_name": "Notepad",
+      "aliases": [
+        "text editor"
+      ],
+      "launch": {
+        "type": "executable",
+        "value": "notepad.exe",
+        "candidates": []
+      },
+      "process_names": [
+        "notepad.exe"
+      ],
+      "enabled": true
+    },
+    "calculator": {
+      "display_name": "Calculator",
+      "aliases": [
+        "calc"
+      ],
+      "launch": {
+        "type": "uri",
+        "value": "calculator:",
+        "candidates": []
+      },
+      "process_names": [
+        "calculatorapp.exe"
+      ],
+      "enabled": true
+    },
+    "explorer": {
+      "display_name": "File Explorer",
+      "aliases": [
+        "files",
+        "file manager"
+      ],
+      "launch": {
+        "type": "executable",
+        "value": "explorer.exe",
+        "candidates": []
+      },
+      "process_names": [],
+      "enabled": true
+    },
+    "terminal": {
+      "display_name": "Windows Terminal",
+      "aliases": [
+        "windows terminal"
+      ],
+      "launch": {
+        "type": "executable",
+        "value": "wt.exe",
+        "candidates": []
+      },
+      "process_names": [
+        "windowsterminal.exe"
+      ],
+      "enabled": true
+    },
+    "powershell": {
+      "display_name": "PowerShell",
+      "aliases": [],
+      "launch": {
+        "type": "executable",
+        "value": "powershell.exe",
+        "candidates": []
+      },
+      "process_names": [
+        "powershell.exe"
+      ],
+      "enabled": true
+    },
+    "cmd": {
+      "display_name": "Command Prompt",
+      "aliases": [
+        "command prompt"
+      ],
+      "launch": {
+        "type": "executable",
+        "value": "cmd.exe",
+        "candidates": []
+      },
+      "process_names": [
+        "cmd.exe"
+      ],
+      "enabled": true
+    },
+    "task_manager": {
+      "display_name": "Task Manager",
+      "aliases": [],
+      "launch": {
+        "type": "executable",
+        "value": "taskmgr.exe",
+        "candidates": []
+      },
+      "process_names": [
+        "taskmgr.exe"
+      ],
+      "enabled": true
+    },
+    "settings": {
+      "display_name": "Windows Settings",
+      "aliases": [
+        "system settings"
+      ],
+      "launch": {
+        "type": "uri",
+        "value": "ms-settings:",
+        "candidates": []
+      },
+      "process_names": [],
+      "enabled": true
+    },
+    "spotify": {
+      "display_name": "Spotify",
+      "aliases": [
+        "music"
+      ],
+      "launch": {
+        "type": "uri",
+        "value": "spotify:",
+        "candidates": []
+      },
+      "process_names": [
+        "spotify.exe"
+      ],
+      "enabled": true
+    },
+    "discord": {
+      "display_name": "Discord",
+      "aliases": [],
+      "launch": {
+        "type": "uri",
+        "value": "discord:",
+        "candidates": []
+      },
+      "process_names": [
+        "discord.exe"
+      ],
+      "enabled": true
+    }
+  }
+}

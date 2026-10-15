@@ -1,0 +1,386 @@
+"""Tool registry and executor: the only path from a model request to an action.
+
+    ToolCall (untrusted) -> known tool? -> arguments valid? -> network allowed?
+      -> permission decision -> user confirmation if needed -> handler with timeout
+      -> audit entry -> ToolResult (sent back to the model)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import copy
+import inspect
+import re
+import time
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Any
+
+from pydantic import ValidationError
+
+from app.ai.base import ToolCall, ToolSpec
+from app.memory.audit import AuditLog
+from app.security.confirmations import ConfirmationRequest, Confirmer, DenyConfirmer
+from app.security.permissions import Decision, PermissionEngine, RiskLevel
+from app.security.rate_limit import RateLimiter
+from app.tools.base import Tool, ToolContext, ToolError, ToolResult
+from app.utils.logging_setup import get_logger, log_event
+
+_log = get_logger("tools")
+_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+CAPTURE_TOOLS = frozenset({"take_screenshot", "read_screen", "describe_screen", "click_text", "click_thing",
+                           "screen_recording"})
+# Tools whose effect must not be repeated by a retry or a model repeating itself within ONE request: an identical call
+# (same tool, same arguments) that already succeeded in this request returns the earlier result instead of running
+# again. A separate request can still repeat it. Tools where repeating is normal (keys, volume, next track) are not here.
+ONCE_PER_RUN_TOOLS = frozenset({"send_email", "whatsapp_message", "text_contact", "call_contact", "git_commit",
+                                "add_todo", "write_document"})
+
+
+# ---------------------------------------------------------------------- schema
+
+
+def _simplify_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline $refs and drop titles: small local models handle flat schemas better."""
+    defs = schema.pop("$defs", {})
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                target = defs.get(node["$ref"].split("/")[-1], {})
+                return walk(copy.deepcopy(target))
+            return {k: walk(v) for k, v in node.items() if k != "title"}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    result = walk(schema)
+    result.setdefault("type", "object")
+    result.setdefault("properties", {})
+    return result
+
+
+# -------------------------------------------------------------------- registry
+
+
+class ToolRegistry:
+    def __init__(self, tools: Iterable[Tool] = ()) -> None:
+        self._tools: dict[str, Tool] = {}
+        for tool in tools:
+            self.register(tool)
+
+    def register(self, tool: Tool) -> None:
+        if not _NAME_RE.match(tool.name):
+            raise ValueError(f"invalid tool name {tool.name!r}")
+        if tool.name in self._tools:
+            raise ValueError(f"tool {tool.name!r} is already registered")
+        if not tool.description.strip():
+            raise ValueError(f"tool {tool.name!r} needs a description")
+        self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Tool | None:
+        return self._tools.get(name)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._tools
+
+    def __len__(self) -> int:
+        return len(self._tools)
+
+    @property
+    def tools(self) -> list[Tool]:
+        return list(self._tools.values())
+
+    def specs(self) -> list[ToolSpec]:
+        return [
+            ToolSpec(t.name, t.description, _simplify_schema(t.args_model.model_json_schema()))
+            for t in self._tools.values()
+        ]
+
+
+# -------------------------------------------------------------------- executor
+
+
+@dataclass(frozen=True)
+class ToolExecution:
+    call: ToolCall
+    result: ToolResult
+    level: RiskLevel | None = None
+    decision: Decision | None = None
+    elapsed_ms: int = 0
+
+
+def _repair(tool: Tool, call: ToolCall, error: ValidationError, context: ToolContext):
+    """Fix a near-miss choice or a bad optional value instead of failing (app/agent/arg_repair.py) - only when
+    the repaired call is SAFE for its exact arguments. power_control is "safe" for lock but DANGEROUS for
+    restart, so "restat" -> "restart" is refused; a guess never picks a riskier action."""
+    if tool.level != RiskLevel.SAFE:
+        return None
+    from app.agent.arg_repair import repair
+
+    result = repair(tool.args_model, dict(call.arguments), error)
+    if result is None:
+        return None
+    fixed, changes = result
+    args = tool.args_model.model_validate(fixed)
+    try:
+        if tool.level_for(args, context) != RiskLevel.SAFE:
+            return None
+    except Exception:
+        return None
+    log_event(_log, "arguments_repaired", tool=tool.name, changes=changes)
+    return ToolCall(call.name, fixed, id=call.id), args
+
+
+def _validation_summary(error: ValidationError) -> str:
+    parts = []
+    for issue in error.errors()[:5]:
+        where = ".".join(str(p) for p in issue["loc"]) or "arguments"
+        parts.append(f"{where}: {issue['msg']}")
+    return "; ".join(parts)
+
+
+class ToolExecutor:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        permissions: PermissionEngine,
+        context: ToolContext,
+        *,
+        confirmer: Confirmer | None = None,
+        audit: AuditLog | None = None,
+        confirm_timeout: float = 60.0,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
+        self.rate_limiter = rate_limiter or RateLimiter()
+        if getattr(context, "executor", None) is None:
+            context.executor = self  # tools that run other tools (workflows) use the same checks
+        self.registry = registry
+        self.permissions = permissions
+        self.context = context
+        self.confirmer = confirmer or DenyConfirmer()
+        self.audit = audit
+        self.confirm_timeout = confirm_timeout
+
+    def _audit(self, event: str, call: ToolCall, **kwargs: Any) -> None:
+        if self.audit is not None:
+            details = {"arguments": dict(call.arguments), **kwargs.pop("details", {})}
+            self.audit.record(event, tool=call.name, details=details, **kwargs)
+
+    async def execute(self, call: ToolCall, *, user_command: bool = False, preapproved: bool = False) -> ToolExecution:
+        """Run one tool call through every check. ``user_command`` = the call was matched directly from
+        the user's own words (a direct command), not chosen by the model. ``preapproved`` = a mission step the
+        user approved as part of an exact plan (app/core/missions.py): MODERATE steps then don't ask again;
+        DANGEROUS ones still do, CRITICAL stays blocked."""
+        started = time.perf_counter()
+
+        def done(result: ToolResult, level: RiskLevel | None = None, decision: Decision | None = None) -> ToolExecution:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            log_event(
+                _log, "tool_call", tool=call.name, ok=result.ok, error=result.error,
+                risk_level=int(level) if level is not None else None,
+                decision=decision.value if decision else None, elapsed_ms=elapsed,
+            )
+            self._audit(
+                "tool_result", call, level=int(level) if level is not None else None,
+                decision=decision.value if decision else None,
+                details={"ok": result.ok, "error": result.error, "message": result.message},
+            )
+            return ToolExecution(call, result, level, decision, elapsed)
+
+        tool = self.registry.get(call.name)
+        if tool is None:
+            names = ", ".join(t.name for t in self.registry.tools) or "none"
+            return done(ToolResult.failure("unknown_tool", f"There is no tool named '{call.name}'. Available: {names}."))
+        if call.parse_error:
+            return done(ToolResult.failure("invalid_arguments", f"The arguments were malformed: {call.parse_error}."))
+        try:
+            args = tool.args_model.model_validate(dict(call.arguments))
+        except ValidationError as exc:
+            repaired = _repair(tool, call, exc, self.context)
+            if repaired is None:
+                return done(ToolResult.failure(
+                    "invalid_arguments",
+                    f"The tool was NOT run because of invalid arguments ({_validation_summary(exc)}). "
+                    "Correct the arguments and call the tool again.",
+                ))
+            call, args = repaired
+
+        if tool.precheck is not None:
+            try:
+                tool.precheck(args, self.context)
+            except ToolError as exc:
+                return done(ToolResult.failure(exc.code, str(exc)))
+            except Exception:
+                _log.exception("precheck of %s crashed", tool.name)
+                return done(ToolResult.failure("internal", "The request could not be checked, so nothing was done."))
+
+        if tool.needs_network:
+            from app.utils import network
+
+            reason = await asyncio.to_thread(network.offline_reason, self.context.settings)
+            if reason is not None:
+                return done(ToolResult.failure("offline", reason))
+
+        try:
+            decision, level = self.permissions.decide(tool.name, tool.level_for(args, self.context))
+        except Exception:
+            _log.exception("permission evaluation failed")
+            return done(ToolResult.failure("permission_error", "The permission check failed, so nothing was done."))
+
+        contract = getattr(self.context, "agent_contract", None)
+        if contract is not None:
+            ok_contract, why = contract.allows(tool.name, tool.category, level)
+            if not ok_contract:
+                self._audit("agent_contract_denied", call, level=int(level), decision="blocked",
+                            details={"agent": contract.name, "reason": why})
+                return done(ToolResult.failure("agent_not_allowed",
+                            f"Not done: {why}. Do it yourself or give the task to a different agent."), level, decision)
+
+        from app.core import runs
+        from app.security.taint import egress_reason
+
+        run = runs.current()
+        once_key = None
+        if run is not None and tool.name in ONCE_PER_RUN_TOOLS:
+            once_key = tool.name + json.dumps(args.model_dump(mode="json"), sort_keys=True, default=str)
+            earlier = run.completed.get(once_key)
+            if earlier is not None:
+                self._audit("duplicate_call_skipped", call, level=int(level), decision="not_repeated")
+                return done(ToolResult.success(f"Already done earlier in this request, so I did not do it again: {earlier}",
+                                               duplicate=True), level, decision)
+        taint_reason = None
+        if run is not None and not user_command:
+            # prompt-injection defence: after reading untrusted text, what the MODEL sends out asks first
+            taint_reason = egress_reason(tool.name, args.model_dump(), run.taint, set(run.user_words), tool.category)
+            if taint_reason is None:
+                from app.security.taint import persistence_reason
+
+                taint_reason = persistence_reason(tool.name, run.taint)
+            if taint_reason is not None and decision == Decision.ALLOW:
+                decision = Decision.CONFIRM
+                self._audit("taint_confirmation", call, level=int(level), decision="confirm",
+                            details={"reason": taint_reason})
+
+        from app.core import emergency, modes
+        from app.security.taint import is_egress
+
+        stop = emergency.STATE.blocks(level=int(level), needs_network=tool.needs_network,
+                                      egress=is_egress(tool.name, tool.category))
+        if stop is None and not modes.STATE.current.capture and tool.name in CAPTURE_TOOLS:
+            stop = f"{modes.STATE.current.name.capitalize()} mode: no screen capture. Say 'normal mode' to allow it."
+        if stop is not None:
+            return done(ToolResult.failure("blocked", stop), level, decision)
+        if not self.rate_limiter.allow(level):
+            return done(
+                ToolResult.failure("rate_limited", "Too many actions in a short time, so this one was not done. Wait a moment."),
+                level, decision,
+            )
+        if decision == Decision.BLOCK:
+            return done(
+                ToolResult.failure("blocked", "Not done: this action is blocked by the permission settings."),
+                level, decision,
+            )
+        if (decision == Decision.CONFIRM and user_command and level < RiskLevel.CRITICAL
+                and tool.direct_without_confirmation is not None and tool.direct_without_confirmation(args, self.context)):
+            self._audit("confirmation_skipped", call, level=int(level), decision="user_command")
+            decision = Decision.ALLOW
+        if decision == Decision.CONFIRM and preapproved and level == RiskLevel.MODERATE:
+            self._audit("confirmation_preapproved", call, level=int(level), decision="approved_plan")
+            decision = Decision.ALLOW
+        if decision == Decision.CONFIRM:
+            summary = tool.confirmation_text(args, self.context)
+            if taint_reason is not None:
+                summary = f"{summary} (I'm asking because {taint_reason}.)"
+            request = ConfirmationRequest(tool.name, level, summary, args.model_dump())
+            self._audit("confirmation_requested", call, level=int(level), decision="confirm")
+            try:
+                approved = await asyncio.wait_for(self.confirmer.confirm(request), self.confirm_timeout)
+            except asyncio.TimeoutError:
+                approved = False
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("confirmation failed")
+                approved = False
+            self._audit("confirmation_answered", call, level=int(level), decision="approved" if approved else "denied")
+            if not approved:
+                if taint_reason is not None:  # the user stopped something outside text was steering towards
+                    from app.core import events
+
+                    try:
+                        events.BUS.publish(events.SECURITY_EVENT, priority="normal",
+                                           message=f"You refused '{tool.name}' after I had read outside text ({taint_reason}).")
+                    except Exception:
+                        pass
+                return done(
+                    ToolResult.failure("declined", "Cancelled: the user said no, so nothing was done."), level, decision
+                )
+
+        if run is not None:
+            run.confirmed_after_untrusted = taint_reason is not None  # the handler records it (memory provenance)
+        try:
+            outcome = await asyncio.wait_for(self._run(tool, args), tool.timeout)
+        except asyncio.TimeoutError:
+            return done(ToolResult.failure("timeout", f"'{tool.name}' took too long and was stopped."), level, decision)
+        except ToolError as exc:
+            return done(ToolResult.failure(exc.code, str(exc), **getattr(exc, "data", {})), level, decision)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("tool %s crashed", tool.name, extra={"event": "tool_crashed"})
+            return done(ToolResult.failure("internal", "The action failed unexpectedly. The details are in the log."), level, decision)
+        if outcome.ok and tool.verify is not None:
+            outcome = await self._verify(tool, args, outcome, call)
+        if outcome.ok:
+            self._record_undo(call, outcome, run)
+            if run is not None and once_key is not None:
+                run.completed[once_key] = outcome.message[:200]
+        if run is not None:
+            run.tools.append(tool.name)
+            if run.taint is not None and outcome.ok:
+                try:
+                    run.taint.absorb(tool.name, outcome.to_model_text())
+                except Exception:
+                    _log.warning("taint tracking failed", exc_info=True)
+        return done(outcome, level, decision)
+
+    async def _verify(self, tool: Tool, args: Any, outcome: ToolResult, call: ToolCall) -> ToolResult:
+        """The verification contract: the tool's own check of the real world after it said "done"."""
+        try:
+            ok, found = await asyncio.wait_for(asyncio.to_thread(tool.verify, args, outcome, self.context), 10.0)
+        except Exception:
+            _log.warning("verification of %s failed to run", tool.name, exc_info=True)
+            return outcome  # can't check: report what the tool said, without claiming more
+        self._audit("verification", call, details={"ok": ok, "found": found})
+        if ok:
+            return ToolResult(True, outcome.message, {**outcome.data, "verified": True})
+        return ToolResult.failure("not_verified", f"{outcome.message} But when I checked, {found}.",
+                                  **{**outcome.data, "verified": False})
+
+    def _record_undo(self, call: ToolCall, outcome: ToolResult, run: Any) -> None:
+        database = getattr(self.context, "database", None)
+        if database is None:
+            return
+        from app.core import undo
+
+        if undo.UNDOING.get():
+            return  # this call IS an undo: don't offer to undo the undo
+        try:
+            inverse = undo.inverse_of(call, outcome)
+            if inverse is not None:
+                undo.UndoStore(database).record(call, inverse, run.id if run is not None else None)
+        except Exception:
+            _log.warning("could not record undo information", exc_info=True)
+
+    async def _run(self, tool: Tool, args: Any) -> ToolResult:
+        if inspect.iscoroutinefunction(tool.handler):
+            raw = await tool.handler(args, self.context)
+        else:
+            raw = await asyncio.to_thread(tool.handler, args, self.context)
+        if isinstance(raw, ToolResult):
+            return raw
+        if isinstance(raw, dict):
+            return ToolResult.success(**raw)
+        return ToolResult.success(str(raw) if raw is not None else "")

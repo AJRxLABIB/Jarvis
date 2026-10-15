@@ -1,0 +1,30 @@
+[project]
+name = "jarvis-assistant"
+version = "3.25.0"
+description = "Local-first personal AI assistant for Windows 11"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["build", "dist", ".venv", "packaging/*.spec"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+# E501: long lines are allowed where they read better; B008/B904/B023/B905/E731: style choices in this codebase
+ignore = ["E501", "B008", "B904", "B023", "B905", "E731", "B017", "B027"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F811"]  # pytest fixtures imported from other test modules
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = false
+warn_unused_ignores = false
+files = ["app"]

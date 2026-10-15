@@ -1,0 +1,25 @@
+{
+  "_readme": "Copy this file to mcp.json and keep only the servers you want. Every MCP tool asks before it runs unless you give it a level (0 = safe, no question; 1 = ask; 2 = always ask; 3 = blocked). Restart Jarvis after editing.",
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:\\Notes"],
+      "keywords": ["notes folder", "my notes"],
+      "levels": {"read_file": 0, "list_directory": 0},
+      "disabled_tools": ["write_file", "move_file"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "put-your-token-here"},
+      "keywords": ["github", "issue", "pull request", "repository"],
+      "disabled": true
+    },
+    "remote-example": {
+      "url": "https://example.com/mcp",
+      "headers": {"Authorization": "Bearer put-your-token-here"},
+      "keywords": ["example"],
+      "disabled": true
+    }
+  }
+}

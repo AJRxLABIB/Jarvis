@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "hotkeys": {
+    "activate_assistant": "ctrl+space",
+    "toggle_listening": "ctrl+shift+j",
+    "cancel": "escape",
+    "emergency_stop": "ctrl+shift+f12"
+  }
+}
