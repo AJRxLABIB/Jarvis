@@ -14,4 +14,8 @@ public final class Api {
     public static Result command(Pc pc, boolean away, String deviceId, String command, Map<String, Object> args) throws Exception {
         return new Result(200, "{\"ok\":true}");
     }
+    public static Result command(Pc pc, boolean away, String deviceId, String command, Map<String, Object> args,
+                                 int readTimeoutMs) throws Exception {
+        return command(pc, away, deviceId, command, args);
+    }
 }

@@ -20,6 +20,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from app.ui.core3d.dynamics import CoreDynamics, canonical
 from app.ui.core3d.quality import Governor, Quality, resolve
 from app.ui.visualizer import OrbWidget
+from app.utils.logging_setup import log_event
 
 _log = logging.getLogger(__name__)
 MAX_DRAG = 0.9          # radians of temporary inspection yaw / pitch
@@ -40,6 +41,8 @@ class GlOrbWidget(QOpenGLWidget):
     failed = Signal(str)          # the GL core could not start; the painter core is used instead
     quality_changed = Signal(str)
     frame_rendered = Signal()     # after every frame: the window background paces its holographic layer on it
+    gl_stable = Signal()          # once: the core has drawn steadily for a while (start-up crash guard, gl_guard.py)
+    STABLE_FRAMES, STABLE_SECONDS = 120, 15.0
 
     def __init__(self, quality_setting: str = "auto", speed: float = 1.0, glow: float = 1.0, reduced_motion: bool = False,
                  parent=None, backdrop: bool = False) -> None:
@@ -93,7 +96,13 @@ class GlOrbWidget(QOpenGLWidget):
         self._watchdog.setInterval(250)
         self._watchdog.timeout.connect(self._kick)
         self.frameSwapped.connect(self._schedule_next)
+        from app.ui.core3d.fx import Effects
+
+        self.fx = Effects()                   # data pulses to the panels + spark trails (fx.py)
+        self.speech_level = None              # callable -> 0..1 loudness of Jarvis's voice right now, or None
         self.frames = 0
+        self._first_frame_at: float | None = None
+        self._stable_sent = False
         self._apply_rate()
 
     # ------------------------------------------------------------------ the OrbWidget API
@@ -203,6 +212,10 @@ class GlOrbWidget(QOpenGLWidget):
                 self._bg_for = None
             self.context().aboutToBeDestroyed.connect(self._release_gl)
             self.gl_ok = True
+            info = getattr(self._ctx, "info", {}) or {}
+            log_event(_log, "gl_initialized", vendor=str(info.get("GL_VENDOR", "?")),
+                      renderer=str(info.get("GL_RENDERER", "?")), version=str(info.get("GL_VERSION", "?")),
+                      quality=self.quality.name)
         except Exception as exc:
             self._fail(f"OpenGL core could not start: {exc}")
 
@@ -220,6 +233,22 @@ class GlOrbWidget(QOpenGLWidget):
                 self._scene = None
                 self._backdrop = None
                 self._ctx = None
+
+    def _reset_gl_state(self) -> None:
+        """Hand the context back to Qt the way its painter expects it: no VAO / buffers / program bound, texture unit 0,
+        Qt's own framebuffer. (A leftover bound buffer makes the painter's later draws read from it - a driver crash.)"""
+        try:
+            ctx = self.context()
+            f, x = ctx.functions(), ctx.extraFunctions()
+            x.glBindVertexArray(0)
+            f.glBindBuffer(0x8892, 0)        # GL_ARRAY_BUFFER
+            f.glBindBuffer(0x8893, 0)        # GL_ELEMENT_ARRAY_BUFFER
+            f.glUseProgram(0)
+            f.glActiveTexture(0x84C0)        # GL_TEXTURE0
+            f.glBindTexture(0x0DE1, 0)       # GL_TEXTURE_2D
+            f.glBindFramebuffer(0x8D40, self.defaultFramebufferObject())
+        except Exception:
+            pass
 
     def _fail(self, reason: str) -> None:
         if self.gl_ok:
@@ -275,7 +304,7 @@ class GlOrbWidget(QOpenGLWidget):
         # the animation never visibly skips, even if Windows or another program held the window up for a moment
         dt = min(dt, 0.05)
         self.model.anim_clock = (self.model.anim_clock or 0.0) + dt
-        self.dyn.step(dt, self._mic_level if self.dyn.state == "LISTENING" else None)
+        self.dyn.step(dt, self._audio_level())
         self.model._frame()          # the read-outs' animated values and the fallback's wave history
         self.frame_ms = self.frame_ms * 0.9 + dt * 1000.0 * 0.1 if self.frame_ms else dt * 1000.0
         if self.backdrop_mode:
@@ -284,11 +313,42 @@ class GlOrbWidget(QOpenGLWidget):
             self._paint_widget_frame(dt)
         cost = time.perf_counter() - started
         self.frames += 1
+        if self._first_frame_at is None:
+            self._first_frame_at = now
+            log_event(_log, "gl_first_frame", gl=self.gl_ok)
+        elif (not self._stable_sent and self.frames >= self.STABLE_FRAMES
+              and now - self._first_frame_at >= self.STABLE_SECONDS):
+            self._stable_sent = True
+            self.gl_stable.emit()
         if self.quality_setting == "auto" and self.isVisible() and self.gl_ok:
             changed = self.governor.frame(cost, self.budget, dt)
             if changed:
                 self._set_quality(resolve("auto", changed))
         self.frame_rendered.emit()
+
+    def _audio_level(self) -> float | None:
+        """Listening: the microphone. Speaking: the REAL loudness of the voice being played (falls back to the
+        synthetic cadence in dynamics.py only when the player can't report levels)."""
+        if self.dyn.state == "LISTENING":
+            return self._mic_level
+        if self.dyn.state == "SPEAKING" and self.speech_level is not None:
+            try:
+                return self.speech_level()
+            except Exception:
+                return None
+        return None
+
+    def pulse_to(self, target, color=(0.3, 0.9, 1.0)) -> None:
+        """A data pulse from the core to ``target`` (a panel widget)."""
+        self.fx.pulse(target, time.monotonic(), color)
+
+    def _rect_of(self, target):
+        from PySide6.QtCore import QPoint
+
+        if target is None or not target.isVisible() or target.width() < 4:
+            return None
+        top_left = self.mapFromGlobal(target.mapToGlobal(QPoint(0, 0)))
+        return (top_left.x(), top_left.y(), target.width(), target.height())
 
     def _paint_widget_frame(self, dt: float) -> None:
         w, h = self.width(), self.height()
@@ -305,6 +365,7 @@ class GlOrbWidget(QOpenGLWidget):
             except Exception as exc:
                 self._fail(f"drawing failed: {exc}")
             finally:
+                self._reset_gl_state()
                 painter.endNativePainting()
         if self.gl_ok and self._scene is not None:
             tint = QColor.fromRgbF(*self.dyn.tint)
@@ -379,6 +440,7 @@ class GlOrbWidget(QOpenGLWidget):
             except Exception as exc:
                 self._fail(f"drawing failed: {exc}")
             finally:
+                self._reset_gl_state()
                 painter.endNativePainting()
         if not (self.gl_ok and self._scene is not None):
             painter.drawPixmap(0, 0, self._background_image())         # painter fallback for the whole backdrop
@@ -390,6 +452,9 @@ class GlOrbWidget(QOpenGLWidget):
             else:
                 self.model.paint_full(painter, rect.width(), rect.height())
             painter.restore()
+            center = (rect.x() + rect.width() / 2, rect.y() + rect.height() / 2)
+            self.fx.paint(painter, center, min(rect.width(), rect.height()) * 0.41, time.monotonic(), self.dyn.clock,
+                          self._rect_of, self.dyn.reduced_motion)
         painter.end()
 
     # the painter backdrop's API, so the window can treat this widget as its background

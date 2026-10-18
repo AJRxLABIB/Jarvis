@@ -91,6 +91,9 @@ class RemoteMixin:
             if request_id != pending.request.id:  # the phone answered a question that isn't the one waiting now
                 log_event(_log, "remote_answer_stale")
                 return False
+            if approved and int(getattr(pending.request, "level", 0)) >= 3:   # CRITICAL: only on the PC's screen
+                log_event(_log, "remote_critical_refused")
+                return False
             pending.future.set_result(approved)
             self.confirmation_answered.emit(pending, approved)
             return True
@@ -200,6 +203,7 @@ class RemoteMixin:
         hub.pc_capabilities = self.pc_capabilities
         hub.pc_wake_config = self.wake_app_config
         hub.emergency = self._mobile_emergency
+        hub.phone_screen = self.phone_screens()
         hub.cancel = self._mobile_cancel
 
         async def run_tool(tool: str, arguments: dict) -> dict:
@@ -217,6 +221,35 @@ class RemoteMixin:
         self._cancel_request.emit()
         return ("Cancelled the current request (anything it already did is not undone)." if busy
                 else "Nothing was running.")
+
+    def phone_screens(self):
+        """Phones sharing their screen with this PC (frames in memory only): app/remote/phone_screen.py."""
+        screens = getattr(self, "_phone_screens", None)
+        if screens is None:
+            from app.remote.phone_screen import PhoneScreenHub
+
+            screens = self._phone_screens = PhoneScreenHub()
+        return screens
+
+    def ask_phone_to_share(self) -> str:
+        """The PC viewer's "Ask the phone to share": queue share_screen for the most recently seen trusted phone."""
+        from app.remote.mobile import MobileRegistry
+        from app.remote.phone_link import PhoneLink
+
+        database = getattr(self.ctx, "database", None)
+        if database is None:
+            return "The phone link needs the local database."
+        link = PhoneLink(database)
+        phones = [d for d in MobileRegistry(database).all() if d.trust == "trusted" and not d.revoked_at]
+        if not phones:
+            return "No trusted phone is paired (Menu > Mobile devices)."
+        phone = max(phones, key=lambda d: link.state(d.id).get("seen", ""))
+        state = link.state(phone.id)
+        if state and not state.get("control"):
+            return f"{phone.name} doesn't allow control from the PC: JARVIS Mobile > Control > 'Let my PC control this phone'."
+        link.queue(phone.id, "share_screen", {})
+        return (f"Asked {phone.name}. Tap 'Start now' on the phone (Android asks every time). It reaches the phone the "
+                "next time it checks in: at once if JARVIS Mobile is open or 'Stay connected' is on.")
 
     def _mobile_emergency(self) -> str:
         sessions = self.mobile_sessions()

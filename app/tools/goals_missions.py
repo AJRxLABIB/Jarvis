@@ -185,6 +185,12 @@ async def resume_mission(args: ResumeArgs, ctx: ToolContext) -> ToolResult:
 def cancel_mission(_: NoArgs, ctx: ToolContext) -> ToolResult:
     store = MissionStore(_db(ctx))
     mission = _unfinished(ctx)
+    if mission.state in ("running", "verifying"):        # running right now: it stops at the next step boundary
+        from app.core import missions as _missions
+
+        _missions.request(mission.id, "cancel")
+        return ToolResult.success(f"Cancelling '{mission.title}' before its next step (the step running now finishes "
+                                  "first).", pending=True)
     store.set_state(mission, "cancelled", "cancelled by you")
     return ToolResult.success(f"Cancelled '{mission.title}' ({mission.progress()} steps had been done; they stay done).")
 

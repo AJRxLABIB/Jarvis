@@ -1,5 +1,8 @@
-"""``phone_control``: do something on your paired phone (flashlight, ring it, open an app or a link, show a message)
-or see its battery. Uses the signed JARVIS Mobile link; the phone must allow it in its own settings."""
+"""``phone_control``: do something on your paired phone - flashlight, ring it, open an app / the gallery / camera /
+messages / dialer or a link, show a message, start screen sharing, call someone, end a call, send an SMS, read the
+latest messages, look up a contact - or see its battery. Uses the signed JARVIS Mobile link; the phone must allow it
+in its own settings ("Let my PC control this phone"; calls and messages need "Allow calls and messages" too).
+Calls and SMS always ask you first (DANGEROUS), reading messages / contacts asks unless you approved it (MODERATE)."""
 
 from __future__ import annotations
 
@@ -14,8 +17,17 @@ from app.tools.base import Tool, ToolArgs, ToolContext, ToolError, ToolResult
 
 
 class PhoneArgs(ToolArgs):
-    action: Literal["status", "flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "show_text"] = Field(
-        description="status = battery/connection; ring = find my phone; open_app needs app; open_link needs url")
+    action: Literal["status", "flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "show_text",
+                    "open_gallery", "open_camera", "open_messages", "open_dialer", "share_screen",
+                    "call", "end_call", "send_sms", "read_messages", "find_contact", "cancel_pending"] = Field(
+        description="status = battery/connection; ring = find my phone; open_app needs app; open_link needs url; "
+                    "share_screen = ask the phone to start sharing its screen; call / send_sms need number (a contact "
+                    "name or a number); send_sms needs text; read_messages = latest SMS (count, optional from); "
+                    "find_contact needs name; cancel_pending = withdraw requests the phone hasn't taken yet")
+    number: str = Field(default="", max_length=60, description="Who to call / text: a contact name or a phone number")
+    count: int = Field(default=5, ge=1, le=10, description="How many messages to read")
+    sender: str = Field(default="", max_length=60, description="read_messages: only from this contact / number")
+    name: str = Field(default="", max_length=60, description="find_contact: the contact's name")
     app: str = Field(default="", max_length=60, description="App to open on the phone, e.g. 'WhatsApp'")
     url: str = Field(default="", max_length=1900, description="http(s) link to open on the phone")
     text: str = Field(default="", max_length=500, description="Message to show on the phone")
@@ -51,28 +63,61 @@ async def phone_control(args: PhoneArgs, ctx: ToolContext) -> ToolResult:
         if not state.get("control"):
             parts.append("control from the PC is OFF on the phone")
         return ToolResult.success(f"{device.name}: " + ", ".join(parts) + ".", phone=device.name, state=state)
+    if args.action == "cancel_pending":
+        withdrawn = link.cancel(device.id)
+        return ToolResult.success(f"Withdrew {withdrawn} request(s) {device.name} hadn't taken yet." if withdrawn else
+                                  f"Nothing was waiting for {device.name} (anything it already took can't be called back).",
+                                  phone=device.name, cancelled=withdrawn)
+    from app.remote.phone_link import COMMS
+
+    if args.action in COMMS and state and state.get("app_version") and not state.get("comms"):
+        raise ToolError(f"{device.name} doesn't allow calls and messages from the PC. On the phone: JARVIS Mobile > "
+                        "Control > 'Allow calls and messages'.", "not_allowed")
     if state and not state.get("control"):
         raise ToolError(f"{device.name} doesn't allow control from the PC. On the phone: JARVIS Mobile > Settings > "
                         "'Let my PC control this phone'.", "not_allowed")
     try:
-        command_id = link.queue(device.id, args.action, {"app": args.app, "url": args.url, "text": args.text})
+        command_id = link.queue(device.id, args.action, {"app": args.app, "url": args.url, "text": args.text,
+                                                         "number": args.number, "count": args.count,
+                                                         "from": args.sender, "name": args.name})
     except ValueError as exc:
         raise ToolError(str(exc), "bad_request") from exc
-    outcome = await asyncio.to_thread(link.wait, command_id, 8.0)
+    outcome = await asyncio.to_thread(link.wait, command_id, 12.0)
     if outcome["status"] == "done":
         return ToolResult.success(outcome["result"] or f"Done on {device.name}.", phone=device.name)
+    if outcome["status"] == "unsupported":
+        raise ToolError(f"{device.name}'s JARVIS Mobile app is too old for '{args.action}'. Rebuild and install the "
+                        "new app (packaging\\build_android.ps1, then MENU > Mobile devices > Install).", "unsupported")
     if outcome["status"] == "failed":
         raise ToolError(f"{device.name} couldn't do it: {outcome['result'] or 'no reason given'}.", "phone_failed")
-    return ToolResult.success(f"Sent to {device.name}; it will do it when JARVIS Mobile checks in (open the app). "
-                              "I couldn't confirm it yet.", phone=device.name, pending=True, verified=False)
+    return ToolResult.success(f"Sent to {device.name}; it will do it when JARVIS Mobile checks in (open the app, or "
+                              "turn on 'Stay connected'). I couldn't confirm it yet - say 'cancel the phone request' "
+                              "to withdraw it.", phone=device.name, pending=True, verified=False, command_id=command_id)
 
 
 def _risk(args: PhoneArgs, _ctx: ToolContext) -> RiskLevel:
-    return RiskLevel.MODERATE if args.action == "open_link" else RiskLevel.SAFE
+    if args.action in ("call", "send_sms"):
+        return RiskLevel.DANGEROUS            # reaches another person: always asks, on screen, with the details
+    if args.action in ("open_link", "read_messages", "find_contact"):
+        return RiskLevel.MODERATE             # private data / outside content
+    return RiskLevel.SAFE
+
+
+def _confirmation(args: PhoneArgs, _ctx: ToolContext) -> str:
+    if args.action == "call":
+        return f"Call {args.number} from your phone?"
+    if args.action == "send_sms":
+        return f"Send an SMS from your phone to {args.number}: \"{args.text}\"?"
+    if args.action == "read_messages":
+        return f"Read your latest {args.count} SMS" + (f" from {args.sender}" if args.sender else "") + " (codes hidden)?"
+    if args.action == "find_contact":
+        return f"Look up {args.name} in your phone's contacts?"
+    return f"Do '{args.action}' on your phone?"
 
 
 TOOLS = (
-    Tool("phone_control", "Your paired phone: battery status, flashlight on/off, ring it (find my phone), open an app "
-         "or a link on it, show a message on it.", phone_control, PhoneArgs, RiskLevel.SAFE, "phone", timeout=20,
-         risk=_risk),
+    Tool("phone_control", "Your paired phone: battery status, flashlight on/off, ring it (find my phone), open an app, "
+         "the gallery, camera, messages, dialer or a link on it, show a message on it, start sharing its screen, "
+         "call someone, end a call, send an SMS, read the latest SMS, find a contact's number.", phone_control,
+         PhoneArgs, RiskLevel.SAFE, "phone", timeout=25, risk=_risk, confirmation=_confirmation),
 )

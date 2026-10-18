@@ -37,7 +37,8 @@ LIVE_FIELDS = frozenset({"web_browser", "chrome_profile", "edge_profile", "tts_s
 from app.config.live_fields import POLICY_FIELDS, REMOTE_FIELDS, STARTUP_ONLY_FIELDS  # noqa: E402
 
 LIVE_FIELDS = LIVE_FIELDS | REMOTE_FIELDS | STARTUP_ONLY_FIELDS | POLICY_FIELDS | {
-    "visual_quality", "core_speed", "glow_intensity", "reduced_motion", "core_hud_rings", "auto_sort_downloads", "weekly_health_check"}
+    "visual_quality", "core_speed", "glow_intensity", "reduced_motion", "core_hud_rings", "core_pulses", "core_trails",
+    "ui_sounds", "ui_sound_volume", "hidden_panels", "speech_dataset", "automation_quiet_hours", "briefing_length", "briefing_sections", "auto_sort_downloads", "weekly_health_check"}
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,11 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
                   options=("off", "minimal", "normal", "active", "high"),
                   tip="goals due, a paused mission, uncommitted work, things that keep failing"),
         FieldSpec("quiet_hours", "Quiet hours (suggestions not spoken)", "text", tip="e.g. 23:00-07:00; empty = none"),
+        FieldSpec("briefing_length", "Daily briefing length", "choice", options=("short", "normal", "full")),
+        FieldSpec("briefing_sections", "Daily briefing parts (empty = all)", "text",
+                  tip="Comma separated: weather, battery, reminders, todos, goals, meetings, missions, notifications, resume"),
+        FieldSpec("automation_quiet_hours", "No event-started automations in quiet hours", "bool",
+                  tip="Automations started by files, battery, Wi-Fi, apps or USB wait; scheduled ones still run"),
         FieldSpec("proactive_max_per_hour", "Spoken suggestions per hour (at most)", "int", low=1, high=30),
         FieldSpec("proactive_categories", "Only these kinds (empty = all)", "text", tip="goal, mission, project, system"),
         FieldSpec("proactive_emergency_exceptions", "Urgent alerts even when proactive is off", "bool"),
@@ -87,6 +93,15 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         FieldSpec("glow_intensity", "Glow intensity", "float", low=0.3, high=2.0, step=0.1),
         FieldSpec("reduced_motion", "Reduced motion (calmer core, no sway)", "bool"),
         FieldSpec("core_hud_rings", "Rings and gauges around the core (gold segments, ticks, CPU/battery arcs)", "bool"),
+        FieldSpec("core_pulses", "Data pulses from the core to the panels", "bool"),
+        FieldSpec("core_trails", "Sparks with trails around the core", "bool"),
+        FieldSpec("ui_sounds", "Interface sounds (tick, attention, done, error)", "bool"),
+        FieldSpec("ui_sound_volume", "Interface sound volume", "float", low=0, high=1, step=0.1),
+        FieldSpec("hud_scale", "Window size (HUD scale)", "float", low=0.75, high=1.5, step=0.05,
+                  tip="Scales the whole window; applies the next time Jarvis starts"),
+        FieldSpec("hidden_panels", "Hide dashboard panels", "text",
+                  tip="Comma separated: System overview, Active modules, Live event log, Link monitor, "
+                      "System performance, Power core"),
     )),
     ("AI", (
         FieldSpec("ai_model", "Model", "choice", tip="Empty = pick automatically from installed models"),
@@ -215,6 +230,10 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         FieldSpec("save_before_power", "Save open work before a restart / shutdown", "bool",
                   tip="Presses Ctrl+S in windows whose title shows unsaved changes"),
         FieldSpec("screen_capture_enabled", "Allow screen capture (screenshots, reading the screen)", "bool"),
+        FieldSpec("speech_dataset", "Keep my voice commands to improve recognition", "choice",
+                  options=("off", "corrections", "all"),
+                  tip="corrections = only when you said 'no, I said ...' (best for training); all = every confident "
+                      "command too. Kept on this PC only (data/speech_dataset); 'forget my voice recordings' erases it"),
         FieldSpec("context_window_titles", "Understand what I'm working on from window titles (not the screen)",
                   "bool"),
         FieldSpec("browser_enabled", "Allow browser automation", "bool"),

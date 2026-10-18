@@ -91,6 +91,7 @@ class RemoteHub:
         self.emergency: Callable[[], str] | None = None  # emergency stop (always allowed for a trusted phone)
         self.cancel: Callable[[], str] | None = None     # cancel just the current request (phone permission "chat")
         self.run_tool = None  # async (tool, arguments) -> dict: through the executor (the safety kernel)
+        self.phone_screen = None  # app.remote.phone_screen.PhoneScreenHub: a phone sharing its screen with this PC
         self.send, self.answer, self.pending, self.status = send, answer, pending, status
         self.voice = voice  # audio from the phone -> the text it heard (then sent like a message)
         self.messages: deque[dict[str, Any]] = deque(maxlen=200)
@@ -107,6 +108,11 @@ class RemoteHub:
 
 
 MAX_VOICE_BYTES = 2 * 1024 * 1024  # about a minute of phone audio
+# polling / reading commands are answered fresh every time; everything else is remembered by request_id (idempotency)
+READ_ONLY_PHONE_COMMANDS = frozenset({"hello", "status", "events", "wait_events", "capabilities", "auth_options",
+                                      "wake_config", "missions", "phone_commands", "screen_frame"})
+FRAME_RATE_LIMIT = 60              # screen frames per RATE_WINDOW per address (the phone sends about 3 a second)
+WAIT_MAX = 25.0                    # seconds a phone's "wait_events" request is held open at most
 
 
 class RemoteServer:
@@ -146,16 +152,33 @@ class RemoteServer:
             return "loopback"
         return f"LAN {ip}"
 
-    def _reachable(self, request) -> tuple[bool, int]:
-        """Private network and not too many requests (every endpoint, even the page)."""
+    def _answered(self, device_id: str, request_id: str) -> dict | None:
+        from app.remote.mobile import IDEMPOTENT_SECONDS
+
+        now = time.monotonic()
+        answers = self.__dict__.setdefault("_answers", {})
+        for key in [k for k, (at, _) in answers.items() if now - at > IDEMPOTENT_SECONDS]:
+            del answers[key]
+        found = answers.get((device_id, request_id))
+        return found[1] if found else None
+
+    def _remember_answer(self, device_id: str, request_id: str, answer: dict) -> None:
+        answers = self.__dict__.setdefault("_answers", {})
+        answers[(device_id, request_id)] = (time.monotonic(), answer)
+        while len(answers) > 500:
+            answers.pop(next(iter(answers)))
+
+    def _reachable(self, request, bucket: str = "", limit: int = RATE_LIMIT) -> tuple[bool, int]:
+        """Private network and not too many requests (every endpoint, even the page). Screen frames count in their
+        own bucket (``bucket``), so sharing the phone's screen never starves the normal requests."""
         address = request.remote or ""
         if not is_private(address, tailscale=self.allow_tailscale):
             return False, 403
-        hits = self._hits[address]
+        hits = self._hits[bucket + address]
         now = time.monotonic()
         while hits and now - hits[0] > RATE_WINDOW:
             hits.popleft()
-        if len(hits) >= RATE_LIMIT:
+        if len(hits) >= limit:
             return False, 429
         hits.append(now)
         return True, 200
@@ -173,6 +196,27 @@ class RemoteServer:
             return False, 401
         self.pairing.seen(device)
         return True, 200
+
+    async def _wait_events(self, arguments: dict, step: float = 0.25) -> dict:
+        """Long poll: answer as soon as there is a new message or the approval question changed, else after
+        ``timeout`` seconds (max WAIT_MAX). The phone keeps one such request open while the app is open, so updates
+        arrive at once without Firebase/Google services. Read-only, signed like every other command."""
+        import asyncio
+
+        since = arguments.get("since", 0)
+        since = since if isinstance(since, int) and since >= 0 else 0
+        known = str(arguments.get("pending_id", "") or "")[:40]
+        timeout = arguments.get("timeout", WAIT_MAX)
+        timeout = max(1.0, min(float(timeout) if isinstance(timeout, (int, float)) else WAIT_MAX, WAIT_MAX))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        hub = self.hub
+        while True:
+            messages, pending = hub.since(since), hub.pending()
+            changed = str((pending or {}).get("id", "") or "") != known
+            if messages or changed or loop.time() >= deadline:
+                return {"ok": True, "messages": messages, "pending": pending, "changed": bool(messages or changed)}
+            await asyncio.sleep(step)
 
     async def _mobile_run(self, device, command: str, arguments: dict) -> dict:
         """A verified, permitted JARVIS Mobile command. Tools go through the executor like a spoken request."""
@@ -211,6 +255,8 @@ class RemoteServer:
             since = arguments.get("since", 0)
             return {"ok": True, "messages": hub.since(since if isinstance(since, int) else 0),
                     "pending": hub.pending()}
+        if command == "wait_events":
+            return await self._wait_events(arguments)
         if command == "chat":
             text = str(arguments.get("text", "")).strip()[:2000]
             if not text:
@@ -251,7 +297,8 @@ class RemoteServer:
                     raw = arguments.get("id")
                     if not isinstance(raw, int) or isinstance(raw, bool):
                         raise MobileError(400, "bad_request", "id")
-                    return {"ok": link.report(device.id, raw, bool(arguments.get("ok")), str(arguments.get("message", "")))}
+                    return {"ok": link.report(device.id, raw, bool(arguments.get("ok")), str(arguments.get("message", "")),
+                                              unsupported=bool(arguments.get("unsupported")))}
                 from app.core.notifications import NotificationCenter
 
                 center = NotificationCenter(hub.mobile.database)
@@ -505,11 +552,49 @@ class RemoteServer:
             self.hub._last_network = self._network_path(request.remote or "")
             try:
                 device, command, arguments = self.hub.mobile.verify(envelope)
+                earlier = self._answered(device.id, envelope["request_id"])
+                if earlier is not None:             # the same request again (its answer was lost): never run twice
+                    log_event(_log, "mobile_duplicate", command=command, device=device.id)
+                    return web.json_response({**earlier, "duplicate": True})
                 result = await self._mobile_run(device, command, arguments)
+                if command not in READ_ONLY_PHONE_COMMANDS:
+                    self._remember_answer(device.id, envelope["request_id"], {"request_id": envelope["request_id"], **result})
             except MobileError as exc:
                 log_event(_log, "mobile_refused", code=exc.code)
                 return web.json_response({"ok": False, "error": exc.code, "message": str(exc)}, status=exc.status)
             log_event(_log, "mobile_command", command=command, device=device.id, ok=result.get("ok"))
+            return web.json_response({"request_id": envelope.get("request_id"), **result})
+
+        async def mobile_frame(request):  # JARVIS Mobile "Share screen": one signed JPEG frame (app/remote/phone_screen.py)
+            from app.core import emergency
+            from app.remote.mobile import MobileError
+            from app.remote.phone_screen import MAX_FRAME_BYTES, ScreenError
+
+            ok, code = self._reachable(request, bucket="frame:", limit=FRAME_RATE_LIMIT)
+            if not ok:
+                return web.json_response({"ok": False, "error": "rate"}, status=code)
+            if self.hub.mobile is None or self.hub.phone_screen is None:
+                return web.json_response({"ok": False, "error": "unavailable"}, status=503)
+            if (request.content_length or 0) > MAX_FRAME_BYTES * 4 // 3 + 4096:
+                return web.json_response({"ok": False, "error": "too_big"}, status=413)
+            try:
+                envelope = await request.json()
+            except ValueError:
+                return web.json_response({"ok": False, "error": "malformed"}, status=400)
+            try:
+                device, command, arguments = self.hub.mobile.verify(envelope)
+                if command not in ("screen_frame", "screen_stopped"):
+                    raise MobileError(400, "malformed", "This address only takes screen frames.")
+                screens = self.hub.phone_screen
+                if command == "screen_stopped" or emergency.STATE.flags.get("remote_disabled"):
+                    result = screens.stopped(device)
+                    result["stop"] = True
+                else:
+                    result = screens.frame(device, arguments)
+            except MobileError as exc:
+                return web.json_response({"ok": False, "error": exc.code, "message": str(exc)}, status=exc.status)
+            except ScreenError as exc:
+                return web.json_response({"ok": False, "error": exc.code, "message": str(exc)}, status=400)
             return web.json_response({"request_id": envelope.get("request_id"), **result})
 
         async def manifest(request):  # "Add to Home screen": opens like an app, full screen
@@ -528,6 +613,7 @@ class RemoteServer:
         application.router.add_get("/mobile/pair", open_guard(mobile_pair_page))
         application.router.add_post("/api/mobile/pair", open_guard(mobile_pair))
         application.router.add_post("/api/mobile/command", open_guard(mobile_command))
+        application.router.add_post("/api/mobile/frame", mobile_frame)
         application.router.add_get("/api/wake-config", guard(wake_config))
         application.router.add_get("/icon.svg", open_guard(icon))
         application.router.add_post("/api/pair", open_guard(pair))

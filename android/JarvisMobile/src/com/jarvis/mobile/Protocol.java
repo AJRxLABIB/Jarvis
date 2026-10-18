@@ -18,6 +18,9 @@ public final class Protocol {
             "close_app", "window", "brightness", "open_website", "browser", "put_file", "get_file", "mouse", "key",
             "sync_push", "approve"));
 
+    /** The envelope version (app/remote/mobile.py PROTOCOLS). */
+    public static final int PROTOCOL = 1;
+
     public static boolean needsAuth(String command) {
         return STEP_UP.contains(command);
     }
@@ -39,6 +42,7 @@ public final class Protocol {
         String alias = needsAuth(command) ? Crypto.AUTH_ALIAS : Crypto.BASE_ALIAS;
         String signature = Crypto.sign(alias, signed.getBytes("UTF-8"));
         Map<String, Object> env = new LinkedHashMap<String, Object>();
+        env.put("protocol", PROTOCOL);
         env.put("request_id", requestId);
         env.put("device_id", deviceId);
         env.put("timestamp", timestamp);

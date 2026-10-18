@@ -28,6 +28,7 @@ MIN_GAIN = 0.05
 FASTER = 0.8                  # 20 % quicker counts when the score is equal
 MAX_CANDIDATES = 4
 HISTORY = "self_improve.jsonl"
+TUNED_PREFIX = "jarvis-tuned"      # made by scripts/finetune_llm.py from YOUR good requests
 
 
 @dataclass
@@ -97,8 +98,10 @@ def candidates(current_base: str, current_temperature: float, models, total_ram:
         out.append(Candidate(current_base, round(max(0.1, current_temperature - 0.15), 2), "more exact"))
     others = [m for m in models if m.can_chat and m.supports_tools and not m.supports_vision and not is_jarvis(m.name)
               and m.name.split(":")[0] != current_base.split(":")[0] and could_ever_fit(m.size_bytes, total_ram)]
-    for m in sorted(others, key=lambda m: -(m.size_bytes or 0)):
-        out.append(Candidate(m.name, current_temperature, "other model"))
+    # a model fine-tuned on your own use (scripts/finetune_llm.py -> "jarvis-tuned") is tried first
+    for m in sorted(others, key=lambda m: (not m.name.startswith(TUNED_PREFIX), -(m.size_bytes or 0))):
+        out.append(Candidate(m.name, current_temperature,
+                             "tuned on your use" if m.name.startswith(TUNED_PREFIX) else "other model"))
     return out[:MAX_CANDIDATES]
 
 
@@ -162,9 +165,21 @@ def history(data_dir: Path, limit: int = 5) -> list[dict[str, Any]]:
     return out
 
 
-def export_training(database, path: Path, limit: int = 2000) -> int:
+def _tool_schemas(registry, text: str) -> list[dict]:
+    """The tools Jarvis would offer for ``text``, in the OpenAI/Hugging Face "tools" format (for the chat template)."""
+    if registry is None:
+        return []
+    from app.agent.tool_router import select_specs
+
+    return [{"type": "function", "function": {"name": s.name, "description": s.description,
+                                              "parameters": dict(s.parameters)}} for s in select_specs(registry, text)]
+
+
+def export_training(database, path: Path, limit: int = 2000, registry=None) -> int:
     """Your good requests (and the answers you liked) as chat-format JSONL - for an OPTIONAL fine-tune with an
-    external tool (e.g. a LoRA trainer on a GPU). Redacted; private-mode requests were never recorded."""
+    external tool (scripts/finetune_llm.py: a LoRA on a GPU). With ``registry`` each tool example also carries the
+    tools that were offered, so the model learns to choose among the same ones. Redacted; private-mode requests
+    were never recorded."""
     rows = []
     with database.connect() as conn:
         for r in conn.execute("SELECT request, tools FROM learning_turns WHERE outcome = 'good' ORDER BY id DESC "
@@ -173,8 +188,12 @@ def export_training(database, path: Path, limit: int = 2000) -> int:
             if tools:
                 calls = [{"type": "function", "function": {"name": t["name"], "arguments": t.get("args") or {}}}
                          for t in tools]
-                rows.append({"messages": [{"role": "user", "content": r["request"]},
-                                          {"role": "assistant", "content": "", "tool_calls": calls}]})
+                row = {"messages": [{"role": "user", "content": r["request"]},
+                                    {"role": "assistant", "content": "", "tool_calls": calls}]}
+                schemas = _tool_schemas(registry, r["request"])
+                if schemas:
+                    row["tools"] = schemas
+                rows.append(row)
         for r in conn.execute("SELECT question, answer FROM answer_examples ORDER BY id DESC LIMIT ?", (limit,)):
             rows.append({"messages": [{"role": "user", "content": r["question"]},
                                       {"role": "assistant", "content": r["answer"]}]})

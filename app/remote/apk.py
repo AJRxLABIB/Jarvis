@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-MOBILE_APP_VERSION = "1.0.0"  # keep in step with android/JarvisMobile/AndroidManifest.xml versionName
+MOBILE_APP_VERSION = "1.2.0"  # keep in step with android/JarvisMobile/AndroidManifest.xml versionName
 _ASSETS = Path(__file__).resolve().parent / "assets"
 _NAMES = ("JarvisMobile.apk", "JarvisWake.apk")
 

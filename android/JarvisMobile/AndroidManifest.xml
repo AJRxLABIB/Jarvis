@@ -2,8 +2,8 @@
 <!-- JARVIS Mobile: your secure remote terminal for the JARVIS PC. It never handles your Windows password. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jarvis.mobile"
-    android:versionCode="1"
-    android:versionName="1.0.0">
+    android:versionCode="3"
+    android:versionName="1.2.0">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 
@@ -12,12 +12,41 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- "Share screen with PC": a foreground service while sharing (Android asks you every time it starts) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- "Stay connected": the link to your PC while the app is closed (opt-in, with a notification) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Calls / SMS / contacts on request from your PC: only after "Allow calls and messages" + Android asks you -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
 
     <!-- "open an app on my phone": see the launchable apps (Android 11+ package visibility) -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_GALLERY" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_MESSAGING" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
         </intent>
     </queries>
 
@@ -46,6 +75,22 @@
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
+        </service>
+        <!-- Share screen with PC (MediaProjection). Not exported: only this app starts or stops it. -->
+        <service android:name=".ScreenShareService" android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+        <!-- Stay connected (opt-in): keeps the signed link to your PC while the app is closed -->
+        <service android:name=".LinkService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Remote control link to the user's own paired PC" />
+        </service>
+        <!-- JARVIS control: switched on by YOU in Settings > Accessibility; performs the PC viewer's taps while sharing -->
+        <service android:name=".ControlService" android:exported="true" android:label="JARVIS control"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/jarvis_control" />
         </service>
         <!-- Share > JARVIS Mobile: text or a link to the PC -->
         <activity android:name=".ShareActivity" android:exported="true" android:label="Send to my PC"

@@ -39,17 +39,32 @@ class Notice:
 
 class NotificationCenter:
     KEEP = 500
+    DEDUPE_MINUTES = 30       # the same unread notice again within this time is not added twice
+    RETENTION_DAYS = 90       # read notices older than this are removed (unread ones stay until you see them)
 
     def __init__(self, database: "Database") -> None:
         self._db = database
+        self.duplicate = False    # the last add() found the same unread notice already there
 
     def add(self, title: str, body: str = "", *, source: str, category: str, priority: str = "normal",
             action: str = "") -> int:
+        from datetime import datetime, timedelta, timezone
+
         from app.memory.database import utc_now_iso
 
         if category not in CATEGORIES or priority not in PRIORITIES:
             raise ValueError("bad category or priority")
+        now = datetime.now(timezone.utc)
+        since = (now - timedelta(minutes=self.DEDUPE_MINUTES)).isoformat(timespec="seconds")
         with self._db.transaction() as conn:
+            same = conn.execute("SELECT id FROM notifications WHERE read = 0 AND archived = 0 AND category = ? AND "
+                                "title = ? AND body = ? AND ts >= ? ORDER BY id DESC LIMIT 1",
+                                (category, title[:200], body[:1000], since)).fetchone()
+            self.duplicate = same is not None
+            if same is not None:
+                return int(same[0])
+            conn.execute("DELETE FROM notifications WHERE read = 1 AND ts < ?",
+                         ((now - timedelta(days=self.RETENTION_DAYS)).isoformat(timespec="seconds"),))
             new_id = conn.execute("INSERT INTO notifications (ts, source, category, priority, title, body, action) "
                                   "VALUES (?, ?, ?, ?, ?, ?, ?)", (utc_now_iso(), source[:40], category, priority,
                                                                     title[:200], body[:1000], action[:200])).lastrowid
@@ -128,7 +143,7 @@ def connect(bus: events.EventBus, center: NotificationCenter, on_new=None) -> No
             return
         title, body, category, priority, action = made
         new_id = center.add(title, body, source=event.name, category=category, priority=priority, action=action)
-        if on_new is not None:
+        if on_new is not None and not center.duplicate:     # the same unread notice again: not shown twice
             on_new(new_id, priority, title, body)
 
     bus.subscribe("*", handle)

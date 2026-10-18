@@ -117,10 +117,22 @@ class ProactiveMixin:
         not_stoppable: list[str] = []
         # what is happening right now (read before cancel() clears it)
         try:
-            if self.tts.is_speaking():
+            speaking = self.tts.is_speaking
+            if speaking() if callable(speaking) else speaking:      # a property on TTSManager
                 stopped.append("speaking")
         except Exception:
             pass
+        try:                                                      # phone requests not yet taken by a phone
+            from app.remote.phone_link import PhoneLink
+
+            if getattr(self.ctx, "database", None) is not None and PhoneLink(self.ctx.database).cancel():
+                stopped.append("waiting phone requests")
+        except Exception:
+            pass
+        screens = getattr(self, "_phone_screens", None)
+        if screens is not None and screens.active():
+            screens.stop_all()                                   # the phone stops sharing on its next frame
+            stopped.append("phone screen sharing")
         if getattr(self, "_listening", False):
             stopped.append("listening")
         pending = getattr(self, "_pending_confirmation", None)

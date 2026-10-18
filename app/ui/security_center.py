@@ -12,9 +12,10 @@ from app.core import security_center
 class SecurityCenterDialog(QDialog):
     def __init__(self, database, settings, *, open_phones: Callable[[], None] | None = None,
                  open_privacy: Callable[[], None] | None = None, open_emergency: Callable[[], None] | None = None,
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None, live: Callable[[], dict] | None = None) -> None:
         super().__init__(parent)
         self.database, self.settings = database, settings
+        self.live = live          # the running window's real state (microphone, capture, sharing, approvals)
         self.setWindowTitle("Security center")
         self.setMinimumSize(720, 560)
         self.summary = QLabel()
@@ -45,7 +46,11 @@ class SecurityCenterDialog(QDialog):
         self.refresh()
 
     def refresh(self) -> None:
-        sections = security_center.collect(self.database, self.settings)
+        try:
+            live = self.live() if self.live is not None else None
+        except Exception:
+            live = None
+        sections = security_center.collect(self.database, self.settings, live=live)
         self.report.setPlainText(security_center.describe(sections))
         warns = sum(1 for s in sections for i in s.items if i.level == "warn")
         self.summary.setText(f"{warns} item(s) need a look." if warns else "Nothing needs attention right now.")

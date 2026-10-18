@@ -838,6 +838,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="test better AI set-ups on your real requests; keep one only if it scores better")
     mode.add_argument("--export-training", action="store_true",
                       help="write your good requests as chat JSONL (data/exports) for an optional fine-tune")
+    mode.add_argument("--export-speech-dataset", metavar="LANG", default=None,
+                      help="write your corrected voice recordings (SPEECH_DATASET) for scripts/finetune_whisper.py")
     mode.add_argument("--model-roles", action="store_true",
                       help="which installed model for which job (facts + your benchmarks); add --apply to save")
     mode.add_argument("--compare-models", nargs="?", const="", metavar="MODELS",
@@ -898,6 +900,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stats-child", action="store_true", help=argparse.SUPPRESS)  # the dashboard's process lister
     parser.add_argument("--capabilities", action="store_true",
                         help="print what works offline / on the local network / with internet, and every tool's risk")
+    parser.add_argument("--reset-gl-guard", action="store_true",
+                        help="undo the automatic graphics step-down after a GPU-driver crash at start-up")
     parser.add_argument("--apply", action="store_true", help="with --model-roles: offer to save the recommendation")
     parser.add_argument("--switch", action="store_true", help="with --compare-models: make 'jarvis' from the winner")
     return parser
@@ -951,8 +955,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.export_training:
             from app.agent.self_improve import export_training
 
+            from app.tools.catalog import build_default_registry
+
             path = ctx.paths.data_dir / "exports" / "training.jsonl"
-            print(f"Wrote {export_training(ctx.database, path)} examples to {path} (redacted; for an optional fine-tune).")
+            count = export_training(ctx.database, path, registry=build_default_registry())
+            print(f"Wrote {count} examples to {path} (redacted). Optional fine-tune on a GPU PC: "
+                  f"python scripts/finetune_llm.py {path}")
+        elif args.export_speech_dataset:
+            from app.voice.speech_dataset import SpeechDataset
+
+            target = ctx.paths.data_dir / "exports" / f"speech_{args.export_speech_dataset}"
+            count = SpeechDataset(ctx.paths.data_dir).export(args.export_speech_dataset, target)
+            print(f"Exported {count} corrected recordings to {target}." if count else
+                  "Nothing to export yet: turn SPEECH_DATASET on and correct me ('no, I said ...') when I mishear.")
+            if count:
+                print(f"Next (GPU PC): python scripts/finetune_whisper.py {target}")
+        elif args.reset_gl_guard:
+            from app.ui.core3d import gl_guard
+
+            gl_guard.reset(ctx.paths.data_dir)
+            print("Graphics restored: the intro, fades, quality and the 3D core follow your settings again.")
         elif args.model_roles:
             exit_code = _model_roles(ctx, args.apply)
         elif args.compare_models is not None:

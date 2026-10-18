@@ -13,6 +13,7 @@ from __future__ import annotations
 from app.utils.timefmt import time12
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -76,6 +77,8 @@ def _pc_events() -> dict:
     return snapshot
 
 
+MAX_EVENT_RUNS_PER_HOUR = 12   # an event-started automation firing more often than this is held back (loop guard)
+
 class Scheduler:
     def __init__(
         self,
@@ -98,6 +101,8 @@ class Scheduler:
         self.events = events
         self._last_events: dict | None = None
         self._watch: dict[str, Any] = {}  # task id -> last folder listing (baseline on the first look)
+        self._fired: dict[str, deque] = {}  # task id -> when its event trigger last started it (rate cap)
+        self._capped: set[str] = set()
         self._task: asyncio.Task | None = None
         self._running: set[str] = set()
         self._started: dict[str, datetime] = {}
@@ -201,15 +206,16 @@ class Scheduler:
             if not task.enabled or task.id in self._running:
                 continue
             if isinstance(task.trigger, BatteryTrigger):
-                if self._battery_due(task):
+                if self._battery_due(task) and self._event_gate(task):
                     reports.append(await self.run(task))
                 continue
             if isinstance(task.trigger, EventTrigger) and task.trigger.event == "file_changed":
-                if self._files_due(task):
+                if self._files_due(task) and self._event_gate(task):
                     reports.append(await self.run(task))
+                    self._rebaseline(task)       # what the automation itself changed in the folder doesn't re-fire it
                 continue
             if isinstance(task.trigger, EventTrigger):
-                if happened is not None and self._event_due(task.trigger, *happened):
+                if happened is not None and self._event_due(task.trigger, *happened) and self._event_gate(task):
                     reports.append(await self.run(task))
                 continue
             if task.next_run_at and datetime.fromisoformat(task.next_run_at) <= now:
@@ -245,6 +251,43 @@ class Scheduler:
         if now is not None:
             self._watch[task.id] = now  # an unreadable folder keeps the old baseline
         return bool(filewatch.changed(before, now))
+
+    def _rebaseline(self, task: AutomationTask) -> None:
+        from app.automation import filewatch
+
+        now = filewatch.snapshot(task.trigger.value)
+        if now is not None:
+            self._watch[task.id] = now
+
+    def _event_gate(self, task: AutomationTask) -> bool:
+        """Event-started automations (files, battery, Wi-Fi, apps, USB): at most MAX_EVENT_RUNS_PER_HOUR each (a
+        trigger that keeps firing - e.g. a folder something writes to all the time - is held back and reported once),
+        and none during quiet hours when AUTOMATION_QUIET_HOURS is on. Time-scheduled ones run as you scheduled them."""
+        now = self.clock()
+        settings = getattr(getattr(self.executor, "context", None), "settings", None)
+        if settings is not None and getattr(settings, "automation_quiet_hours", False):
+            from app.core.proactive import in_quiet_hours, parse_quiet_hours
+
+            if in_quiet_hours(now, parse_quiet_hours(getattr(settings, "quiet_hours", ""))):
+                log_event(_log, "automation_quiet_hours", name=task.name)
+                return False
+        fired = self._fired.setdefault(task.id, deque())
+        while fired and (now - fired[0]).total_seconds() > 3600:
+            fired.popleft()
+        if len(fired) >= MAX_EVENT_RUNS_PER_HOUR:
+            if task.id not in self._capped:
+                self._capped.add(task.id)
+                log_event(_log, "automation_rate_capped", name=task.name, per_hour=MAX_EVENT_RUNS_PER_HOUR)
+                try:
+                    self.notify(f"Automation held back: {task.name}",
+                                f"Its trigger fired {MAX_EVENT_RUNS_PER_HOUR} times within an hour, so I stopped "
+                                "running it for now (it may be triggering itself). It runs again later; check its trigger.")
+                except Exception:
+                    pass
+            return False
+        self._capped.discard(task.id)
+        fired.append(now)
+        return True
 
     def _step_allowed(self, step: Any, previous_ok: bool | None) -> bool:
         """The step's optional condition ('when'). Unknown battery state counts as 'not on battery'."""

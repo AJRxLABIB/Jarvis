@@ -87,6 +87,7 @@ class VoiceMixin:
             self._set_state("ERROR" if result.status == "error" else self._idle_state())
             return
         self._observe_tone(result.recording.audio if result.recording is not None else None, result.text)
+        self._keep_voice(result.recording.audio if result.recording is not None else None, result.transcript)
         self.send_text(result.text, spoken=True)
 
     def _hands_free_paused(self) -> bool:
@@ -97,6 +98,9 @@ class VoiceMixin:
         """Read the question out and accept a spoken "yes"/"no" (হ্যাঁ/না). The dialog stays up too."""
         listener = self.hands_free
         if listener is None or not self.ctx.settings.voice_confirm:
+            return
+        if int(getattr(pending.request, "level", 0)) >= 3:      # CRITICAL: only a click on screen can approve it
+            self.tts.speak("This one is critical. Please answer on the screen.")
             return
         from app.agent.language import classify_answer, detect_language
 
@@ -489,5 +493,6 @@ class VoiceMixin:
                 listener.resume(follow_up=still)
             return
         self._observe_tone(result.audio, result.text)
+        self._keep_voice(result.audio, result.transcript)
         if not self.send_text(result.text, spoken=True) and listener is not None:
             listener.resume(follow_up=False)

@@ -325,3 +325,17 @@ with the flat painter-drawn core. Drag the core to inspect it; it glides back wh
   after you approve. It now also reports how the learning is going.
 * `python run.py --export-training` writes your good requests (and the answers you liked) as chat JSONL to
   data\exports\training.jsonl for an OPTIONAL fine-tune with an external trainer (needs a strong GPU; not included).
+
+## Full power (FULL_POWER=true - switched on for you)
+
+Nothing is off-limits any more. Actions that used to be refused outright (formatting or wiping drives, Windows and
+Program Files folders, deleting whole folders, ending protected system processes, system tools such as PowerShell,
+reg, diskpart, bcdedit, and changes to Jarvis's own security code through the Evolution lab) now ASK YOU instead,
+in a dialog marked CRITICAL. Rules that stay, so the power stays yours:
+* every critical action asks, every time, for that exact action - a "yes" is never reused;
+* it must be answered on the PC's screen: not by voice (Jarvis says "please answer on the screen"), not from a phone,
+  never by a standing approval or a mission plan;
+* only for requests you make at the PC (typed or spoken) - never for phone requests, automations or agents;
+* hidden instructions in web pages / emails / documents still can't approve anything (they trigger a question);
+* the emergency stop (Ctrl+Shift+F12) still stops everything; the secrets file (.env) is never changed by Jarvis;
+* switch it off any time: Settings > Security > "FULL POWER" (applies at once).

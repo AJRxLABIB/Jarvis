@@ -19,6 +19,7 @@ from app.agent.conversation import AssistantReply, ConversationManager
 from app.ai.base import ToolCall
 from app.ai.manager import AIManager, AIStatus
 from app.cli import create_tool_executor, describe_execution
+from app.config import live_fields
 from app.memory.conversations import ConversationStore
 from app.memory.settings_store import SettingsStore
 from app.security.confirmations import ConfirmationRequest
@@ -259,9 +260,9 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         self.init_proactive()  # event bus -> notification center, modes, emergency switches
         self._setting_request.connect(self._apply_setting_now)
         self.dictating = False
-        self.conversation.on_memory_suggestion = lambda facts: self.notice.emit(
-            "Worth remembering? " + "; ".join(f"\"{f}\"" for f in facts) + "  (Menu -> Memory -> Suggestions: "
-            "accept or reject. Nothing is saved until you accept.)")
+        self.conversation.on_memory_suggestion = lambda facts: self.notice.emit("Worth remembering? " + "; ".join(
+            f"\"{f}\"" for f in facts) + "  (Menu -> Memory -> Suggestions: accept or reject. Nothing is saved until you accept.)")
+        self.conversation.on_correction = self._on_correction     # SPEECH_DATASET (app/voice/speech_dataset.py)
         self._downloads_timer = QTimer(self)
         self._downloads_timer.setInterval(5 * 60 * 1000)
         self._downloads_timer.timeout.connect(self._sort_downloads)
@@ -530,6 +531,8 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         text = text.strip()
         if not text:
             return False
+        if self._live_control(text):          # stop speaking / pause the mission / explain... even while busy
+            return True
         if self._busy:
             self.notice.emit("Still working on the previous request. Press Esc to cancel it.")
             return False
@@ -538,7 +541,6 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
             self.tts.stop()
         self._busy = True
         import time as _time
-
         heard = self._timing.get("heard") if spoken else None
         voice_event = self._timing.get("voice_event") if spoken else None
         self._last_activity = _time.monotonic()
@@ -662,8 +664,7 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
 
     @Slot()
     def cancel(self) -> None:
-        """Esc: stop speaking, stop listening, cancel the running request, deny a pending question,
-        and stop a restart/shutdown countdown."""
+        """Esc: stop speaking / listening, cancel the request, deny a pending question, stop a shutdown countdown."""
         self.tts.stop()
         from app.tools.windows import cancel_pending_power
 
@@ -691,7 +692,7 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
 
     def apply_settings(self, settings, changed: set[str]) -> None:
         """Apply the settings that can change while running; the rest need a restart."""
-        if changed & {"visual_quality", "core_speed", "glow_intensity", "reduced_motion", "core_hud_rings"}:
+        if changed & live_fields.DISPLAY_FIELDS:
             self.ctx.settings = settings
             self.display_settings_changed.emit()
         if "tts_speed" in changed:

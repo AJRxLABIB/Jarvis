@@ -318,7 +318,8 @@ class JarvisArgs(ToolArgs):
                     "show_dashboard", "enroll_voice", "teach_wake_word", "train_voice", "make_jarvis_model",
                     "self_test", "speed_report", "check_updates", "phone_remote", "new_conversation", "hide_window",
                     "show_window", "setup_wizard", "hands_free_off", "mute_microphone", "close_dialog", "health_report", "use_best_model", "full_screen", "exit_full_screen", "stay_on_top", "not_on_top",
-                    "compare_models", "restart_jarvis", "window_overview", "tab_overview"] = Field(
+                    "compare_models", "restart_jarvis", "window_overview", "tab_overview", "phone_screen",
+                    "workspaces"] = Field(
                         description="What Jarvis should do")
 
 

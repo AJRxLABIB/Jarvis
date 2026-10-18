@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -255,13 +256,48 @@ class MissionStore:
         return [self.get(i) for i in ids]
 
     def unfinished(self) -> Mission | None:
-        found = self.recent(1, ("paused", "running", "planned"))
+        found = self.recent(1, ("paused", "running", "verifying", "planned"))
         return found[0] if found else None
 
     def mark_interrupted(self) -> int:
         with self._db.transaction() as conn:
             return conn.execute("UPDATE missions SET state = 'paused', note = 'interrupted (Jarvis restarted)' "
-                                "WHERE state = 'running'").rowcount
+                                "WHERE state IN ('running', 'verifying')").rowcount
+
+
+# ------------------------------------------------------------------ live control (pause / cancel a running mission)
+
+_REQUESTS: dict[str, str] = {}
+_REQUESTS_LOCK = threading.Lock()
+
+
+def request(mission_id: str, kind: str) -> None:
+    """Ask a RUNNING mission to "pause" or "cancel". It stops at the next step boundary (a step that already
+    started finishes or times out; nothing is cut off half-way), then the mission is paused / cancelled."""
+    if kind not in ("pause", "cancel"):
+        raise ValueError(kind)
+    with _REQUESTS_LOCK:
+        _REQUESTS[mission_id] = kind
+
+
+def _take_request(mission_id: str) -> str | None:
+    with _REQUESTS_LOCK:
+        return _REQUESTS.pop(mission_id, None)
+
+
+def _honour_request(mission: "Mission", store: "MissionStore", where: str) -> "Outcome | None":
+    kind = _take_request(mission.id)
+    if kind is None:
+        return None
+    if kind == "cancel":
+        store.set_state(mission, "cancelled", f"cancelled by you {where}")
+        _publish("MissionCancelled", title=mission.title)
+        return Outcome(mission, f"Cancelled '{mission.title}' {where}. Finished steps stay done "
+                                "('undo the mission' rolls them back where possible).", False)
+    note = f"paused by you {where}"
+    store.set_state(mission, "paused", note)
+    _publish("MissionPaused", title=mission.title, note=note)
+    return Outcome(mission, f"Paused '{mission.title}' {where}. Say 'continue my mission' to go on.", False)
 
 
 # ------------------------------------------------------------------ running
@@ -317,6 +353,9 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
         for step in mission.steps:
             if step.state in ("done", "skipped", "undone"):
                 continue
+            stopped = _honour_request(mission, store, f"before step {step.n} ({step.title})")
+            if stopped is not None:
+                return stopped
             from app.core import emergency
 
             if emergency.STATE.flags.get("automation_disabled"):  # the global pause: stop at the next step boundary
@@ -360,7 +399,7 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
 
                 again, wait, why = retry.should_retry(result.error, result.message or "", step.attempts,
                                                       repeatable=(level == 0))
-                if again:
+                if again and _REQUESTS.get(mission.id) is None:      # a pause / cancel request wins over a retry
                     log_event(_log, "mission_step_retry", mission=mission.id, step=step.n, error=result.error,
                               why=why)
                     await asyncio.sleep(wait)

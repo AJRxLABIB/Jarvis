@@ -89,6 +89,12 @@ class Settings(BaseModel):
     glow_intensity: float = Field(default=1.0, ge=0.3, le=2.0)
     reduced_motion: bool = False                                  # calm motion: slower core, no sway or breathing
     core_hud_rings: bool = False                                  # the flat rings / gauges / tick bezel around the core
+    core_pulses: bool = True                                      # data pulses from the core to the panel that changed
+    core_trails: bool = True                                      # sparks with fading trails circling the core
+    ui_sounds: bool = False                                       # short interface sounds (tick / attention / done / error)
+    ui_sound_volume: float = Field(default=0.5, ge=0.0, le=1.0)
+    hud_scale: float = Field(default=1.0, ge=0.75, le=1.5)        # the whole window's size (applies at the next start)
+    hidden_panels: str = ""                                       # dashboard panels to hide, comma separated titles
     taint_lockdown: bool = False  # after reading web/email/documents, the model is not even offered send/save tools
     ai_think: bool = False  # let "thinking" models reason first (slower)
     ollama_keep_alive: str = "30m"
@@ -167,6 +173,7 @@ class Settings(BaseModel):
     edge_profile: str = Field(default="last", max_length=80)
     context_window_titles: bool = True  # context engine: read the foreground window's title (never the screen)
     screen_capture_enabled: bool = False  # opt-in: allow screenshots, reading text on screen, describing it
+    speech_dataset: Literal["off", "corrections", "all"] = "off"  # keep your voice commands to train the recognizer
     screenshot_dir: Path | None = None  # empty = Pictures\\Screenshots\\<assistant name>
     screen_blocked_windows: str = Field(default=DEFAULT_BLOCKED_WINDOWS, max_length=1000)
     ocr_engine: str = "auto"  # auto | windows | tesseract
@@ -181,6 +188,9 @@ class Settings(BaseModel):
     low_battery_percent: int = Field(default=20, ge=5, le=50)
     proactive_level: Literal["off", "minimal", "normal", "active", "high"] = "normal"  # how readily Jarvis speaks up
     quiet_hours: str = "23:00-07:00"  # suggestions only go to the notification center then; empty = none
+    briefing_length: Literal["short", "normal", "full"] = "normal"   # "good morning" / brief me
+    briefing_sections: str = Field(default="", max_length=200)      # empty = all; e.g. "reminders,todos,weather"
+    automation_quiet_hours: bool = False  # event-started automations (files, battery, Wi-Fi...) wait out quiet hours
     proactive_max_per_hour: int = Field(default=4, ge=1, le=30)
     proactive_categories: str = ""  # comma list (goal, mission, project, system); empty = all
     proactive_emergency_exceptions: bool = True  # urgent security / battery alerts even when proactive is off

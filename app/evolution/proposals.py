@@ -71,8 +71,15 @@ def clean_path(path: str) -> str:
     return str(posix)
 
 
-def check_allowed(path: str) -> None:
-    if any(path == p.rstrip("/") or path.startswith(p) for p in PROTECTED):
+NEVER = (".env",)   # secrets: never part of a code change, full power or not
+
+
+def check_allowed(path: str, *, full_power: bool = False) -> None:
+    """Security-core files can be changed by a proposal only in FULL_POWER (still tested on a copy and applied only
+    after your on-screen approval); the secrets file never."""
+    if any(path == p or path.startswith(p + ".") for p in NEVER):
+        raise ToolError(f"{path} holds your secrets: it is never changed by a proposal.", "protected")
+    if not full_power and any(path == p.rstrip("/") or path.startswith(p) for p in PROTECTED):
         raise ToolError(f"{path} is part of Jarvis's security core: it can't be changed by a proposal.", "protected")
     if not path.endswith(ALLOWED_SUFFIXES):
         raise ToolError(f"{path}: only source, text and config files can be changed.", "bad_path")
@@ -116,14 +123,15 @@ def apply_edits(source: Path, edits: list[Edit]) -> dict[str, tuple[str | None, 
             for path, (old, current, crlf) in work.items()}
 
 
-def validate(source: Path, raw_edits: list[dict[str, Any]]) -> tuple[list[Edit], str, dict[str, Any]]:
+def validate(source: Path, raw_edits: list[dict[str, Any]], *, full_power: bool = False
+             ) -> tuple[list[Edit], str, dict[str, Any]]:
     """Checked edits, a risk estimate and the facts behind it. Raises ToolError for anything not allowed."""
     if not raw_edits:
         raise ToolError("A code proposal needs at least one edit.", "no_edits")
     edits = []
     for raw in raw_edits:
         path = clean_path(str(raw.get("path", "")))
-        check_allowed(path)
+        check_allowed(path, full_power=full_power)
         find, replace = str(raw.get("find", "")), str(raw.get("replace", ""))
         if len(find) + len(replace) > MAX_EDIT_CHARS:
             raise ToolError(f"The edit to {path} is too big for one proposal.", "too_big")
@@ -142,7 +150,10 @@ def validate(source: Path, raw_edits: list[dict[str, Any]]) -> tuple[list[Edit],
         raise ToolError(f"The change touches {changed} lines; at most {MAX_CHANGED_LINES} per proposal.", "too_big")
     core = any(p.startswith(("app/agent/", "app/core/", "app/memory/", "app/ai/")) for p in files)
     risk = "high" if core or changed > 80 or len(files) > 3 else "medium" if changed > 20 or len(files) > 1 else "low"
-    return edits, risk, {"files": sorted(files), "changed_lines": changed, "core": core}
+    security_core = any(any(f == p.rstrip("/") or f.startswith(p) for p in PROTECTED) for f in files)
+    if security_core:
+        risk = "critical"
+    return edits, risk, {"files": sorted(files), "changed_lines": changed, "core": core, "security_core": security_core}
 
 
 def diff_text(source: Path, edits: list[Edit]) -> str:

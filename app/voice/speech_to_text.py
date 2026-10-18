@@ -211,6 +211,7 @@ class FasterWhisperSTT(SpeechToText):
         # Words the recognizer should expect (e.g. the assistant's name). Small
         # models otherwise hear "Hey Jarvis" as "Hey, garbage".
         self.hotwords = hotwords or None
+        self.hotwords_bn: str | None = None   # Bangla words you taught it (app/voice/speech_dataset.bangla_hints)
         self._model_factory = model_factory
         self._downloaded = downloaded or ((lambda m, r: True) if model_factory is not None else _default_downloaded)
         self._downloader = downloader or _download
@@ -416,8 +417,8 @@ class FasterWhisperSTT(SpeechToText):
             vad_filter=vad,
             condition_on_previous_text=False,
             without_timestamps=True,
-            # the English hint words would pull Bangla speech towards English
-            hotwords=self.hotwords if language in (None, "en") else None,
+            # the English hint words would pull Bangla speech towards English: Bangla gets its own (your corrections)
+            hotwords=self.hotwords if language in (None, "en") else (self.hotwords_bn if language == "bn" else None),
         )
 
     def transcribe(self, audio: np.ndarray, language: str | None = None) -> Transcript:

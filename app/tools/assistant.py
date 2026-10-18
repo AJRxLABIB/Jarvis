@@ -20,7 +20,7 @@ from pydantic import Field, field_validator
 from app import __version__
 from app.security.permissions import RiskLevel
 from app.tools import winapi
-from app.tools.base import NoArgs, Tool, ToolArgs, ToolContext, ToolError, ToolResult
+from app.tools.base import Tool, ToolArgs, ToolContext, ToolError, ToolResult
 from app.utils.logging_setup import get_logger, log_event
 
 _log = get_logger("tools.assistant")
@@ -286,11 +286,59 @@ def _reminders_today(ctx: ToolContext, now: datetime) -> list[str]:
     return names[:3]
 
 
-async def daily_briefing(_: NoArgs, ctx: ToolContext) -> ToolResult:
+BRIEFING_SECTIONS = ("weather", "battery", "reminders", "todos", "goals", "meetings", "missions", "notifications",
+                     "resume")
+
+
+class BriefingArgs(ToolArgs):
+    length: Literal["", "short", "normal", "full"] = Field(
+        default="", description="short = time, reminders and to-dos only; full = everything; empty = your setting")
+    sections: str = Field(default="", max_length=200,
+                          description="only these, comma separated: " + ", ".join(BRIEFING_SECTIONS))
+
+
+def briefing_sections(length: str, sections: str, settings) -> set[str]:
+    """Which parts the briefing has: what you asked for, else BRIEFING_SECTIONS / BRIEFING_LENGTH in Settings."""
+    wanted = {s.strip().lower() for s in (sections or getattr(settings, "briefing_sections", "")).split(",") if s.strip()}
+    chosen = (wanted & set(BRIEFING_SECTIONS)) or set(BRIEFING_SECTIONS)
+    length = length or getattr(settings, "briefing_length", "normal")
+    if length == "short":
+        chosen &= {"reminders", "todos", "missions"}
+    elif length == "normal":
+        chosen -= {"notifications"} if not wanted else set()
+    return chosen
+
+
+def _missions_line(ctx: ToolContext) -> str:
+    if ctx.database is None:
+        return ""
+    try:
+        from app.core.missions import MissionStore
+
+        mission = MissionStore(ctx.database).unfinished()
+    except Exception:
+        return ""
+    return f"Unfinished mission: '{mission.title}' ({mission.state}, {mission.progress()} steps)." if mission else ""
+
+
+def _notifications_line(ctx: ToolContext) -> str:
+    if ctx.database is None:
+        return ""
+    try:
+        from app.core.notifications import NotificationCenter
+
+        unread = NotificationCenter(ctx.database).unread_count()
+    except Exception:
+        return ""
+    return f"{unread} unread notification{'s' if unread != 1 else ''}." if unread else ""
+
+
+async def daily_briefing(args: BriefingArgs, ctx: ToolContext) -> ToolResult:
     now = ctx.clock()
+    show = briefing_sections(getattr(args, "length", ""), getattr(args, "sections", ""), ctx.settings)
     parts = [_greeting(now, ctx.settings.user_address), f"It's {time12(now)} on {now:%A}, {now.day} {now:%B}."]
-    data: dict[str, Any] = {}
-    if ctx.settings.home_location:
+    data: dict[str, Any] = {"sections": sorted(show)}
+    if ctx.settings.home_location and "weather" in show:
         from app.utils import network
 
         if not network.is_offline_now(ctx.settings):
@@ -300,25 +348,25 @@ async def daily_briefing(_: NoArgs, ctx: ToolContext) -> ToolResult:
                 data["weather"] = weather.data
             except ToolError as exc:
                 log_event(_log, "briefing_weather_skipped", reason=exc.code)
-    battery = _battery_line()
+    battery = _battery_line() if "battery" in show else ""
     if battery:
         parts.append(battery)
-    reminders = _reminders_today(ctx, now)
+    reminders = _reminders_today(ctx, now) if "reminders" in show else []
     if reminders:
         parts.append("Coming up today: " + "; ".join(reminders) + ".")
     from app.tools.productivity import todo_summary
 
-    todos = todo_summary(ctx)
-    if todos:
-        parts.append(todos)
-    goals = _goals_line(ctx, now)
-    if goals:
-        parts.append(goals)
-    office = _outlook_lines(ctx)
-    parts += office
-    resume = _last_session_line(ctx, now)
-    if resume:
-        parts.append(resume)
+    for name, line in (("todos", lambda: todo_summary(ctx)), ("goals", lambda: _goals_line(ctx, now)),
+                       ("missions", lambda: _missions_line(ctx))):
+        text = line() if name in show else ""
+        if text:
+            parts.append(text)
+    if "meetings" in show:
+        parts += _outlook_lines(ctx)
+    for name, line in (("notifications", lambda: _notifications_line(ctx)), ("resume", lambda: _last_session_line(ctx, now))):
+        text = line() if name in show else ""
+        if text:
+            parts.append(text)
     return ToolResult.success(" ".join(parts), **data, reminders=reminders)
 
 
@@ -395,6 +443,7 @@ TOOLS: tuple[Tool, ...] = (
          category="info", needs_network=True, timeout=25),
     Tool("daily_briefing", "A short briefing: greeting, time and date, weather, battery, today's reminders, to-dos, "
          "meetings and unread email (Outlook), and what you worked on last time "
-         "('good morning', 'brief me', 'what's my day like').", daily_briefing, NoArgs, RiskLevel.SAFE,
+         "('good morning', 'brief me', 'what's my day like'); length short/full and sections on request.",
+         daily_briefing, BriefingArgs, RiskLevel.SAFE,
          category="info", timeout=25),
 )

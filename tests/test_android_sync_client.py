@@ -36,8 +36,11 @@ def test_the_service_is_not_exported_and_needs_the_job_permission() -> None:
 @pytest.mark.skipif(shutil.which("javac") is None or shutil.which("java") is None, reason="needs a JDK (javac)")
 def test_sync_code_compiles_against_android_stand_ins_and_its_rules_hold() -> None:
     src = ANDROID / "src/com/jarvis/mobile"
-    files = [str(src / n) for n in ("Json.java", "SyncClient.java", "AppSync.java", "SyncJob.java", "Store.java", "Pc.java")]
-    files += [str(p) for p in sorted((ANDROID / "test/stubs").rglob("*.java"))] + [str(ANDROID / "test/SyncClientTest.java")]
+    files = [str(src / n) for n in ("Json.java", "SyncClient.java", "AppSync.java", "SyncJob.java", "Store.java", "Pc.java",
+                                             "PhoneActions.java", "NotifyForward.java", "ShareActivity.java",
+                                             "LiveEvents.java")]
+    files += [str(p) for p in sorted((ANDROID / "test/android_api").rglob("*.java"))]
+    files += [str(p) for p in sorted((ANDROID / "test/stubs/com").rglob("*.java"))] + [str(ANDROID / "test/SyncClientTest.java")]
     with tempfile.TemporaryDirectory() as out:
         subprocess.run(["javac", "-d", out, *files], check=True, capture_output=True, shell=False)
         done = subprocess.run(["java", "-cp", out, "com.jarvis.mobile.SyncClientTest"], capture_output=True, text=True, shell=False)

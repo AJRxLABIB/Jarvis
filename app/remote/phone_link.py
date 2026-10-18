@@ -17,7 +17,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-ACTIONS = ("flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "show_text")
+ACTIONS = ("flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "show_text",
+           # JARVIS Mobile 1.2: apps without a name, screen sharing, and calls / SMS / contacts (a separate switch on
+           # the phone: "Allow calls and messages", plus Android's own permissions)
+           "open_gallery", "open_camera", "open_messages", "open_dialer", "share_screen",
+           "call", "end_call", "send_sms", "read_messages", "find_contact")
+COMMS = frozenset({"call", "end_call", "send_sms", "read_messages", "find_contact"})
+MAX_RESULT = 2000
+UNSUPPORTED_MARK = "this phone app doesn't know"   # what older JARVIS Mobile apps answer for a new action
+_WHO = re.compile(r"^[\w\s+().\-'\u0980-\u09FF]{1,60}$")
 EXPIRE_SECONDS = 120
 MAX_TEXT = 500
 _OTP = re.compile(r"(?<!\d)\d{4,8}(?!\d)")
@@ -58,7 +66,34 @@ def check_action(action: str, args: dict[str, Any]) -> dict[str, Any]:
         clean["text"] = text
     elif action == "ring":
         clean["seconds"] = max(3, min(int(args.get("seconds", 15) or 15), 60))
+    elif action in ("call", "send_sms"):
+        clean["number"] = _who(args.get("number", ""), "Call / text whom (a name from the phone's contacts or a number)?")
+        if action == "send_sms":
+            text = str(args.get("text", "")).strip()[:MAX_TEXT]
+            if not text:
+                raise ValueError("What should the message say?")
+            clean["text"] = text
+    elif action == "read_messages":
+        try:
+            count = int(args.get("count", 5) or 5)
+        except (TypeError, ValueError):
+            count = 5
+        clean["count"] = max(1, min(count, 10))
+        if str(args.get("from", "")).strip():
+            clean["from"] = _who(args.get("from", ""), "From whom?")
+    elif action == "find_contact":
+        clean["name"] = _who(args.get("name", ""), "Whose number?")
     return clean
+
+
+def _who(value, question: str) -> str:
+    """A contact name or a phone number - nothing else is passed to the phone."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        raise ValueError(question)
+    if not _WHO.match(text):
+        raise ValueError("That doesn't look like a name or a phone number.")
+    return text
 
 
 class PhoneLink:
@@ -85,11 +120,22 @@ class PhoneLink:
             status = "expired"
         return {"status": status, "result": row["result"]}
 
+    def cancel(self, device_id: str | None = None, command_id: int | None = None) -> int:
+        """Withdraw actions the phone hasn't taken yet (one, one phone's, or all). Once the phone has collected an
+        action ('sent') it can't be called back - that is reported, never pretended."""
+        query, params = "UPDATE phone_commands SET status = 'cancelled' WHERE status = 'pending'", []
+        if device_id is not None:
+            query, params = query + " AND device_id = ?", [*params, device_id]
+        if command_id is not None:
+            query, params = query + " AND id = ?", [*params, command_id]
+        with self.db.connect() as conn:
+            return conn.execute(query, params).rowcount
+
     def wait(self, command_id: int, seconds: float = 8.0, sleep=time.sleep) -> dict[str, Any]:
         end = time.monotonic() + seconds
         while True:
             outcome = self.outcome(command_id) or {"status": "expired", "result": ""}
-            if outcome["status"] in ("done", "failed", "expired") or time.monotonic() >= end:
+            if outcome["status"] in ("done", "failed", "expired", "cancelled", "unsupported") or time.monotonic() >= end:
                 return outcome
             sleep(0.3)
 
@@ -108,7 +154,7 @@ class PhoneLink:
     def collect(self, device_id: str, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """The phone checks in: store what it reports, hand over (and mark sent) its unexpired actions."""
         now = _iso(_now())
-        state = {k: report[k] for k in ("battery", "charging", "control", "notifications", "app_version")
+        state = {k: report[k] for k in ("battery", "charging", "control", "notifications", "comms", "app_version")
                  if isinstance(report, dict) and k in report}
         previous = {k: v for k, v in self.state(device_id).items() if k != "seen"}
         state = {**previous, **state}                     # a bare check-in keeps what the phone said last time
@@ -124,9 +170,11 @@ class PhoneLink:
                 conn.execute(f"UPDATE phone_commands SET status = 'sent' WHERE id IN ({','.join('?' * len(ids))})", ids)
         return [{"id": r["id"], "action": r["action"], "args": json.loads(r["args"])} for r in rows]
 
-    def report(self, device_id: str, command_id: int, ok: bool, message: str = "") -> bool:
+    def report(self, device_id: str, command_id: int, ok: bool, message: str = "", unsupported: bool = False) -> bool:
+        """The phone's answer: done / failed / unsupported (its app doesn't know the action - an older version)."""
+        status = "done" if ok else ("unsupported" if unsupported or str(message).startswith(UNSUPPORTED_MARK) else "failed")
         with self.db.connect() as conn:
             changed = conn.execute("UPDATE phone_commands SET status = ?, result = ? WHERE id = ? AND device_id = ? AND "
-                                   "status = 'sent'", ("done" if ok else "failed", str(message)[:300], command_id,
+                                   "status = 'sent'", (status, str(message)[:MAX_RESULT], command_id,
                                                        device_id)).rowcount
         return changed > 0                                # only its own, only once (no replays, no other phone's)

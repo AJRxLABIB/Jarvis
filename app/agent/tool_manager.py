@@ -150,6 +150,23 @@ def _validation_summary(error: ValidationError) -> str:
     return "; ".join(parts)
 
 
+@dataclass
+class _Gate:
+    """What ToolExecutor._gate decided for one call (internal)."""
+
+    decision: Decision | None = None
+    level: RiskLevel | None = None
+    result: ToolResult | None = None          # set: the call ends with this result
+    run: Any = None                           # the current request (app.core.runs), if any
+    once_key: str | None = None
+    taint_reason: str | None = None
+    strict: bool = False                      # autonomy: everything that changes something asks
+
+    def end(self, result: ToolResult) -> "_Gate":
+        self.result = result
+        return self
+
+
 class ToolExecutor:
     def __init__(
         self,
@@ -219,7 +236,16 @@ class ToolExecutor:
         """Run one tool call through every check. ``user_command`` = the call was matched directly from
         the user's own words (a direct command), not chosen by the model. ``preapproved`` = a mission step the
         user approved as part of an exact plan (app/core/missions.py): MODERATE steps then don't ask again;
-        DANGEROUS ones still do, CRITICAL stays blocked."""
+        DANGEROUS ones still do, CRITICAL stays blocked.
+
+        The phases, in this order (each can end the call with a result; nothing runs unless all pass):
+        1. ``_prepare``  - the tool exists, the arguments are well-formed / repaired, its own precheck;
+        2. offline check - network tools refuse while offline;
+        3. ``_gate``     - permission level, agent contract, once-per-run, prompt-injection taint, emergency stop /
+                           modes, rate limit, FULL_POWER, block, autonomy, then the reasons a confirmation may be
+                           skipped (your direct command, an approved plan, a standing approval);
+        4. ``_ask``      - the confirmation, when one is still needed;
+        5. ``_run_checked`` - run with a timeout, verify, record undo / taint / once-per-run."""
         started = time.perf_counter()
 
         def done(result: ToolResult, level: RiskLevel | None = None, decision: Decision | None = None) -> ToolExecution:
@@ -236,43 +262,10 @@ class ToolExecutor:
             )
             return ToolExecution(call, result, level, decision, elapsed)
 
-        tool = self.registry.get(call.name)
-        if tool is None:
-            import difflib
-
-            all_names = [t.name for t in self.registry.tools]
-            close = difflib.get_close_matches(str(call.name), all_names, n=3, cutoff=0.6)
-            hint = f" Did you mean: {', '.join(close)}?" if close else f" Available: {', '.join(all_names) or 'none'}."
-            return done(ToolResult.failure("unknown_tool", f"There is no tool named '{call.name}'.{hint}"))
-        if call.parse_error:
-            return done(ToolResult.failure("invalid_arguments", f"The arguments were malformed: {call.parse_error}."))
-        try:
-            too_big = len(json.dumps(call.arguments, default=str)) > MAX_ARGUMENT_CHARS
-        except (TypeError, ValueError):
-            too_big = True
-        if too_big:
-            return done(ToolResult.failure("invalid_arguments", "The tool was NOT run: its arguments are far too large "
-                                           "or not plain data. Send smaller, simpler arguments."))
-        try:
-            args = tool.args_model.model_validate(dict(call.arguments))
-        except ValidationError as exc:
-            repaired = _repair(tool, call, exc, self.context)
-            if repaired is None:
-                return done(ToolResult.failure(
-                    "invalid_arguments",
-                    f"The tool was NOT run because of invalid arguments ({_validation_summary(exc)}). "
-                    "Correct the arguments and call the tool again.",
-                ))
-            call, args = repaired
-
-        if tool.precheck is not None:
-            try:
-                tool.precheck(args, self.context)
-            except ToolError as exc:
-                return done(ToolResult.failure(exc.code, str(exc)))
-            except Exception:
-                _log.exception("precheck of %s crashed", tool.name)
-                return done(ToolResult.failure("internal", "The request could not be checked, so nothing was done."))
+        prepared = self._prepare(call)
+        if isinstance(prepared, ToolResult):
+            return done(prepared)
+        tool, call, args = prepared
 
         if tool.needs_network:
             from app.utils import network
@@ -281,11 +274,68 @@ class ToolExecutor:
             if reason is not None:
                 return done(ToolResult.failure("offline", reason))
 
+        gate = self._gate(tool, call, args, user_command=user_command, preapproved=preapproved)
+        if gate.result is not None:
+            return done(gate.result, gate.level, gate.decision)
+        if gate.decision == Decision.CONFIRM:
+            refused = await self._ask(tool, call, args, gate)
+            if refused is not None:
+                return done(refused, gate.level, gate.decision)
+        outcome = await self._run_checked(tool, call, args, gate)
+        return done(outcome, gate.level, gate.decision)
+
+    def _prepare(self, call: ToolCall):
+        """(tool, call, args) ready to check, or the ToolResult that ends the call (unknown / malformed / precheck)."""
+        tool = self.registry.get(call.name)
+        if tool is None:
+            import difflib
+
+            all_names = [t.name for t in self.registry.tools]
+            close = difflib.get_close_matches(str(call.name), all_names, n=3, cutoff=0.6)
+            hint = f" Did you mean: {', '.join(close)}?" if close else f" Available: {', '.join(all_names) or 'none'}."
+            return ToolResult.failure("unknown_tool", f"There is no tool named '{call.name}'.{hint}")
+        if call.parse_error:
+            return ToolResult.failure("invalid_arguments", f"The arguments were malformed: {call.parse_error}.")
         try:
-            decision, level = self.permissions.decide(tool.name, tool.level_for(args, self.context))
+            too_big = len(json.dumps(call.arguments, default=str)) > MAX_ARGUMENT_CHARS
+        except (TypeError, ValueError):
+            too_big = True
+        if too_big:
+            return ToolResult.failure("invalid_arguments", "The tool was NOT run: its arguments are far too large "
+                                      "or not plain data. Send smaller, simpler arguments.")
+        try:
+            args = tool.args_model.model_validate(dict(call.arguments))
+        except ValidationError as exc:
+            repaired = _repair(tool, call, exc, self.context)
+            if repaired is None:
+                return ToolResult.failure(
+                    "invalid_arguments",
+                    f"The tool was NOT run because of invalid arguments ({_validation_summary(exc)}). "
+                    "Correct the arguments and call the tool again.",
+                )
+            call, args = repaired
+
+        if tool.precheck is not None:
+            try:
+                tool.precheck(args, self.context)
+            except ToolError as exc:
+                return ToolResult.failure(exc.code, str(exc))
+            except Exception:
+                _log.exception("precheck of %s crashed", tool.name)
+                return ToolResult.failure("internal", "The request could not be checked, so nothing was done.")
+        return tool, call, args
+
+    def _gate(self, tool: Tool, call: ToolCall, args, *, user_command: bool, preapproved: bool) -> "_Gate":
+        """Every policy decision before anything runs. ``gate.result`` set = the call ends here."""
+        gate = _Gate()
+        try:
+            gate.decision, gate.level = self.permissions.decide(tool.name, tool.level_for(args, self.context))
         except Exception:
             _log.exception("permission evaluation failed")
-            return done(ToolResult.failure("permission_error", "The permission check failed, so nothing was done."))
+            gate.result = ToolResult.failure("permission_error", "The permission check failed, so nothing was done.")
+            gate.level = gate.decision = None
+            return gate
+        level = gate.level
 
         contract = getattr(self.context, "agent_contract", None)
         if contract is not None:
@@ -293,33 +343,31 @@ class ToolExecutor:
             if not ok_contract:
                 self._audit("agent_contract_denied", call, level=int(level), decision="blocked",
                             details={"agent": contract.name, "reason": why})
-                return done(ToolResult.failure("agent_not_allowed",
-                            f"Not done: {why}. Do it yourself or give the task to a different agent."), level, decision)
+                return gate.end(ToolResult.failure("agent_not_allowed",
+                                f"Not done: {why}. Do it yourself or give the task to a different agent."))
 
         from app.core import runs
         from app.security.taint import egress_reason
 
-        run = runs.current()
-        once_key = None
+        run = gate.run = runs.current()
         if run is not None and tool.name in ONCE_PER_RUN_TOOLS:
-            once_key = tool.name + json.dumps(args.model_dump(mode="json"), sort_keys=True, default=str)
-            earlier = run.completed.get(once_key)
+            gate.once_key = tool.name + json.dumps(args.model_dump(mode="json"), sort_keys=True, default=str)
+            earlier = run.completed.get(gate.once_key)
             if earlier is not None:
                 self._audit("duplicate_call_skipped", call, level=int(level), decision="not_repeated")
-                return done(ToolResult.success(f"Already done earlier in this request, so I did not do it again: {earlier}",
-                                               duplicate=True), level, decision)
-        taint_reason = None
+                return gate.end(ToolResult.success(
+                    f"Already done earlier in this request, so I did not do it again: {earlier}", duplicate=True))
         if run is not None and not user_command:
             # prompt-injection defence: after reading untrusted text, what the MODEL sends out asks first
-            taint_reason = egress_reason(tool.name, args.model_dump(), run.taint, set(run.user_words), tool.category)
-            if taint_reason is None:
+            gate.taint_reason = egress_reason(tool.name, args.model_dump(), run.taint, set(run.user_words), tool.category)
+            if gate.taint_reason is None:
                 from app.security.taint import persistence_reason
 
-                taint_reason = persistence_reason(tool.name, run.taint)
-            if taint_reason is not None and decision == Decision.ALLOW:
-                decision = Decision.CONFIRM
+                gate.taint_reason = persistence_reason(tool.name, run.taint)
+            if gate.taint_reason is not None and gate.decision == Decision.ALLOW:
+                gate.decision = Decision.CONFIRM
                 self._audit("taint_confirmation", call, level=int(level), decision="confirm",
-                            details={"reason": taint_reason})
+                            details={"reason": gate.taint_reason})
 
         from app.core import emergency, modes
         from app.security.taint import is_egress
@@ -329,104 +377,122 @@ class ToolExecutor:
         if stop is None and not modes.STATE.current.capture and tool.name in CAPTURE_TOOLS:
             stop = f"{modes.STATE.current.name.capitalize()} mode: no screen capture. Say 'normal mode' to allow it."
         if stop is not None:
-            return done(ToolResult.failure("blocked", stop), level, decision)
+            return gate.end(ToolResult.failure("blocked", stop))
         if not self.rate_limiter.allow(level):
-            return done(
-                ToolResult.failure("rate_limited", "Too many actions in a short time, so this one was not done. Wait a moment."),
-                level, decision,
-            )
-        if decision == Decision.BLOCK and level == RiskLevel.CRITICAL and self._full_power_allows():
+            return gate.end(ToolResult.failure(
+                "rate_limited", "Too many actions in a short time, so this one was not done. Wait a moment."))
+        if gate.decision == Decision.BLOCK and level == RiskLevel.CRITICAL and self._full_power_allows():
             # FULL_POWER: nothing is off-limits, but a critical action always asks you - on screen, for this exact
             # call (no voice "yes", no phone, no standing approval, no direct-command shortcut, no automation)
-            decision = Decision.CONFIRM
+            gate.decision = Decision.CONFIRM
             self._audit("critical_needs_you", call, level=int(level), decision="full_power")
-        if decision == Decision.BLOCK:
-            return done(
-                ToolResult.failure("blocked", "Not done: this action is blocked by the permission settings."
-                                   + (" (FULL_POWER is off - Settings > Security.)" if level == RiskLevel.CRITICAL
-                                      and not getattr(self.context.settings, "full_power", False) else "")),
-                level, decision,
-            )
+        if gate.decision == Decision.BLOCK:
+            return gate.end(ToolResult.failure(
+                "blocked", "Not done: this action is blocked by the permission settings."
+                + (" (FULL_POWER is off - Settings > Security.)" if level == RiskLevel.CRITICAL
+                   and not getattr(self.context.settings, "full_power", False) else "")))
+        if self._autonomy(tool, call, args, gate):
+            return gate
+        self._skip_confirmation_when_allowed(tool, call, args, gate, user_command=user_command, preapproved=preapproved)
+        return gate
+
+    def _autonomy(self, tool: Tool, call: ToolCall, args, gate: "_Gate") -> bool:
+        """AUTONOMY (stricter for phone requests): may refuse (True = the call ends) or make it ask."""
         from app.security import autonomy
 
         settings = self.context.settings
         autonomy_level = autonomy.normalise(getattr(settings, "autonomy", "routine"))
-        from app.core import runs as _runs
-
-        current_run = _runs.current()
-        if current_run is not None and current_run.source == "phone":       # a phone request: the stricter level
+        if gate.run is not None and gate.run.source == "phone":       # a phone request: the stricter level
             autonomy_level = autonomy.stricter(autonomy_level, getattr(settings, "autonomy_remote", "routine"))
         refusal = autonomy.blocked_in(autonomy_level, tool.name, args.model_dump(), tool.category,
                                       autonomy.categories(getattr(settings, "autonomy_block_categories", "")))
         if refusal is not None:
-            self._audit("autonomy_blocked", call, level=int(level), decision="blocked", details={"mode": autonomy_level})
+            self._audit("autonomy_blocked", call, level=int(gate.level), decision="blocked",
+                        details={"mode": autonomy_level})
             code = "suggest_mode" if autonomy_level == "suggest" and refusal.startswith("Suggested") else "observe_mode"
-            return done(ToolResult.failure(code, refusal), level, Decision.BLOCK)
-        strict = autonomy.must_ask(autonomy_level, tool.name, args.model_dump(), tool.category,
-                                   autonomy.categories(getattr(settings, "autonomy_ask_categories", "")))
-        if strict and decision == Decision.ALLOW:
-            decision = Decision.CONFIRM                  # approval mode: everything that changes something asks
-        if (decision == Decision.CONFIRM and user_command and level < RiskLevel.CRITICAL and not strict
+            gate.end(ToolResult.failure(code, refusal))
+            gate.decision = Decision.BLOCK
+            return True
+        gate.strict = autonomy.must_ask(autonomy_level, tool.name, args.model_dump(), tool.category,
+                                        autonomy.categories(getattr(settings, "autonomy_ask_categories", "")))
+        if gate.strict and gate.decision == Decision.ALLOW:
+            gate.decision = Decision.CONFIRM                  # approval mode: everything that changes something asks
+        return False
+
+    def _skip_confirmation_when_allowed(self, tool: Tool, call: ToolCall, args, gate: "_Gate", *, user_command: bool,
+                                        preapproved: bool) -> None:
+        """A confirmation is skipped only for: your own direct command (non-critical, the tool allows it), a MODERATE
+        step of a plan you approved, or a MODERATE call covered by a standing approval - never under strict
+        autonomy, never after untrusted text for standing approvals, never for CRITICAL."""
+        level, strict = gate.level, gate.strict
+        if (gate.decision == Decision.CONFIRM and user_command and level < RiskLevel.CRITICAL and not strict
                 and tool.direct_without_confirmation is not None and tool.direct_without_confirmation(args, self.context)):
             self._audit("confirmation_skipped", call, level=int(level), decision="user_command")
-            decision = Decision.ALLOW
-        if decision == Decision.CONFIRM and preapproved and level == RiskLevel.MODERATE and not strict:
+            gate.decision = Decision.ALLOW
+        if gate.decision == Decision.CONFIRM and preapproved and level == RiskLevel.MODERATE and not strict:
             self._audit("confirmation_preapproved", call, level=int(level), decision="approved_plan")
-            decision = Decision.ALLOW
-        if decision == Decision.CONFIRM and level == RiskLevel.MODERATE and taint_reason is None and not strict:
+            gate.decision = Decision.ALLOW
+        if gate.decision == Decision.CONFIRM and level == RiskLevel.MODERATE and gate.taint_reason is None and not strict:
             grant = self._standing_grant(tool, args)
             if grant is not None:
                 self._audit("confirmation_skipped", call, level=int(level), decision="standing_approval",
                             details={"grant": grant.id})
-                decision = Decision.ALLOW
-        if decision == Decision.CONFIRM:
-            summary = tool.confirmation_text(args, self.context)
-            if taint_reason is not None:
-                summary = f"{summary} (I'm asking because {taint_reason}.)"
-            request = ConfirmationRequest(tool.name, level, summary, args.model_dump())
-            self._audit("confirmation_requested", call, level=int(level), decision="confirm")
+                gate.decision = Decision.ALLOW
+
+    async def _ask(self, tool: Tool, call: ToolCall, args, gate: "_Gate") -> ToolResult | None:
+        """Ask the user. None = approved; else the result that ends the call."""
+        level, taint_reason = gate.level, gate.taint_reason
+        summary = tool.confirmation_text(args, self.context)
+        if taint_reason is not None:
+            summary = f"{summary} (I'm asking because {taint_reason}.)"
+        if level == RiskLevel.CRITICAL:
+            summary = f"CRITICAL (normally refused - full power is on): {summary}"
+        request = ConfirmationRequest(tool.name, level, summary, args.model_dump())
+        self._audit("confirmation_requested", call, level=int(level), decision="confirm")
+        try:
+            approved = await asyncio.wait_for(self.confirmer.confirm(request), self.confirm_timeout)
+        except asyncio.TimeoutError:
+            approved = False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("confirmation failed")
+            approved = False
+        self._audit("confirmation_answered", call, level=int(level), decision="approved" if approved else "denied")
+        if approved:
+            return None
+        if taint_reason is not None:  # the user stopped something outside text was steering towards
+            from app.core import events
+
             try:
-                approved = await asyncio.wait_for(self.confirmer.confirm(request), self.confirm_timeout)
-            except asyncio.TimeoutError:
-                approved = False
-            except asyncio.CancelledError:
-                raise
+                events.BUS.publish(events.SECURITY_EVENT, priority="normal",
+                                   message=f"You refused '{tool.name}' after I had read outside text ({taint_reason}).")
             except Exception:
-                _log.exception("confirmation failed")
-                approved = False
-            self._audit("confirmation_answered", call, level=int(level), decision="approved" if approved else "denied")
-            if not approved:
-                if taint_reason is not None:  # the user stopped something outside text was steering towards
-                    from app.core import events
+                pass
+        return ToolResult.failure("declined", "Cancelled: the user said no, so nothing was done.")
 
-                    try:
-                        events.BUS.publish(events.SECURITY_EVENT, priority="normal",
-                                           message=f"You refused '{tool.name}' after I had read outside text ({taint_reason}).")
-                    except Exception:
-                        pass
-                return done(
-                    ToolResult.failure("declined", "Cancelled: the user said no, so nothing was done."), level, decision
-                )
-
+    async def _run_checked(self, tool: Tool, call: ToolCall, args, gate: "_Gate") -> ToolResult:
+        """Run it (timeout, errors contained), verify, then record undo / once-per-run / taint."""
+        run = gate.run
         if run is not None:
-            run.confirmed_after_untrusted = taint_reason is not None  # the handler records it (memory provenance)
+            run.confirmed_after_untrusted = gate.taint_reason is not None  # the handler records it (memory provenance)
         try:
             outcome = await asyncio.wait_for(self._run(tool, args), tool.timeout)
         except asyncio.TimeoutError:
-            return done(ToolResult.failure("timeout", f"'{tool.name}' took too long and was stopped."), level, decision)
+            return ToolResult.failure("timeout", f"'{tool.name}' took too long and was stopped.")
         except ToolError as exc:
-            return done(ToolResult.failure(exc.code, str(exc), **getattr(exc, "data", {})), level, decision)
+            return ToolResult.failure(exc.code, str(exc), **getattr(exc, "data", {}))
         except asyncio.CancelledError:
             raise
         except Exception:
             _log.exception("tool %s crashed", tool.name, extra={"event": "tool_crashed"})
-            return done(ToolResult.failure("internal", "The action failed unexpectedly. The details are in the log."), level, decision)
+            return ToolResult.failure("internal", "The action failed unexpectedly. The details are in the log.")
         if outcome.ok and tool.verify is not None:
             outcome = await self._verify(tool, args, outcome, call)
         if outcome.ok:
             self._record_undo(call, outcome, run)
-            if run is not None and once_key is not None:
-                run.completed[once_key] = outcome.message[:200]
+            if run is not None and gate.once_key is not None:
+                run.completed[gate.once_key] = outcome.message[:200]
         if run is not None:
             run.tools.append(tool.name)
             if run.taint is not None and outcome.ok:
@@ -434,7 +500,7 @@ class ToolExecutor:
                     run.taint.absorb(tool.name, outcome.to_model_text())
                 except Exception:
                     _log.warning("taint tracking failed", exc_info=True)
-        return done(outcome, level, decision)
+        return outcome
 
     async def _verify(self, tool: Tool, args: Any, outcome: ToolResult, call: ToolCall) -> ToolResult:
         """The verification contract: the tool's own check of the real world after it said "done"."""

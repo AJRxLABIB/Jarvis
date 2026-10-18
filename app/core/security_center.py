@@ -60,8 +60,33 @@ def _settings_section(settings) -> Section:
     return sec
 
 
-def collect(database, settings, *, days: int = 7) -> list[Section]:
-    sections: list[Section] = []
+def live_section(live: dict) -> Section:
+    """What is switched on RIGHT NOW (from the running window, not from settings): listening, capture, sharing,
+    remote access, waiting approvals. Anything that sees or hears you is a 'note', so it stands out."""
+    sec = Section("Right now")
+    if live.get("mic_muted"):
+        sec.items.append(Item("microphone: muted - nothing listens, not even the wake word", "ok"))
+    else:
+        sec.items.append(Item("microphone: " + ("listening for the wake word (hands-free)" if live.get("hands_free")
+                                                else "only when you press Talk"), "note" if live.get("hands_free") else "ok"))
+    if live.get("recording"):
+        sec.items.append(Item("microphone: recording your command now", "note"))
+    sec.items.append(Item(f"screen capture: {'allowed' if live.get('screen_capture') else 'off'}",
+                          "note" if live.get("screen_capture") else "ok"))
+    for phone in live.get("sharing_phones", []):
+        sec.items.append(Item(f"phone screen: {phone} is sharing its screen with this PC", "note"))
+    if live.get("remote"):
+        sec.items.append(Item(f"phone remote: listening on the home network ({live['remote']})", "note"))
+    pending = live.get("pending_approval")
+    sec.items.append(Item(f"waiting for your approval: {pending}" if pending else "no approval is waiting",
+                          "warn" if pending else "ok"))
+    if live.get("mode"):
+        sec.items.append(Item(f"mode: {live['mode']}", "ok"))
+    return sec
+
+
+def collect(database, settings, *, days: int = 7, live: dict | None = None) -> list[Section]:
+    sections: list[Section] = [live_section(live)] if live else []
 
     log = Section("Activity log")
     try:

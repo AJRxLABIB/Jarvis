@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -37,6 +38,9 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
     from app.ui.app_icon import app_icon, set_app_id
 
     set_app_id()                      # its own taskbar button with the Jarvis logo (not Python's icon and name)
+    scale = float(getattr(ctx.settings, "hud_scale", 1.0) or 1.0)
+    if abs(scale - 1.0) > 0.01 and "QT_SCALE_FACTOR" not in os.environ:
+        os.environ["QT_SCALE_FACTOR"] = f"{scale:.2f}"     # HUD_SCALE: the whole window, read once by Qt at start
     app = QApplication.instance() or QApplication(argv or sys.argv[:1])
     app.setApplicationName(__app_name__)
     app.setQuitOnLastWindowClosed(False)  # keeps running in the tray
@@ -61,6 +65,14 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
     from app.ui import motion
 
     motion.set_enabled(getattr(ctx.settings, "animations", True))
+    from app.ui.core3d import gl_guard
+
+    # a native GPU-driver crash right after the window appeared last time? step down for this run (gl_guard.py)
+    gl_strikes = gl_guard.decide(ctx.paths.data_dir, (ctx.paths.data_dir / crash.MARKER).exists())
+    gl_changes = gl_guard.overrides(gl_strikes, ctx.settings)
+    if gl_changes:
+        ctx.settings = ctx.settings.model_copy(update=gl_changes)
+        log_event(_log, "gl_guard_step_down", strikes=gl_strikes, changes=sorted(gl_changes))
     minimized = ctx.settings.start_minimized or "--minimized" in (argv or sys.argv)
     launcher = None
     if not minimized and getattr(ctx.settings, "intro_animation", True) and motion.ENABLED:
@@ -74,6 +86,9 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
     crash_report = crash.start(ctx)
     controller = AssistantController(ctx)
     window = MainWindow(controller, ctx.settings.monitor_interval)
+    if gl_changes:
+        window.chat.add_message("notice", gl_guard.notice(gl_strikes, gl_changes))
+    _watch_gl(window, ctx, full_settings=not gl_changes)
     if crash_report is not None:
         window.chat.add_message("notice", f"Jarvis didn't close normally last time. A crash report (private data "
                                           f"removed) was saved to {crash_report}.")
@@ -137,8 +152,8 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
             launcher.send(states, ready=loaded or _time.monotonic() - built > 8.0)
             if launcher.finale_reached:
                 feeder.stop()
+                launcher.close()          # the intro's top-most window goes first, then the GL window appears
                 window.show_start(full_screen)
-                launcher.close()
                 log_event(_log, "intro_finished")
 
         feeder = QTimer(window)
@@ -194,6 +209,35 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
         tray.tray.hide()
         crash.stop(ctx)
         lock.unlock()
+
+
+def _watch_gl(window, ctx, *, full_settings: bool) -> None:
+    """Record "window shown" -> "GL stable" for the start-up crash guard (app/ui/core3d/gl_guard.py)."""
+    from PySide6.QtCore import QObject, QEvent
+
+    from app.ui.core3d import gl_guard
+
+    orb = getattr(window, "orb", None)
+    if orb is None or not hasattr(orb, "gl_stable"):
+        return                                            # painter core: nothing to guard
+    data = ctx.paths.data_dir
+
+    class _FirstShow(QObject):
+        def eventFilter(self, obj, event):  # noqa: N802
+            if event.type() == QEvent.Type.Show:
+                gl_guard.mark(data, gl_guard.SHOWING)
+                log_event(_log, "window_shown")
+                obj.removeEventFilter(self)
+            return False
+
+    window._gl_show_filter = _FirstShow(window)
+    window.installEventFilter(window._gl_show_filter)
+
+    def stable() -> None:
+        gl_guard.mark(data, gl_guard.STABLE, full_settings=full_settings)
+        log_event(_log, "gl_stable", frames=orb.frames)
+
+    orb.gl_stable.connect(stable)
 
 
 def intro_status_lines(ctx, controller):

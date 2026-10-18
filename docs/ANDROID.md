@@ -109,6 +109,29 @@ refuses all its future requests and ends its sessions immediately; a revoked key
 The app holds a list of PCs; pick one to control. Each reports its own capabilities, and the app only shows
 controls that PC actually has (no Wake button when Wake-on-LAN isn't set up, no screen when capture is off, etc.).
 
+## 1.1.0: instant updates and screen sharing
+
+* **Instant updates (no Firebase):** while the app is open it keeps one signed `wait_events` request open; the PC
+  answers the moment a message or approval question arrives (or after ~20 s). Normal polling remains as a fallback.
+  In the background Android's job scheduler still decides when the app checks.
+* **Share screen with PC** (PC <-> phone card): Android asks every time; a notification stays while sharing; ~3 small
+  JPEG frames a second go to the PC (`/api/mobile/frame`, signed, memory only). On the PC: MENU > Phone screen.
+* **Tapping from the PC** needs two switches on the phone: Settings > Accessibility > *JARVIS control*, and
+  *Allow the PC to tap* in the app. Without them the PC can only look. Stop works from the phone, the PC viewer and
+  the PC's emergency stop.
+* Checking the code without the SDK: `sh test/compile_all.sh` compiles every source against compile-only stand-ins
+  (`test/android_api`, regenerate with `python test/make_android_api.py test/android_api`). The real build is still
+  `packaging\build_android.ps1`.
+
+## 1.2.0: calls, messages, staying connected
+
+* Control > "Allow calls and messages" (asks Android for Phone, SMS and Contacts): the PC can call a contact or number,
+  end a call, send an SMS, read your latest SMS (one-time codes hidden), look up a contact, open the gallery, camera,
+  messages or dialer. The PC asks you on its screen before every call and SMS. Service codes (* #) are refused.
+* Control > "Stay connected in the background": a notification stays while the PC can reach the phone; requests run
+  within ~3 s. For apps and calls to open while JARVIS Mobile is closed, also turn on "JARVIS control" (Accessibility).
+* The PC's phone-screen window can "Ask the phone to share": the phone shows Android's "Start now?" - you tap it.
+
 ## Known limitations (honest)
 
 * **No lock-screen bypass exists** and none is attempted. Remote Desktop signs you into your session remotely (the

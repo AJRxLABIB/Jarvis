@@ -212,6 +212,18 @@ class TTSManager:
         peak = max(recent) if recent else 0.0
         return 20 * math.log10(peak) if peak > 1e-5 else -100.0
 
+    def speech_level(self) -> float | None:
+        """Loudness of the voice playing right now, 0..1 (for the core's speaking animation). None when the player
+        doesn't report levels or nothing was reported in the last 0.25 s (the core then uses its own cadence)."""
+        if not self._player_reports_levels:
+            return None
+        now = time.monotonic()
+        recent = [rms for at, rms in list(self._levels) if now - at <= 0.25]
+        if not recent:
+            return None
+        db = 20 * math.log10(recent[-1]) if recent[-1] > 1e-5 else -100.0
+        return max(0.0, min(1.0, (db + 48.0) / 40.0))
+
     def hold(self) -> bool:
         """You started talking: stop the sound at once, keep the unspoken rest (current sentence included)."""
         with self._state_lock:

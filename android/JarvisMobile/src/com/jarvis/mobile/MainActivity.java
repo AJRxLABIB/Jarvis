@@ -35,8 +35,9 @@ import java.util.Map;
  *     Windows password, and never claims Windows is unlocked when it isn't.
  */
 public class MainActivity extends Activity {
-    static final String APP_VERSION = "1.0.0";
-    private static final int REQ_VOICE = 1, REQ_AUTH = 2;
+    static final String APP_VERSION = "1.2.0";
+    static final String EXTRA_START_SHARE = "com.jarvis.mobile.START_SHARE";   // the PC asked to start sharing
+    private static final int REQ_VOICE = 1, REQ_AUTH = 2, REQ_SHARE = 3;
 
     private Store store;
     private Actions actions;
@@ -54,6 +55,9 @@ public class MainActivity extends Activity {
     private Map<String, Object> pendingApproval;
     private boolean wakeFetchTried = false;
     private int phoneTicks = 0;
+    private final LiveEvents live = new LiveEvents();   // instant messages / approvals while the app is open
+    private volatile long liveSince = 0;                // what the PC has already told us (read by the live thread)
+    private volatile String livePendingId = "";
 
     private final Runnable poller = new Runnable() {
         @Override public void run() {
@@ -80,17 +84,25 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (PhoneActions.stayConnected(this) && !LinkService.running()) LinkService.start(this);
+        startLive();
         ui.post(poller);
     }
 
     @Override protected void onPause() {
         super.onPause();
+        live.stop();
         ui.removeCallbacks(poller);
     }
 
     // ------------------------------------------------------------------ deep links (pairing / wake setup)
 
     private void handleIntent(Intent intent) {
+        if (intent != null && intent.getBooleanExtra(EXTRA_START_SHARE, false) && !ScreenShareService.sharing()) {
+            intent.removeExtra(EXTRA_START_SHARE);
+            askToShare();                                   // Android still shows its own "Start now?" - you decide
+            return;
+        }
         Uri data = intent == null ? null : intent.getData();
         if (data == null) return;
         if (Pairing.isPairLink(data)) {
@@ -343,7 +355,7 @@ public class MainActivity extends Activity {
             card.addView(Ui.text(this, "Control key: " + (pc.authKeyRegistered ? "set" : "not set up"), 12,
                     pc.authKeyRegistered ? Ui.GREEN : Ui.GOLD));
             Button select = Ui.button(this, "Use this computer", Ui.PANEL);
-            select.setOnClickListener(v -> { store.setCurrentId(pc.id); screen = "home"; render(); });
+            select.setOnClickListener(v -> { store.setCurrentId(pc.id); screen = "home"; startLive(); render(); });
             card.addView(select);
             Button remove = Ui.button(this, "Remove", Ui.PANEL);
             remove.setOnClickListener(v -> confirm("Remove " + pc.name + "?",
@@ -491,7 +503,7 @@ public class MainActivity extends Activity {
         awayCard.addView(Ui.text(this, away ? "Using the away address (Tailscale)" : "Using the home network", 13,
                 Ui.DIM));
         Button toggle = Ui.button(this, away ? "Use home network" : "Use away address (Tailscale)", Ui.PANEL);
-        toggle.setOnClickListener(v -> { away = !away; render(); });
+        toggle.setOnClickListener(v -> { away = !away; startLive(); render(); });
         awayCard.addView(toggle);
         content.addView(awayCard);
     }
@@ -524,6 +536,79 @@ public class MainActivity extends Activity {
         card.addView(access);
         card.addView(Ui.text(this, "Codes that look like one-time passwords are removed before anything is sent. "
                 + "Share > JARVIS Mobile sends text or a link to the PC.", 12, Ui.DIM));
+        content.addView(card);
+        renderComms();
+        renderScreenShare();
+    }
+
+    private void askToShare() {
+        if (store.current() == null) { toast("Pair a computer first."); return; }
+        android.media.projection.MediaProjectionManager mpm = (android.media.projection.MediaProjectionManager)
+                getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        startActivityForResult(mpm.createScreenCaptureIntent(), REQ_SHARE);
+    }
+
+    private void renderComms() {
+        LinearLayout card = Ui.card(this);
+        card.addView(Ui.text(this, "Calls, messages, staying connected", 16, Ui.CYAN));
+        card.addView(Ui.text(this, "Let your PC call someone, send or read SMS, find a contact, open the gallery or camera. "
+                + "The PC asks you on its screen before every call or message. One-time codes are hidden.", 12, Ui.DIM));
+        boolean comms = PhoneActions.commsAllowed(this);
+        Button toggle = Ui.button(this, comms ? "Allow calls and messages: ON" : "Allow calls and messages: OFF",
+                comms ? Ui.CYAN : Ui.PANEL);
+        toggle.setOnClickListener(v -> {
+            boolean on = !PhoneActions.commsAllowed(this);
+            PhoneActions.setCommsAllowed(this, on);
+            if (on && android.os.Build.VERSION.SDK_INT >= 23) requestPermissions(PhoneActions.COMMS_PERMISSIONS, 4);
+            render();
+        });
+        card.addView(toggle);
+        boolean stay = LinkService.running();
+        Button link = Ui.button(this, stay ? "Stay connected in the background: ON" : "Stay connected in the background: OFF",
+                stay ? Ui.CYAN : Ui.PANEL);
+        link.setOnClickListener(v -> {
+            boolean on = !LinkService.running();
+            PhoneActions.setStayConnected(this, on);
+            if (on) {
+                if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 5);
+                LinkService.start(this);
+            } else {
+                LinkService.stop(this);
+            }
+            ui.postDelayed(this::render, 400);
+        });
+        card.addView(link);
+        card.addView(Ui.text(this, "Staying connected lets the PC reach this phone while the app is closed (a notification "
+                + "shows it). For calls and apps to open from the background, also turn on 'JARVIS control' below.", 12, Ui.DIM));
+        content.addView(card);
+    }
+
+    private void renderScreenShare() {
+        LinearLayout card = Ui.card(this);
+        card.addView(Ui.text(this, "Share screen with PC", 16, Ui.CYAN));
+        card.addView(Ui.text(this, "Your PC shows this phone's screen (MENU > Phone screen). Android asks you each time; "
+                + "a notification stays while sharing. Nothing is recorded or kept.", 12, Ui.DIM));
+        boolean on = ScreenShareService.sharing();
+        Button share = Ui.button(this, on ? "Stop sharing" : "Share screen with PC", on ? Ui.RED : Ui.CYAN);
+        share.setOnClickListener(v -> {
+            if (ScreenShareService.sharing()) { ScreenShareService.stop(this); ui.postDelayed(this::render, 400); return; }
+            askToShare();
+        });
+        card.addView(share);
+        boolean allowed = ControlService.allowed(this);
+        Button taps = Ui.button(this, allowed ? "Allow the PC to tap: ON" : "Allow the PC to tap: OFF",
+                allowed ? Ui.CYAN : Ui.PANEL);
+        taps.setOnClickListener(v -> { ControlService.setAllowed(this, !ControlService.allowed(this)); render(); });
+        card.addView(taps);
+        if (!ControlService.running()) {
+            Button access = Ui.button(this, "Turn on 'JARVIS control' (Accessibility settings)", Ui.PANEL);
+            access.setOnClickListener(v -> {
+                try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+                catch (Exception e) { toast("Open Settings > Accessibility > JARVIS control."); }
+            });
+            card.addView(access);
+            card.addView(Ui.text(this, "Without it the PC can only look, not tap.", 12, Ui.DIM));
+        }
         content.addView(card);
     }
 
@@ -825,7 +910,7 @@ public class MainActivity extends Activity {
                 lastStatus = new LinkedHashMap<String, Object>();
             }
         });
-        pollEvents(pc);
+        if (!live.connected()) pollEvents(pc);   // the open "wait_events" request already delivers them
         if (PhoneActions.controlAllowed(this) || ++phoneTicks % 12 == 0) {   // actions from the PC; state now and then
             final boolean awayNow = away;
             actions.runOnPool(() -> {
@@ -834,31 +919,46 @@ public class MainActivity extends Activity {
         }
     }
 
-    @SuppressWarnings("unchecked")
+    private void startLive() {
+        final Pc pc = store.current();
+        if (pc == null) { live.stop(); return; }
+        live.start(pc, away, new LiveEvents.Cursor() {
+            @Override public long since() { return liveSince; }
+            @Override public String pendingId() { return livePendingId; }
+        }, json -> handleEvents(json, pc));
+    }
+
     private void pollEvents(Pc pc) {
         Map<String, Object> args = new LinkedHashMap<String, Object>();
         args.put("since", lastMessageId);
         actions.run(pc, away, "events", args, (result, error) -> {
             if (error != null || result == null || result.status >= 400) return;
-            Map<String, Object> json = result.json();
-            Object messages = json.get("messages");
-            if (messages instanceof List) {
-                for (Object o : (List<Object>) messages) {
-                    if (o instanceof Map) {
-                        Map<String, Object> m = (Map<String, Object>) o;
-                        long id = (long) numericLong(m, "id");
-                        if (id > lastMessageId) lastMessageId = id;
-                        if ("assistant".equals(Json.str(m, "role", "")) || "notice".equals(Json.str(m, "role", ""))
-                                || "reminder".equals(Json.str(m, "role", ""))) {
-                            chatLog.add(m);
-                            if (screen.equals("chat")) addBubble(m);
-                        }
+            handleEvents(result.json(), pc);
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleEvents(Map<String, Object> json, Pc pc) {
+        Object messages = json.get("messages");
+        if (messages instanceof List) {
+            for (Object o : (List<Object>) messages) {
+                if (o instanceof Map) {
+                    Map<String, Object> m = (Map<String, Object>) o;
+                    long id = (long) numericLong(m, "id");
+                    if (id <= lastMessageId) continue;            // already shown (live + polling can overlap)
+                    lastMessageId = id;
+                    if ("assistant".equals(Json.str(m, "role", "")) || "notice".equals(Json.str(m, "role", ""))
+                            || "reminder".equals(Json.str(m, "role", ""))) {
+                        chatLog.add(m);
+                        if (screen.equals("chat")) addBubble(m);
                     }
                 }
             }
-            Object pending = json.get("pending");
-            if (pending instanceof Map) showApproval((Map<String, Object>) pending, pc);
-        });
+        }
+        liveSince = lastMessageId;
+        Object pending = json.get("pending");
+        livePendingId = pending instanceof Map ? Json.str((Map<String, Object>) pending, "id", "") : "";
+        if (pending instanceof Map) showApproval((Map<String, Object>) pending, pc);
     }
 
     private void showApproval(Map<String, Object> pending, Pc pc) {
@@ -899,6 +999,18 @@ public class MainActivity extends Activity {
         if (requestCode == REQ_VOICE && resultCode == Activity.RESULT_OK && data != null) {
             ArrayList<String> said = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
             if (said != null && !said.isEmpty()) { screen = "chat"; render(); sendChat(said.get(0)); }
+        } else if (requestCode == REQ_SHARE) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                Intent svc = new Intent(this, ScreenShareService.class)
+                        .putExtra(ScreenShareService.EXTRA_CODE, resultCode)
+                        .putExtra(ScreenShareService.EXTRA_DATA, data)
+                        .putExtra(ScreenShareService.EXTRA_AWAY, away);
+                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(svc); else startService(svc);
+                toast("Sharing your screen with the PC.");
+                ui.postDelayed(this::render, 500);
+            } else {
+                toast("Not shared.");
+            }
         } else if (requestCode == REQ_AUTH) {
             Runnable retry = pendingAfterAuth;
             pendingAfterAuth = null;

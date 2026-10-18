@@ -40,6 +40,15 @@ public final class PhoneActions {
     public static boolean controlAllowed(Context c) { return prefs(c).getBoolean("control", false); }
     public static void setControlAllowed(Context c, boolean on) { prefs(c).edit().putBoolean("control", on).apply(); }
     public static boolean forwardNotifications(Context c) { return prefs(c).getBoolean("forward", false); }
+    /** Calls, SMS, reading messages and contacts: a SEPARATE switch from "control" (and Android's own permissions). */
+    public static boolean commsAllowed(Context c) { return prefs(c).getBoolean("comms", false); }
+    public static void setCommsAllowed(Context c, boolean on) { prefs(c).edit().putBoolean("comms", on).apply(); }
+    public static boolean stayConnected(Context c) { return prefs(c).getBoolean("stay", false); }
+    public static void setStayConnected(Context c, boolean on) { prefs(c).edit().putBoolean("stay", on).apply(); }
+
+    /** Android permissions the comms actions use (asked for from the app, never silently). */
+    public static final String[] COMMS_PERMISSIONS = {"android.permission.CALL_PHONE", "android.permission.SEND_SMS",
+            "android.permission.READ_SMS", "android.permission.READ_CONTACTS", "android.permission.ANSWER_PHONE_CALLS"};
     public static void setForwardNotifications(Context c, boolean on) { prefs(c).edit().putBoolean("forward", on).apply(); }
 
     /** Battery level, charging and the user's choices: sent with every check-in. */
@@ -55,6 +64,8 @@ public final class PhoneActions {
         }
         out.put("control", controlAllowed(c));
         out.put("notifications", forwardNotifications(c));
+        out.put("comms", commsAllowed(c));
+        out.put("app_version", MainActivity.APP_VERSION);
         return out;
     }
 
@@ -67,6 +78,20 @@ public final class PhoneActions {
             if ("open_app".equals(action)) return openApp(c, Json.str(args, "app", ""));
             if ("open_link".equals(action)) return openLink(c, Json.str(args, "url", ""));
             if ("show_text".equals(action)) return show(c, Json.str(args, "text", ""));
+            if ("open_gallery".equals(action)) return openGallery(c);
+            if ("open_camera".equals(action)) return start(c, new Intent("android.media.action.STILL_IMAGE_CAMERA"), "Opened the camera.");
+            if ("open_messages".equals(action)) return start(c, Intent.makeMainSelectorActivity(Intent.ACTION_MAIN,
+                    "android.intent.category.APP_MESSAGING"), "Opened Messages.");
+            if ("open_dialer".equals(action)) return start(c, new Intent(Intent.ACTION_DIAL), "Opened the phone dialer.");
+            if ("share_screen".equals(action)) {
+                Intent ask = new Intent(c, MainActivity.class).putExtra(MainActivity.EXTRA_START_SHARE, true);
+                return start(c, ask, "Asked on the phone to start sharing - tap 'Start now' there.");
+            }
+            if (Comms.ACTIONS.contains(action)) {
+                if (!commsAllowed(c)) return new Object[]{false, "calls and messages from the PC are switched off on the phone "
+                        + "(JARVIS Mobile > Control > 'Allow calls and messages')"};
+                return Comms.run(c, action, args);
+            }
             return new Object[]{false, "this phone app doesn't know '" + action + "' (update JARVIS Mobile)"};
         } catch (Exception e) {
             return new Object[]{false, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()};
@@ -121,6 +146,28 @@ public final class PhoneActions {
         open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         c.startActivity(open);
         return new Object[]{true, "Opened " + name + " on the phone."};
+    }
+
+    /** Start an activity from the PC's request. Android blocks this from the background unless JARVIS Mobile is on
+     * screen or its "JARVIS control" accessibility service is on (then Android allows it). */
+    static Object[] start(Context c, Intent intent, String done) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            c.startActivity(intent);
+        } catch (android.content.ActivityNotFoundException e) {
+            return new Object[]{false, "no app on the phone can do that"};
+        }
+        return new Object[]{true, done + (ControlService.running() ? "" : " (If nothing opened: turn on 'JARVIS control' "
+                + "in Accessibility, or keep JARVIS Mobile open.)")};
+    }
+
+    private static Object[] openGallery(Context c) {
+        Intent gallery = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, "android.intent.category.APP_GALLERY");
+        if (gallery.resolveActivity(c.getPackageManager()) == null) {
+            gallery = new Intent(Intent.ACTION_VIEW);
+            gallery.setType("image/*");
+        }
+        return start(c, gallery, "Opened the gallery.");
     }
 
     private static Object[] openLink(Context c, String url) {
@@ -187,6 +234,7 @@ public final class PhoneActions {
             answer.put("id", ((Number) idValue).longValue());
             answer.put("ok", outcome[0][0]);
             answer.put("message", outcome[0][1]);
+            answer.put("unsupported", String.valueOf(outcome[0][1]).startsWith("this phone app doesn't know"));
             Api.command(pc, away, pc.id, "phone_result", answer);
             ran++;
         }

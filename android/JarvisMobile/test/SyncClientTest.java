@@ -145,6 +145,11 @@ public final class SyncClientTest {
         check(valid, "op ids match what the PC accepts");
 
         check(SyncClient.isAuthError(new RuntimeException(new IllegalStateException(new Exception("x")))) == false, "ordinary errors are not auth errors");
+        // live updates: the next wait starts after the newest message the PC sent
+        List<Object> msgs = new ArrayList<Object>();
+        Map<String, Object> live1 = new java.util.LinkedHashMap<String, Object>(); live1.put("id", 7L); msgs.add(live1);
+        Map<String, Object> live2 = new java.util.LinkedHashMap<String, Object>(); live2.put("id", 12L); msgs.add(live2);
+        check(LiveEvents.maxId(msgs) == 12L && LiveEvents.maxId(null) == 0L, "live updates resume after the newest message");
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

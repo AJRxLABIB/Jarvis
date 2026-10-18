@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
         self.mute_mic_action.setToolTip("Nothing listens while this is on - not even the wake word")
         self.mute_mic_action.toggled.connect(lambda on: self.controller.set_mic_muted(on))
         self.menu.addSeparator()
+        self.menu.addAction("Workspaces (every screen, Ctrl+K)...", self.open_workspaces)
         self.menu.addAction("Settings...", self.open_settings)
         self.memory_action = self.menu.addAction("Memory...", self.open_memory)
         self.menu.addAction("Privacy dashboard...", self.open_privacy)
@@ -166,6 +167,7 @@ class MainWindow(QMainWindow):
         self.menu.addAction("Knowledge...", self.open_knowledge)
         self.menu.addAction("AI and models...", self.open_models)
         self.menu.addAction("Device manager...", self.open_device_manager)
+        self.menu.addAction("Phone screen...", self.open_phone_screen)
         self.menu.addAction("Emergency controls...", self.open_emergency)
         controller.notifications_changed.connect(
             lambda n: self.notifications_action.setText(f"Notifications ({n} new)..." if n else "Notifications..."))
@@ -463,6 +465,9 @@ class MainWindow(QMainWindow):
         timing.setVisible(False)             # timing and approvals: the bottom live box / the confirmation dialog
         approval.setVisible(False)
         self._hidden_panels = (timing, approval)
+        self.panels = {"System overview": overview, "Active modules": modules, "Live event log": events,
+                       "Link monitor": link, "System performance": performance, "Power core": power,
+                       "Conversation": comms}
         address = controller.ctx.settings.user_address.strip()
         self.comms_input = QLineEdit()
         self.comms_input.setObjectName("dashInput")
@@ -682,10 +687,14 @@ class MainWindow(QMainWindow):
         if hasattr(self.orb, "model"):
             self.orb.model.hidden_readouts = self.orb.hidden_readouts
         self._apply_hud_rings()
+        from app.ui.dashboard_fx import wire_fx
+
+        wire_fx(self, controller)          # data pulses, interface sounds, real speech level, hidden panels
 
         # ---- window-local shortcuts (Esc never grabbed globally)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=controller.cancel)
         QShortcut(QKeySequence(Qt.Key.Key_F11), self, activated=self.toggle_full_screen)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.open_workspaces)
         QShortcut(QKeySequence("Ctrl+M"), self, activated=lambda: self.controller.set_mic_muted(
             not self.controller.mic_muted))
 
@@ -787,6 +796,7 @@ class MainWindow(QMainWindow):
         """Appear after the intro: full screen (START_FULLSCREEN), fading in while the panels draw themselves."""
         self.wants_full_screen = full_screen
         self._started = True
+        fade = fade and self._can_fade()
         if fade:
             self.setWindowOpacity(0.0)
         if full_screen:
@@ -819,7 +829,7 @@ class MainWindow(QMainWindow):
             return
         from app.ui import motion
 
-        if not motion.ENABLED:
+        if not motion.ENABLED or not self._can_fade():
             self.showMinimized()
             finish()
             return
@@ -847,6 +857,12 @@ class MainWindow(QMainWindow):
         fade.finished.connect(gone)
         self._step_fade = fade
         fade.start()
+
+    def _can_fade(self) -> bool:
+        """Whole-window opacity fades turn the window into a Windows layered window; with the OpenGL backdrop that froze
+        the core and then crashed some GPU drivers (access violation right after the window appeared). The panels
+        still draw themselves in (DashPanel.replay_boot), only the window-level fade is skipped."""
+        return not getattr(self, "_gl_backdrop", False)
 
     def bring_to_front(self) -> None:
         """In front of Chrome and everything else, even when another app has the focus (Windows allows
@@ -885,7 +901,8 @@ class MainWindow(QMainWindow):
         coming_back = self.isMinimized() or self.isHidden()
         from app.ui import motion
 
-        if coming_back and motion.ENABLED:
+        fade = coming_back and motion.ENABLED and self._can_fade()
+        if fade:
             self.setWindowOpacity(0.0)
         if self.wants_full_screen:
             self.showFullScreen()
@@ -894,7 +911,9 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self.bring_to_front()
-        if coming_back and motion.ENABLED:  # back with a fade, the panels drawing themselves in again
+        if coming_back and motion.ENABLED:
+            DashPanel.replay_boot()
+        if fade:  # back with a fade, the panels drawing themselves in again
             from PySide6.QtCore import QEasingCurve, QPropertyAnimation
 
             self._back_fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -903,7 +922,6 @@ class MainWindow(QMainWindow):
             self._back_fade.setEndValue(1.0)
             self._back_fade.setEasingCurve(QEasingCurve.Type.OutCubic)
             self._back_fade.start()
-            DashPanel.replay_boot()
 
     def toggle_full_screen(self) -> None:
         self.set_full_screen(not self.isFullScreen())
@@ -1081,6 +1099,9 @@ class MainWindow(QMainWindow):
         if hasattr(self.orb, "apply_settings"):
             self.orb.apply_settings(s.visual_quality, s.core_speed, s.glow_intensity, s.reduced_motion)
         self._apply_hud_rings()
+        from app.ui.dashboard_fx import apply_fx_settings
+
+        apply_fx_settings(self)
 
     def _apply_hud_rings(self) -> None:
         """The flat rings, gauges and ticks around the core: off by default (Settings brings them back)."""
@@ -1323,6 +1344,7 @@ class MainWindow(QMainWindow):
             "stay_on_top": lambda: self.set_always_on_top(True), "not_on_top": lambda: self.set_always_on_top(False),
             "compare_models": c.compare_models, "restart_jarvis": self.restart_jarvis,
             "window_overview": lambda: self.open_overview("windows"), "tab_overview": lambda: self.open_overview("tabs"),
+            "phone_screen": self.open_phone_screen, "workspaces": self.open_workspaces,
         }
         handler = actions.get(action)
         if handler is not None:
@@ -1505,6 +1527,22 @@ class MainWindow(QMainWindow):
 
         ModelsDialog(self.controller, parent=self).exec()
 
+    def open_workspaces(self) -> None:
+        from app.ui.workspaces import WorkspacesDialog
+
+        WorkspacesDialog(self, parent=self).exec()
+
+    def open_phone_screen(self) -> None:
+        """A phone sharing its screen (it starts the sharing; Android asks it every time). Not modal: keep working."""
+        from app.ui.phone_screen_view import PhoneScreenWindow
+
+        window = getattr(self, "_phone_screen_window", None)
+        if window is None or not window.isVisible():
+            window = self._phone_screen_window = PhoneScreenWindow(
+                self.controller.phone_screens(), parent=self, ask_to_share=self.controller.ask_phone_to_share)
+        window.show()
+        window.raise_()
+
     def open_device_manager(self) -> None:
         from app.ui.device_manager import DeviceManagerDialog
 
@@ -1590,7 +1628,8 @@ class MainWindow(QMainWindow):
         if c.ctx.database is None:
             return
         SecurityCenterDialog(c.ctx.database, c.ctx.settings, open_phones=self.open_mobile_devices,
-                             open_privacy=self.open_privacy, open_emergency=self.open_emergency, parent=self).exec()
+                             open_privacy=self.open_privacy, open_emergency=self.open_emergency, parent=self,
+                             live=c.live_privacy_state).exec()
 
     def open_workflow_studio(self) -> None:
         from app.ui.workflow_studio import WorkflowStudioDialog

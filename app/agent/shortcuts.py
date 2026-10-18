@@ -313,6 +313,11 @@ _SCROLL = re.compile(r"^(?:please\s+)?scroll\s+(?P<dir>up|down)(?:\s+(?P<more>mo
 _DICTATION = re.compile(r"^(?:please\s+)?(?:start\s+(?:dictation|dictating|typing)|type\s+what\s+i\s+say|"
                         r"dictation\s+(?:mode|on)|লিখে\s*যাও)[.!]*$", re.I)
 _JARVIS = [
+    # "show my phone screen" / "control my phone" -> the phone's shared screen (the phone must start sharing)
+    (re.compile(r"^(?:please\s+)?(?:can\s+you\s+)?(?:show|display|open|view|mirror|control)\s+(?:me\s+)?(?:my\s+|the\s+)?"
+                r"(?:phone|mobile)(?:'s)?(?:\s+screen)?(?:\s+please)?[.!?]*$", re.I), "phone_screen"),
+    (re.compile(r"^(?:please\s+)?(?:show|open)\s+(?:me\s+)?(?:my\s+|the\s+)?workspaces?(?:\s+please)?[.!?]*$", re.I),
+     "workspaces"),
     # "show me my screen" / "show my windows" / "mission control" -> the window overview; "show my tabs" -> tab overview
     (re.compile(r"^(?:please\s+)?(?:can\s+you\s+)?(?:show|display|open|list)\s+(?:me\s+)?(?:all\s+)?(?:of\s+)?"
                 r"(?:my\s+|the\s+)?(?:open(?:ed)?\s+|running\s+)?(?:browser\s+|chrome\s+|edge\s+)?tabs"
@@ -1310,7 +1315,34 @@ def match_shortcut(
     known_alias: Callable[[str], ToolCall | None] | None = None,
     known_computer: Callable[[str], bool] | None = None,
 ) -> ToolCall | None:
+    """A direct tool call for a clear everyday command (no AI needed), or None. The stages run in a fixed order;
+    the first that recognises the command wins, and a stage that knows the text is NOT a direct command ends it."""
     cleaned = " ".join(text.split()).strip()
+    found = _first_matches(cleaned, known_alias, known_setting, known_device)
+    if found is not None:
+        return found
+    if len(cleaned) > 60:
+        return None
+    for stage in (lambda: _command_matches(cleaned, known_app, known_computer),
+                  lambda: _home_and_power(cleaned, known_device, power_pending),
+                  lambda: _screen_info_window(cleaned, known_app),
+                  lambda: _sites_and_workflows(cleaned, known_site, known_workflow),
+                  lambda: _settings_and_apps(cleaned, known_app)):
+        found = stage()
+        if found is _STOP:
+            return None
+        if found is not None:
+            return found
+    return match_keyword(cleaned, known_app, known_site, known_workflow) or match_open_any(cleaned)
+
+
+_PHONE_CANCEL = re.compile(r"^(?:please\s+)?(?:cancel|withdraw|forget)\s+(?:the\s+|my\s+|that\s+)?(?:phone|mobile)\s+"
+                           r"(?:request|requests|command|commands|action)(?:\s+please)?[.!]*$", re.I)
+_STOP = object()   # a stage is sure the text is not a direct command (e.g. "turn off the lights" is not the PC)
+
+
+def _first_matches(cleaned: str, known_alias, known_setting, known_device) -> ToolCall | None:
+    """Your nicknames, voice/settings control, sessions and research, journal and habits (any length)."""
     if known_alias is not None:  # your nicknames first: "code", "open my university"
         name = re.sub(r"^(?:please\s+)?(?:open|start|launch|show|go\s+to)\s+", "", bare_keyword(cleaned) or "", flags=re.I)
         aliased = known_alias(name) if name else None
@@ -1326,8 +1358,13 @@ def match_shortcut(
     personal = match_journal_habits(cleaned)
     if personal is not None:
         return personal
-    if len(cleaned) > 60:
-        return None
+    return None
+
+
+def _command_matches(cleaned: str, known_app, known_computer) -> ToolCall | None:
+    """Levels, devices, evolution, media/layout/dev, notes, to-dos, searches, close-all, focus, recall, profiles."""
+    if _PHONE_CANCEL.match(cleaned):
+        return ToolCall("phone_control", {"action": "cancel_pending"})
     level = level_command(cleaned)
     if level is not None:
         return level
@@ -1375,6 +1412,11 @@ def match_shortcut(
     if browser and not _NOT_A_PROFILE.match(browser.group("profile")):
         return ToolCall("open_application", {"name": browser.group("browser").lower(),
                                              "profile": browser.group("profile").strip()})
+    return None
+
+
+def _home_and_power(cleaned: str, known_device, power_pending):
+    """Smart-home devices you named, cancelling a shutdown, shutting down / restarting the PC."""
     if known_device is not None:
         home = _HOME.match(cleaned) or _HOME_AFTER.match(cleaned)
         if home:
@@ -1388,12 +1430,17 @@ def match_shortcut(
     if match:
         verb = match.group("verb").lower()
         if verb.startswith(("power", "turn")) and not match.group("device"):
-            return None  # "turn off the lights" / a bare "turn off" is not about the PC
+            return _STOP  # "turn off the lights" / a bare "turn off" is not about the PC
         action = "restart" if verb in ("restart", "reboot") else "shutdown"
         arguments: dict = {"action": action, "delay_seconds": 10}
         if match.group("save"):
             arguments["save_work"] = True
         return ToolCall("power_control", arguments)
+    return None
+
+
+def _screen_info_window(cleaned: str, known_app):
+    """Restart an app, look at / read the screen, updates, lock, time, battery, info, window control."""
     match = _RESTART_APP.match(cleaned)
     if match and not _NOT_RESTARTABLE.match(match.group("name").strip(" ,.")):
         return ToolCall("restart_application", {"name": match.group("name").strip(" ,.")})
@@ -1427,7 +1474,12 @@ def match_shortcut(
         if name and name.lower() not in _NOT_APPS and len(name.split()) <= 4 and known_app(name) is not None:
             return ToolCall("window_control", {"action": action, "name": name})
         if action != "focus":
-            return None
+            return _STOP
+    return None
+
+
+def _sites_and_workflows(cleaned: str, known_site, known_workflow) -> ToolCall | None:
+    """A site in a named browser, known sites, your workflows (run / resume)."""
     match = _IN_BROWSER.match(cleaned)
     if match and match.group("browser").lower() not in ("browser", "default browser") \
             and len(match.group("name").split()) <= 4 \
@@ -1458,6 +1510,11 @@ def match_shortcut(
             workflow = known_workflow(match.group("name").strip(" ,."))
             if workflow is not None:
                 return ToolCall("run_workflow", {"name": workflow})
+    return None
+
+
+def _settings_and_apps(cleaned: str, known_app):
+    """Windows settings pages, then open / close / switch to a known app."""
     from app.tools.windows_settings import find_page
 
     settings = _SETTINGS_PAGE.match(cleaned)
@@ -1469,9 +1526,9 @@ def match_shortcut(
             continue
         name = match.group("name").strip(" ,.")
         if not name or name.lower() in _NOT_APPS or len(name.split()) > 4:
-            return None
+            return _STOP
         if any(word in name.lower() for word in ("folder", "file", ".", "\\", "/", "website", "site", "url")):
-            return None  # files and websites have their own tools
+            return _STOP  # files and websites have their own tools
         if tool == "open_application":
             page = find_page(name, fuzzy=False)
             if page is not None and page[1] != "Settings":  # "open device manager", "open bluetooth"
@@ -1481,8 +1538,7 @@ def match_shortcut(
                 return ToolCall("open_settings_page", {"page": name})
             break  # not a known app: maybe a keyword, else the last resort below
         return ToolCall(tool, {"name": name})
-    return match_keyword(cleaned, known_app, known_site, known_workflow) or match_open_any(cleaned)
-
+    return None
 
 # "open Chrome and Spotify", "close Notepad, then lock my PC"
 _SPLIT = re.compile(r"\s*,\s*(?:and\s+)?(?:then\s+)?|\s+and\s+then\s+|\s+and\s+also\s+|\s+and\s+|\s+then\s+", re.I)

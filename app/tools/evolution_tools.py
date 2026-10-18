@@ -166,7 +166,8 @@ class ProposeArgs(ToolArgs):
 
 def propose_code_change(args: ProposeArgs, ctx: ToolContext) -> ToolResult:
     source = source_dir(ctx)
-    edits, risk, facts = validate(source, [e.model_dump() for e in args.edits])
+    edits, risk, facts = validate(source, [e.model_dump() for e in args.edits],
+                                  full_power=bool(getattr(ctx.settings, "full_power", False)))
     proposal = _store(ctx).add("code", args.title, args.reason, facts, risk, edits, now=_now(ctx))
     log_event(_log, "proposal_added", id=proposal.id, files=facts["files"], risk=risk)
     return ToolResult.success(
@@ -236,6 +237,15 @@ def _apply_question(args: IdArgs, ctx: ToolContext) -> str:
     return (f"Change my own code? Proposal #{proposal.id}: {proposal.title}. Files: {', '.join(files)}. Risk: "
             f"{proposal.risk}. Tested on a copy: {tests.get('passed', 0)} passed, {tests.get('failed', 0)} failed. "
             "The originals are backed up and it can be rolled back.")
+
+
+def _apply_risk(args: IdArgs, ctx: ToolContext) -> RiskLevel:
+    """A tested change to Jarvis's own security core (possible only in FULL_POWER) is CRITICAL: on-screen approval."""
+    try:
+        proposal = _store(ctx).get(args.id)
+    except Exception:
+        return RiskLevel.DANGEROUS
+    return RiskLevel.CRITICAL if proposal is not None and proposal.risk == "critical" else RiskLevel.DANGEROUS
 
 
 def apply_proposal(args: IdArgs, ctx: ToolContext) -> ToolResult:
@@ -314,7 +324,7 @@ TOOLS: tuple[Tool, ...] = (
          "rights) in the copy only; it takes a few minutes."),
     Tool("apply_proposal", "Apply a TESTED proposal to Jarvis's real source (backup first, verified).",
          apply_proposal, IdArgs, RiskLevel.DANGEROUS, category="evolution", timeout=60, precheck=_apply_precheck,
-         confirmation=_apply_question),
+         confirmation=_apply_question, risk=_apply_risk),
     Tool("reject_proposal", "Reject an improvement proposal.", reject_proposal, IdArgs, RiskLevel.SAFE,
          category="evolution"),
     Tool("rollback_proposal", "Undo an applied proposal from its backup (the last one if no number is given).",

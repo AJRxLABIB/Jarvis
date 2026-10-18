@@ -46,8 +46,11 @@ _log = get_logger("remote.mobile")
 
 PAIRING_SECONDS = 300
 CLOCK_WINDOW_MS = 120_000
+PROTOCOLS = frozenset({1})         # envelope versions this PC understands (the phone sends "protocol": 1 since 1.2)
+IDEMPOTENT_SECONDS = 600           # a repeated request_id (a retry after a lost answer) gets the first answer again
 NONCE_KEEP_SECONDS = 600
 MAX_ARGUMENT_CHARS = 8000
+FRAME_ARGUMENT_CHARS = 620_000     # a screen frame (base64 JPEG); only on /api/mobile/frame, which has its own size cap
 TRUST_STATES = ("pending", "trusted", "restricted", "revoked")
 # What a phone may be allowed to do. "emergency" can't be taken away from a trusted phone.
 PERMISSIONS = ("read", "chat", "approve", "control", "power", "screen", "files", "sync", "admin")
@@ -65,6 +68,9 @@ COMMANDS: dict[str, tuple[str | None, str | None]] = {
     "hello": ("read", None),          # "am I paired, what's my trust state"
     "status": ("read", None),
     "events": ("read", None),         # new messages + the approval question waiting
+    "wait_events": ("read", None),
+    "screen_frame": ("read", None),   # the phone shares its own screen (it asked you, Android asked you): /api/mobile/frame
+    "screen_stopped": ("read", None),    # the same, but held open until something happens (instant updates, no Firebase)
     "chat": ("chat", None),
     "approve": ("approve", None),
     "emergency_stop": (None, None),   # always allowed for a trusted or restricted phone
@@ -424,13 +430,18 @@ class MobileRegistry:
         if not _ID.match(envelope["request_id"]) or not _ID.match(envelope["device_id"]) \
                 or not _NONCE.match(envelope["nonce"]):
             raise MobileError(400, "malformed", "Bad request, device or nonce ID.")
+        protocol = envelope.get("protocol", 1)                 # absent = version 1 (apps before 1.2)
+        if not isinstance(protocol, int) or isinstance(protocol, bool) or protocol not in PROTOCOLS:
+            raise MobileError(426, "protocol_unsupported",
+                              f"This PC speaks JARVIS Mobile protocol {max(PROTOCOLS)}; update Jarvis or the phone app.")
         timestamp = envelope.get("timestamp")
         if not isinstance(timestamp, int) or isinstance(timestamp, bool):
             raise MobileError(400, "malformed", "'timestamp' must be milliseconds.")
         command = envelope["command"]
         if command not in COMMANDS:
             raise MobileError(400, "unknown_command", f"Unknown command '{command[:40]}'.")
-        if len(envelope["arguments"]) > MAX_ARGUMENT_CHARS:
+        limit = FRAME_ARGUMENT_CHARS if command == "screen_frame" else MAX_ARGUMENT_CHARS
+        if len(envelope["arguments"]) > limit:
             raise MobileError(413, "too_big", "The arguments are too long.")
         device = self.get(envelope["device_id"])
         if device is None:

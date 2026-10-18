@@ -506,3 +506,81 @@ hardware, Ollama on your PC for --model-roles, the rebuilt phone app.
 * Tests: tests/test_growth.py (9, incl. a real ConversationManager turn). Not run against real Ollama models here:
   `--self-improve` scoring needs your PC with Ollama. Weights are never retrained (that needs a GPU trainer;
   --export-training prepares the data).
+
+## Round 32 - FULL_POWER (user request: "give it unlimited power, just ask me")
+
+* settings.full_power (FULL_POWER, turned on in the user's .env): CRITICAL decisions become an on-screen confirmation
+  instead of a refusal (app/agent/tool_manager.py, `_full_power_allows`): only for text/voice/cli sources; summary
+  prefixed "CRITICAL"; voice answers refused (voice.py), phone approvals refused (remote.py); never covered by direct
+  commands, mission pre-approval or standing grants (those are MODERATE-only already).
+* run_command's defence-in-depth block honours full power; Evolution proposals may touch the security core in full
+  power (risk "critical" -> apply_proposal is CRITICAL = on-screen approval); .env is never editable.
+* Unchanged on purpose: automations/agents/phones never get critical actions; taint firewall; emergency stop; audit.
+* Tests: tests/test_full_power.py (7). Full suite green except the 2 sandbox-only failures.
+
+## Round 33 - start-up crash (native access violation after the window appeared)
+
+* Cause (from crash.log + jarvis.log): crashes only on visible starts (intro -> window fade-in) while Ollama and the
+  CUDA speech model load on the 6 GB GPU; tray starts worked. Fixes: no whole-window opacity fades on the OpenGL window
+  (`MainWindow._can_fade`), the intro closes before the window shows, GL state reset after native painting
+  (`GlOrbWidget._reset_gl_state`), GL vendor / first frame / stable logged.
+* Crash guard app/ui/core3d/gl_guard.py: a crash between "window shown" and "GL stable" steps the next start down
+  (no intro/fades + balanced, then the flat core); `python run.py --reset-gl-guard` restores. tests/test_gl_guard.py (6).
+* NOT verified on the user's NVIDIA/Windows PC - needs a few real starts.
+
+## Round 34 - "build all" (the open items)
+
+| Item | Built | Verified here |
+|---|---|---|
+| Core extras | Interface sounds made on the PC (UI_SOUNDS, app/ui/sound_fx.py; silent while speaking/listening); the speaking animation follows the REAL voice loudness (TTSManager.speech_level); data pulses core -> panel (CORE_PULSES) and spark trails (CORE_TRAILS) (app/ui/core3d/fx.py, app/ui/dashboard_fx.py); HUD_SCALE (whole window, next start); HIDDEN_PANELS | tests/test_core_extras.py; GL render checked under Xvfb + Mesa (software GL) |
+| Instant phone updates, no Firebase | signed read-only `wait_events` long poll (server holds it up to 25 s); JARVIS Mobile keeps one open while the app is open (LiveEvents.java), polling stays as fallback | tests/test_live_events.py; Java compiled + JVM test (SyncClientTest) |
+| Phone screen on the PC | JARVIS Mobile "Share screen with PC" (MediaProjection, Android asks every time, notification while sharing) -> /api/mobile/frame (signed, own rate bucket, 450 KB cap, memory only); PC viewer MENU > Phone screen / "show my phone screen"; taps/swipes/Back/Home/Recents/text only with the phone's "JARVIS control" accessibility service AND "Allow the PC to tap"; Stop on either side; emergency stop ends it | tests/test_phone_screen.py (incl. a real signed frame through the server); ALL Android sources compile against compile-only stand-ins (test/compile_all.sh) |
+| Bangla / your voice | SPEECH_DATASET (off/corrections/all): misheard audio + your correction kept as training data (data/speech_dataset); Bangla recognition hints from your Bangla corrections; `voice_data` tool + `--export-speech-dataset`; scripts/finetune_whisper.py (GPU, WER before/after, keeps nothing if not better) -> STT_BANGLA_MODEL | tests/test_speech_dataset.py |
+| Retraining the AI | `--export-training` now includes the offered tools; scripts/finetune_llm.py (unsloth LoRA -> GGUF -> `ollama create jarvis-tuned` with the base's template); self-improvement tries jarvis-tuned first and switches only on a measured gain | tests/test_finetune_pipeline.py (pure parts only) |
+| Workspaces | MENU > Workspaces / Ctrl+K / "show my workspaces": every screen grouped (Today, Control, Intelligence, Build, Safety and system), type to filter | tests/test_workspaces.py |
+| Refactor | match_shortcut split into 6 ordered stages (identical results on 15,076 phrase/variant checks against the old code); ToolExecutor.execute split into _prepare / _gate / _autonomy / _skip_confirmation_when_allowed / _ask / _run_checked (same order, same audit events) | full suite |
+| Dependency audit | pip-audit of all 109 packages in the PC's .venv (incl. pywin32, pycaw, comtypes, winrt-*): no known vulnerabilities (2026-10-18) | - |
+| Fixed on the way | emergency_stop called `tts.is_speaking()` (a property) so "speaking" was never listed as stopped; tests/test_android_sync_client.py compiled too few files (it was always skipped without a JDK) | - |
+
+NOT verified on real hardware: everything on the phone (screen sharing, accessibility taps, live updates - rebuild the
+app with packaging\build_android.ps1, version 1.1.0), sounds/pulses on your GPU, the two GPU fine-tune scripts.
+Sandbox-only: tests/test_window_overview.py crashes the sandbox's Qt; test_v2 voice test needs piper.
+
+## Round 35 - full phone control (JARVIS Mobile 1.2)
+
+* Why "Phone screen" stayed empty: the phone still runs JARVIS Mobile 1.0, which has no "Share screen with PC" (its
+  "See the screen" shows the PC's screen on the phone). The PC side was waiting correctly. Fix: rebuild + install 1.2.
+* New phone actions (phone_control): call (contact name or number; ACTION_CALL with the Phone permission, else the
+  dialer), end_call, send_sms, read_messages (latest 1-10, optional sender, one-time codes hidden on the phone),
+  find_contact, open_gallery / open_camera / open_messages / open_dialer, share_screen (opens Android's own consent).
+  Rules: a separate phone switch "Allow calls and messages" + Android permissions; call/send_sms are DANGEROUS
+  (always asked, on screen, with number and text); read_messages / find_contact MODERATE; USSD/service codes (* #)
+  refused on both sides.
+* "Stay connected" (LinkService, opt-in foreground service with a notification): the PC's requests run within ~3 s
+  while the app is closed. Opening apps / calling from the background needs the "JARVIS control" accessibility
+  service on (Android's rule).
+* PC viewer: "Ask the phone to share" button. Tests: tests/test_phone_comms.py; all Android sources compile against
+  the stand-ins; JVM test passes. NOT run on a real phone.
+
+## Round 36 - master prompt 4: audit, then the highest-value P0/P1 gaps
+
+Audit (code, not docs) of 18 areas: Wake-on-LAN complete (sent / PC answers / Jarvis ready); 15 partial; 2 missing.
+Built this round (all with tests):
+
+| Gap found | Fixed | Tests |
+|---|---|---|
+| A running mission could not really be paused or cancelled (Esc paused it; "cancel the mission" was refused while busy and didn't stop the loop); a mission stuck in "verifying" was never recovered | missions.request(): pause/cancel at the next step boundary (a started step finishes; a retry yields to it); cancel_mission on a running mission asks it to stop; restart recovery includes "verifying" | test_live_control.py |
+| "stop speaking", "pause this mission", "cancel the current task", "explain what you are doing", "show me the plan", "do not remember this conversation" missing / refused while busy | app/core/live_control.py (EN + BN), handled by the window even while a request runs; "don't remember" = private mode | test_live_control.py |
+| Phone protocol: no version, no idempotency, queued PC->phone actions couldn't be withdrawn, no 'unsupported' | envelope "protocol" (absent = 1, unknown = 426); a repeated request_id returns the first answer (non-read commands, 10 min); phone_control cancel_pending + "cancel the phone request" + emergency stop withdraws waiting ones; 'unsupported' status from older apps; schema v36 (table rebuilt, rows kept) | test_phone_protocol.py |
+| Automations: a file-watch automation writing into its own folder re-fired itself; no rate cap; quiet hours ignored | re-baseline after the run; MAX_EVENT_RUNS_PER_HOUR=12 per event-started automation (reported once); AUTOMATION_QUIET_HOURS (off by default; scheduled ones still run) | test_automation_guards.py |
+| Notifications: no de-duplication, no age retention | the same unread notice within 30 min isn't added or shown twice; read notices older than 90 days removed (unread stay) | test_master4.py |
+| Security center showed settings only | "Right now": microphone (muted / wake word / recording), screen capture, phones sharing their screen, remote listening, the approval waiting, mode | test_master4.py |
+| Daily briefing not configurable | BRIEFING_LENGTH (short/normal/full), BRIEFING_SECTIONS; new parts: unfinished mission, unread notifications | test_master4.py |
+
+Not done this round (honest): PLANNING / PAUSED core-animation states (the core shows the real agent states it has:
+ready, listening, recognizing, thinking, executing, waiting for permission, speaking, error); a per-memory approval
+column and a "project" memory type; page/section references and stale warnings in document answers; clipboard
+sharing PC<->phone and phone->PC file upload from the app; a combined performance baseline command (startup,
+model connect, first reply are logged separately: window_ready, model_warmed_up, voice_stats); automatic rollback
+after an applied self-improvement (rollback stays one approved command). Only 12 of ~225 tools have a verify step.
+Not verified on real hardware: everything phone-side, the security center on Windows.

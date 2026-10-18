@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="control_description">Lets your JARVIS PC tap, swipe and press Back / Home / Recents on this phone while you share the screen with it from the JARVIS Mobile app (Control > Share screen). It works only while sharing and only after you also switch on "Allow the PC to tap" in the app. It keeps and sends nothing; to type, it reads the focused text field only to add your text.</string>
+</resources>

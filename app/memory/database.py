@@ -1014,6 +1014,32 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE UNIQUE INDEX idx_growth_items_key ON growth_items (kind, request, tool)",
         ),
     ),
+    Migration(
+        36,
+        "phone_command_states",
+        (
+            # PC -> phone actions can also be 'cancelled' (before the phone took them) or 'unsupported' (the phone's
+            # app doesn't know the action): SQLite can't change a CHECK, so the table is rebuilt, rows kept
+            """
+            CREATE TABLE phone_commands_v36 (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id  TEXT NOT NULL,
+                action     TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 30),
+                args       TEXT NOT NULL DEFAULT '{}',
+                created    TEXT NOT NULL,
+                expires    TEXT NOT NULL,
+                status     TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'sent', 'done', 'failed', 'expired', 'cancelled', 'unsupported')),
+                result     TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            "INSERT INTO phone_commands_v36 (id, device_id, action, args, created, expires, status, result) "
+            "SELECT id, device_id, action, args, created, expires, status, result FROM phone_commands",
+            "DROP TABLE phone_commands",
+            "ALTER TABLE phone_commands_v36 RENAME TO phone_commands",
+            "CREATE INDEX idx_phone_commands_device ON phone_commands (device_id, status)",
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

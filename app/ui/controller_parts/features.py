@@ -222,9 +222,126 @@ class FeaturesMixin:
             from app.cli_voice import recognition_hints, vocabulary
 
             s = self.ctx.settings
-            self.stt.hotwords = recognition_hints(s.wake_word, s.assistant_name, vocabulary(self.ctx)) or None
+            words = vocabulary(self.ctx)
+            self.stt.hotwords = recognition_hints(s.wake_word, s.assistant_name, words) or None
+            from app.voice.speech_dataset import bangla_hints
+
+            self.stt.hotwords_bn = bangla_hints(words)
         except Exception:
             _log.warning("could not refresh the recognition hints", exc_info=True)
+
+    def _live_control(self, text: str) -> bool:
+        """'stop speaking' / 'pause this mission' / 'cancel the current task' / 'explain what you are doing' /
+        'show me the plan' / "don't remember this": handled at once, even while a request runs (live_control.py)."""
+        from app.core import live_control
+
+        intent = live_control.classify(text)
+        if intent is None or (not self._busy and intent not in ("stop_speaking", "dont_remember")):
+            return False                        # idle: the ordinary shortcuts / tools handle the rest
+        self.user_message.emit(text)
+        mission = self._running_mission()
+        if intent == "stop_speaking":
+            self.tts.stop()
+            message = "Stopped speaking." + (" The request is still running - say 'cancel the current task' to stop it."
+                                              if self._busy else "")
+        elif intent == "dont_remember":
+            message = self._mode_control("private") + " Nothing from now on is saved; say 'normal mode' to end it."
+        elif intent in ("pause_mission", "cancel_task") and mission is not None:
+            from app.core import missions
+
+            kind = "pause" if intent == "pause_mission" else "cancel"
+            missions.request(mission.id, kind)
+            message = (f"{'Pausing' if kind == 'pause' else 'Cancelling'} '{mission.title}' before its next step "
+                       "(the step that is running now finishes first; nothing is cut off half-way).")
+        elif intent == "cancel_task":
+            self.cancel()
+            message = "Cancelled the current request."
+        elif intent == "pause_mission":
+            message = "No mission is running. (To stop the current request say 'cancel the current task'.)"
+        elif intent == "show_plan" and mission is not None:
+            from app.core.live_control import plan_text
+
+            message = plan_text(mission) + "\nSay 'pause this mission' to stop before the next step."
+        else:                                                     # explain_now, or show_plan without a mission
+            state = {"PROCESSING": "thinking about your request", "EXECUTING": "running an action",
+                     "WAITING_FOR_PERMISSION": "waiting for your answer to a question",
+                     "SPEAKING": "speaking", "LISTENING": "listening"}.get(self._state, self._state.lower())
+            message = f"I'm {state}."
+            if mission is not None:
+                step = next((s for s in mission.steps if s.state == "running"), None)
+                message += (f" Mission '{mission.title}': step {step.n} of {len(mission.steps)}, {step.title}."
+                            if step else f" Mission '{mission.title}' is {mission.state}.")
+            current = getattr(self, "_current_request", "")
+            if current:
+                message += f" Your request: \"{current[:120]}\"."
+        self.notice.emit(message)
+        log_event(_log, "live_control", intent=intent, busy=self._busy)
+        return True
+
+    def live_privacy_state(self) -> dict:
+        """The security center's "Right now": what really is on at this moment."""
+        from app.core import modes
+
+        settings = self.ctx.settings
+        pending = getattr(self, "_pending_confirmation", None)
+        screens = getattr(self, "_phone_screens", None)
+        remote = getattr(self, "remote", None)
+        return {"mic_muted": bool(getattr(self, "mic_muted", False)),
+                "hands_free": getattr(self, "hands_free", None) is not None,
+                "recording": bool(getattr(self, "_listening", False)),
+                "screen_capture": bool(getattr(settings, "screen_capture_enabled", False)),
+                "sharing_phones": [s.name for s in screens.active()] if screens is not None else [],
+                "remote": getattr(remote, "url", "") if remote is not None else "",
+                "pending_approval": (getattr(pending.request, "summary", "an action")
+                                     if pending is not None and not pending.future.done() else ""),
+                "mode": modes.STATE.current.name}
+
+    def _running_mission(self):
+        database = getattr(self.ctx, "database", None)
+        if database is None:
+            return None
+        try:
+            from app.core.missions import MissionStore
+
+            found = MissionStore(database).recent(1, ("running", "verifying"))
+            return found[0] if found else None
+        except Exception:
+            return None
+
+    def _keep_voice(self, audio, transcript) -> None:
+        """SPEECH_DATASET: remember the last voice command (for a correction) and keep it if mode is "all"."""
+        mode = getattr(self.ctx.settings, "speech_dataset", "off")
+        if mode == "off" or audio is None or transcript is None:
+            self._last_voice = None
+            return
+        import time as _time
+
+        language = getattr(transcript, "language", None) or "und"
+        self._last_voice = (audio, transcript.text, language, _time.monotonic())
+        if mode == "all" and getattr(transcript, "confidence", 0.0) >= 0.8:
+            self._speech_dataset().record(audio, transcript.text, language, "unverified")
+
+    def _speech_dataset(self):
+        from app.voice.speech_dataset import SpeechDataset
+
+        return SpeechDataset(self.ctx.paths.data_dir)
+
+    def _on_correction(self, heard: str, corrected: str) -> None:
+        """'no, I said ...': the misheard audio + the corrected text is the best training example there is."""
+        last = getattr(self, "_last_voice", None)
+        if last is None or getattr(self.ctx.settings, "speech_dataset", "off") == "off":
+            return
+        import time as _time
+
+        from app.voice.speech_dataset import is_bangla
+
+        audio, text, language, at = last
+        if text.strip().lower() != heard.strip().lower() or _time.monotonic() - at > 180:
+            return
+        if is_bangla(corrected):
+            language = "bn"
+        self._speech_dataset().record(audio, corrected, language, "corrected")
+        self._last_voice = None
 
     def _observe_tone(self, audio, text: str) -> None:
         """TONE_AWARE: in a hurry / tired -> a hint for the next answer's style."""
@@ -300,7 +417,9 @@ class FeaturesMixin:
                 "exit_full_screen": "Leaving full screen.", "health_report": "Making the health report.",
                 "compare_models": "Comparing your models on the Bangla questions.",
                 "restart_jarvis": "Restarting. I'll be back in a few seconds.",
-                "window_overview": "Here are your open windows.", "tab_overview": "Here are your open tabs."}.get(action, "Done.")
+                "window_overview": "Here are your open windows.", "tab_overview": "Here are your open tabs.",
+                "phone_screen": "Opening your phone's screen. Start sharing on the phone if it isn't already.",
+                "workspaces": "Here are your workspaces."}.get(action, "Done.")
 
     def _apply_setting(self, field: str, value: str) -> None:
         """change_setting tool: saved to .env and applied (on the window's thread)."""

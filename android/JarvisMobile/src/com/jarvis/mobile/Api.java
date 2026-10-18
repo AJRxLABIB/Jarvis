@@ -74,13 +74,17 @@ public final class Api {
     }
 
     public static Result post(Pc pc, boolean away, String path, String jsonBody) throws Exception {
+        return post(pc, away, path, jsonBody, 20000);
+    }
+
+    public static Result post(Pc pc, boolean away, String path, String jsonBody, int readTimeoutMs) throws Exception {
         URL url = new URL(pc.baseUrl(away) + path);
         HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
         conn.setSSLSocketFactory(pinnedFactory(pc.certFingerprint));
         conn.setHostnameVerifier((hostname, session) -> true); // pinning already proves it's the right PC
         conn.setRequestMethod("POST");
         conn.setConnectTimeout(6000);
-        conn.setReadTimeout(20000);
+        conn.setReadTimeout(readTimeoutMs);
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/json");
         byte[] payload = jsonBody.getBytes("UTF-8");
@@ -98,6 +102,12 @@ public final class Api {
     public static Result command(Pc pc, boolean away, String deviceId, String command, Map<String, Object> args)
             throws Exception {
         return post(pc, away, "/api/mobile/command", Protocol.envelope(deviceId, command, args));
+    }
+
+    /** A signed command the PC may hold open (``wait_events``): a longer read timeout. */
+    public static Result command(Pc pc, boolean away, String deviceId, String command, Map<String, Object> args,
+                                 int readTimeoutMs) throws Exception {
+        return post(pc, away, "/api/mobile/command", Protocol.envelope(deviceId, command, args), readTimeoutMs);
     }
 
     private static String read(InputStream in) throws Exception {

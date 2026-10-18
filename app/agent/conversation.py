@@ -811,6 +811,11 @@ class ConversationManager:
                 store.learn(heard, meant)
                 log_event(_log, "correction_learned", words=len(meant.split()))
                 corrected = re.sub(re.escape(heard), meant, previous, count=1, flags=re.I)
+                if self.on_correction is not None:          # the host may keep the audio + corrected text
+                    try:
+                        self.on_correction(previous, corrected)
+                    except Exception:
+                        _log.warning("on_correction failed", exc_info=True)
                 note = ("বুঝেছি, মনে রাখব।" if detect_language(text) == "bn"
                         else f"Got it, {meant}. I'll remember that.")
                 return corrected, note
@@ -838,6 +843,7 @@ class ConversationManager:
             log_event(_log, "history_not_saved", detail=str(exc)[:160])
 
     on_memory_suggestion = None  # callback(list of facts): the host tells the user
+    on_correction = None  # callback(heard request, corrected request): SPEECH_DATASET keeps the audio + right text
     tone_hint = ""  # "the user sounds in a hurry..." for the next reply (set by the host from the voice)
 
     async def _suggest_memories(self, user_text: str) -> None:
