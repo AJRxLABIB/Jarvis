@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from app.memory.database import Database
 
 PRIORITIES = ("low", "normal", "high", "urgent")
-CATEGORIES = ("reminder", "alert", "mission", "security", "system", "suggestion")
+CATEGORIES = ("reminder", "alert", "mission", "security", "system", "suggestion", "phone")
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,8 @@ keys, so it works with Spotify, YouTube in the browser, VLC, Groove...
 
 from __future__ import annotations
 
+from app.utils.timefmt import time12
+
 import re
 import time
 from datetime import datetime
@@ -278,7 +280,7 @@ def _reminders_today(ctx: ToolContext, now: datetime) -> list[str]:
             except ValueError:
                 continue
             if when.date() == now.date() and when >= now:
-                names.append(f"{task.name} at {when:%H:%M}")
+                names.append(f"{task.name} at {time12(when)}")
     except Exception:
         _log.warning("could not read reminders for the briefing", exc_info=True)
     return names[:3]
@@ -286,7 +288,7 @@ def _reminders_today(ctx: ToolContext, now: datetime) -> list[str]:
 
 async def daily_briefing(_: NoArgs, ctx: ToolContext) -> ToolResult:
     now = ctx.clock()
-    parts = [_greeting(now, ctx.settings.user_address), f"It's {now:%H:%M} on {now:%A}, {now.day} {now:%B}."]
+    parts = [_greeting(now, ctx.settings.user_address), f"It's {time12(now)} on {now:%A}, {now.day} {now:%B}."]
     data: dict[str, Any] = {}
     if ctx.settings.home_location:
         from app.utils import network

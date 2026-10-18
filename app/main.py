@@ -64,6 +64,30 @@ class Check:
     detail: str
 
 
+def _repair_forgotten_setup(paths: AppPaths, settings) -> list[str]:
+    """.env says "never set up" but setup was done (data/setup_state.json): write SETUP_DONE and the remembered answers
+    back instead of showing the setup wizard again. Returns the names written."""
+    from app.core import setup_state
+
+    try:
+        from app.config.env_writer import update_env_file
+        from app.config.settings import _read_env_file
+
+        current = _read_env_file(paths.env_file) if paths.env_file.is_file() else {}
+        if settings.setup_done:
+            if not setup_state.is_done(paths.data_dir):        # set up before this record existed: start it now
+                setup_state.remember(paths.data_dir, {k: v for k, v in current.items() if k in setup_state.KEEP})
+            return []
+        if not setup_state.is_done(paths.data_dir):
+            return []
+        fixes = setup_state.repairs(current, paths.data_dir)
+        if fixes:
+            update_env_file(paths.env_file, fixes)
+        return sorted(fixes)
+    except Exception:
+        return []
+
+
 def bootstrap(root: Path | None = None, environ: Mapping[str, str] | None = None) -> AppContext:
     """Load settings, prepare folders, start logging, load config, open the database.
 
@@ -86,6 +110,9 @@ def bootstrap(root: Path | None = None, environ: Mapping[str, str] | None = None
     settings = load_settings(root / ".env", environ)
     paths = AppPaths.build(root, settings.data_dir)
     paths.ensure_dirs()
+    setup_repaired = _repair_forgotten_setup(paths, settings)
+    if setup_repaired:
+        settings = load_settings(root / ".env", environ)
 
     log_file = setup_logging(
         paths.logs_dir,
@@ -108,6 +135,8 @@ def bootstrap(root: Path | None = None, environ: Mapping[str, str] | None = None
     log_event(log, "settings_loaded", settings=settings.public_dict())
     if migrated:
         log_event(log, "settings_upgraded", migrations=migrated)
+    if setup_repaired:   # .env had been replaced by a fresh copy: the one-time setup was restored, not asked again
+        log_event(log, "setup_restored", keys=setup_repaired)
 
     config = load_config_bundle(paths.config_dir)
     log_event(
@@ -370,6 +399,65 @@ def _make_jarvis_model(ctx: AppContext, base_name: str | None) -> int:
             pass
 
 
+def _self_improve(ctx: AppContext) -> int:
+    from app.agent.improve_job import improve_now
+    from app.tools.catalog import build_default_registry
+    from app.utils.async_runner import AsyncRunner
+
+    print("Testing set-ups on your real requests (this uses the AI for a few minutes)...")
+    runner = AsyncRunner("improve").start()
+    try:
+        outcome = runner.run(improve_now(ctx.settings, ctx.paths, ctx.database, build_default_registry()),
+                             timeout=3600)
+    except Exception as exc:
+        print(f"Couldn't run: {exc} (is Ollama running?)")
+        return EXIT_CHECK_FAILED
+    finally:
+        runner.stop()
+    for row in outcome.scores:
+        print(f"  {row['label']:11} {row['base']} @ {row['temperature']}: right tool {row['accuracy']:.0%}, "
+              f"broken calls {row['malformed']}, {row['avg_seconds']} s")
+    print(outcome.message + (" Restart Jarvis to use it." if outcome.changed else ""))
+    return EXIT_OK
+
+
+def _model_roles(ctx: AppContext, apply: bool) -> int:
+    """Which installed model for which job, from capabilities + this PC's memory + your benchmark results."""
+    from app.ai import roles, switching
+    from app.ai.health import total_memory_bytes
+    from app.cli import create_ai_manager
+    from app.utils.async_runner import AsyncRunner
+
+    runner = AsyncRunner("roles").start()
+    try:
+        ai = create_ai_manager(ctx)
+        try:
+            models = runner.run(ai.refresh_models(), timeout=60)
+        except Exception as exc:
+            print(f"Couldn't reach Ollama ({exc}). Start Ollama and try again.")
+            return EXIT_CHECK_FAILED
+        found = roles.facts(models, switching.load_evidence(ctx.paths.data_dir), ai.health.summary(),
+                            total_memory_bytes())
+        picks = roles.recommend(found)
+        s = ctx.settings
+        current = {"general": s.ai_model, "fast": s.ai_fast_model, "smart": s.ai_smart_model,
+                   "coding": getattr(s, "ai_coding_model", ""), "vision": s.vision_model, "embedding": s.embedding_model}
+        print(roles.report(found, picks, current))
+        changes = roles.changes(picks, current)
+        if apply and changes:
+            from app.config.env_writer import update_env_file
+
+            print("\nWill set: " + ", ".join(f"{k}={v}" for k, v in changes.items()))
+            if input("Apply these to .env? [y/N] ").strip().lower() == "y":
+                update_env_file(ctx.paths.env_file, changes)
+                print("Saved. Restart Jarvis (python run.py --restart) to use them.")
+        elif apply:
+            print("\nNothing to change.")
+        return EXIT_OK
+    finally:
+        runner.stop()
+
+
 def _compare_models(ctx: AppContext, names: str | None, switch: bool) -> int:
     from app import model_compare
     from app.ai import jarvis_model
@@ -408,6 +496,10 @@ def _database_backup(ctx: AppContext, restore: Path | None) -> int:
         if restore is None:
             path = backup.create_backup(ctx.paths.db_path, folder)
             print(f"Backed up the database to {path}")
+            outcome = backup.restore_test(path)
+            print(outcome.message())
+            if not outcome.ok:
+                return EXIT_STORAGE_ERROR
         else:
             kept = backup.restore_backup(ctx.paths.db_path, restore, folder)
             print(f"Restored the database from {restore}. The previous one is kept as {kept}.")
@@ -445,6 +537,27 @@ def _health_report(ctx: AppContext) -> int:
             pass
 
 
+def _always_on(ctx: AppContext, enable: bool) -> int:
+    """Personal-assistant mode: start with Windows, straight into the tray (no window), listening hands-free."""
+    from app.config.env_writer import update_env_file
+    from app.utils import autostart
+
+    flag = "true" if enable else "false"
+    update_env_file(ctx.paths.env_file, {"START_WITH_WINDOWS": flag, "START_MINIMIZED": flag, "HANDS_FREE": flag})
+    try:
+        autostart.set_enabled(enable)
+    except OSError as exc:
+        print(f"Settings saved, but Windows start-up could not be changed: {exc}")
+        return EXIT_OS_ERROR
+    if enable:
+        print("Always-on is ON: Jarvis starts when you sign in, stays in the system tray (no window) and listens for "
+              f"\"{ctx.settings.wake_word.title()}\". Open it from the tray icon or the activation hotkey; closing the "
+              "window only hides it. Start it now with: python run.py --minimized\nUndo: python run.py --always-on-off")
+    else:
+        print("Always-on is OFF (no start with Windows, normal window start, hands-free off).")
+    return EXIT_OK
+
+
 def _eval_quality(ctx: AppContext, model: str | None) -> int:
     from datetime import datetime
 
@@ -455,7 +568,15 @@ def _eval_quality(ctx: AppContext, model: str | None) -> int:
     from app.cli import create_ai_manager
     from app.utils.async_runner import AsyncRunner
 
-    ai = create_ai_manager(ctx)
+    if model:  # --model must really change what answers (the fast/smart models would otherwise take over)
+        from app.ai.manager import AIManager
+        from app.memory.settings_store import SettingsStore
+
+        pinned = ctx.settings.model_copy(update={"ai_model": model, "ai_fast_model": "", "ai_smart_model": "",
+                                                 "ai_coding_model": ""})
+        ai = AIManager.from_settings(pinned, SettingsStore(ctx.database))
+    else:
+        ai = create_ai_manager(ctx)
     runner = AsyncRunner("quality").start()
     system = build_system_prompt(assistant_name=ctx.settings.assistant_name, now=datetime.now(), reply_language="en",
                                  spoken=True)
@@ -466,10 +587,29 @@ def _eval_quality(ctx: AppContext, model: str | None) -> int:
         used["model"] = reply.model
         return strip_think(reply.message.content or "")
 
-    questions = quality_eval.load_questions(ctx.paths.data_dir)
-    print(f"Answer quality ({len(questions)} questions)...\n")
+    from app.agent.tool_router import select_specs
+    from app.tools.catalog import build_default_registry
+
+    registry = build_default_registry()
+
+    async def ask_tools(question: str) -> list[tuple[str, dict]]:
+        """What the model would call, given the tools the router would really offer for this request."""
+        specs = select_specs(registry, question)
+        reply = await ai.chat([ChatMessage.system(system), ChatMessage.user(question)], tools=specs)
+        return [(call.name, dict(call.arguments)) for call in reply.message.tool_calls]
+
+    questions = quality_eval.load_questions(ctx.paths.data_dir) + [dict(i) for i in quality_eval.TOOL_ITEMS]
+    print(f"Answer quality (dataset {quality_eval.DATASET_VERSION}, {len(questions)} questions)...\n")
+    sample, usage = quality_eval.make_sampler()
     try:
-        scores = runner.run(quality_eval.evaluate(ask, questions), timeout=1800)
+        # a cold model can take a minute to load; that is a start-up cost, not a wrong answer, so load it first
+        print("Loading the model (not scored)...")
+        try:
+            runner.run(ask("Say OK."), timeout=600)
+        except Exception as exc:
+            print(f"  warm-up failed ({type(exc).__name__}); scoring anyway.")
+        scores = runner.run(quality_eval.evaluate(ask, questions, retries=1, ask_tools=ask_tools, sample=sample),
+                            timeout=3600)
     finally:
         try:
             runner.run(ai.aclose(), timeout=10)
@@ -477,9 +617,16 @@ def _eval_quality(ctx: AppContext, model: str | None) -> int:
             pass
     for s in scores:
         print(f"{'OK  ' if s.ok else 'MISS'} {s.question[:60]!r:64} {s.reason}")
+        if not s.ok and s.answer:
+            print(f"       it said: {' '.join(s.answer.split())[:300]}")
     before = quality_eval.previous(ctx.paths.data_dir, used["model"])
-    result = quality_eval.save(ctx.paths.data_dir, used["model"], scores)
+    result = quality_eval.save(ctx.paths.data_dir, used["model"], scores, usage())
     print(f"\n{used['model']}: {result['right']}/{result['questions']} right ({result['score']}%)")
+    for line in quality_eval.report_lines(result):
+        print(line)
+    env = result["environment"]
+    print(f"  measured on: {env['os']}, {env['cpus']} CPUs, {env['ram_gb']} GB RAM, GPU: {env['gpu']}; "
+          f"CPU/memory while answering: {result['usage'] or 'not measured'}")
     for line in quality_eval.compare(before, result):
         print(line)
     return EXIT_OK
@@ -668,6 +815,15 @@ def _error(message: str) -> None:
         sys.stderr.write(message.rstrip() + "\n")
 
 
+def _restart(ctx, minimized: bool) -> int:
+    from app.automation.background import instance_lock_path
+    from app.core import relaunch
+
+    ok, message = relaunch.cli_restart(ctx.paths.data_dir, instance_lock_path(), minimized=minimized)
+    print(message)
+    return EXIT_OK if ok else EXIT_CHECK_FAILED
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jarvis", description=f"{__app_name__} {__version__}")
     parser.add_argument("--version", action="version", version=f"{__app_name__} {__version__}")
@@ -678,6 +834,12 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--benchmark", action="store_true", help="measure recognition and command matching on them")
     mode.add_argument("--train-voice", action="store_true", help="learn how you pronounce your commands (from them)")
     mode.add_argument("--eval-bangla", action="store_true", help="score the AI's Bangla answers on a fixed question set")
+    mode.add_argument("--self-improve", action="store_true",
+                      help="test better AI set-ups on your real requests; keep one only if it scores better")
+    mode.add_argument("--export-training", action="store_true",
+                      help="write your good requests as chat JSONL (data/exports) for an optional fine-tune")
+    mode.add_argument("--model-roles", action="store_true",
+                      help="which installed model for which job (facts + your benchmarks); add --apply to save")
     mode.add_argument("--compare-models", nargs="?", const="", metavar="MODELS",
                       help="score installed models (or a comma-separated list) on the Bangla questions")
     mode.add_argument("--health-report", action="store_true",
@@ -686,10 +848,22 @@ def build_parser() -> argparse.ArgumentParser:
                       help="make one model called 'jarvis' from the best installed one (or --model), remove the rest")
     mode.add_argument("--backup-db", action="store_true", help="save a verified copy of the database (data\\backups)")
     mode.add_argument("--restore-db", type=Path, metavar="BACKUP", help="replace the database with a backup (close Jarvis first)")
+    mode.add_argument("--test-restore", nargs="?", const="newest", metavar="BACKUP",
+                      help="prove a backup can be restored: open it in a throw-away copy and check it (default: the newest)")
     mode.add_argument("--eval-quality", action="store_true",
                       help="score the AI's answers on a reference set (includes 'admit you don't know' questions)")
     mode.add_argument("--perf", action="store_true",
                       help="check that written commands are understood and time the main internal steps")
+    mode.add_argument("--rollback-update", action="store_true",
+                      help="restore the database from just before the last update (close Jarvis first; the program "
+                           "itself is not reinstalled)")
+    mode.add_argument("--audit-accessibility", action="store_true",
+                      help="check the app's colours against WCAG contrast (control names are checked by the test-suite)")
+    mode.add_argument("--export-tokens", action="store_true",
+                      help="print the UI design tokens (colours, fonts, spacing) as JSON")
+    mode.add_argument("--background", action="store_true",
+                      help="run scheduled automations without the window (no voice, no approvals; see docs/STATUS.md)")
+    mode.add_argument("--restart", action="store_true", help="restart the running Jarvis (or start it if it isn't running)")
     mode.add_argument("--info", action="store_true", help="print paths and settings instead of opening the app")
     mode.add_argument("--models", action="store_true", help="list installed Ollama models and exit")
     mode.add_argument("--chat", action="store_true", help="text chat with the assistant in this terminal")
@@ -704,14 +878,27 @@ def build_parser() -> argparse.ArgumentParser:
                       help="diagnostic: after a countdown, capture the active window and read its text")
     mode.add_argument("--devices", action="store_true", help="list microphones and speakers")
     mode.add_argument("--mic-test", action="store_true", help="test the microphone level and speech recognition")
+    mode.add_argument("--wake-doctor", action="store_true",
+                      help="say the wake phrase a few times, see what was heard, and teach Jarvis your spelling of its name")
+    mode.add_argument("--voice-doctor", action="store_true",
+                      help="measure EVERY microphone while you speak and say which to use / what to fix when Jarvis can't hear you")
+    mode.add_argument("--always-on", action="store_true",
+                      help="run as a background personal assistant: start with Windows, live in the tray, listen hands-free")
+    mode.add_argument("--always-on-off", action="store_true", help="undo --always-on")
     mode.add_argument("--say", metavar="TEXT", help="speak TEXT with the configured voice")
     mode.add_argument("--setup-voice", action="store_true", help="download the speech and voice models")
     parser.add_argument("--root", type=Path, default=None, help="use a different application folder")
     parser.add_argument("--model", default=None, help="with --eval-bangla: the model to test; with --make-jarvis-model: the base")
+    parser.add_argument("--restart-after", type=int, default=None, metavar="PID", help=argparse.SUPPRESS)  # wait for PID to exit first
     parser.add_argument("--minimized", action="store_true", help="start the desktop app in the tray")
     parser.add_argument("--intro-child", action="store_true", help=argparse.SUPPRESS)  # the start-up intro process
     parser.add_argument("--intro-title", default="J.A.R.V.I.S.", help=argparse.SUPPRESS)
     parser.add_argument("--intro-subtitle", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--intro-owner", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--stats-child", action="store_true", help=argparse.SUPPRESS)  # the dashboard's process lister
+    parser.add_argument("--capabilities", action="store_true",
+                        help="print what works offline / on the local network / with internet, and every tool's risk")
+    parser.add_argument("--apply", action="store_true", help="with --model-roles: offer to save the recommendation")
     parser.add_argument("--switch", action="store_true", help="with --compare-models: make 'jarvis' from the winner")
     return parser
 
@@ -719,10 +906,24 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_console()
     args = build_parser().parse_args(argv)
+    if args.restart_after:                       # started by "restart yourself": let the old Jarvis finish exiting first
+        from app.core import relaunch
+
+        relaunch.wait_for_exit(args.restart_after)
+    if args.capabilities:  # no settings or database needed: the registered tools + the reviewed feature table
+        from app.core.capabilities import markdown
+        from app.tools.catalog import build_default_registry
+
+        print(markdown(build_default_registry()))
+        return EXIT_OK
+    if args.stats_child:  # lists processes for the dashboard in its own process (never stalls the animation)
+        from app.ui.stats_process import run_stats_child
+
+        return run_stats_child()
     if args.intro_child:  # the intro runs on its own: no settings, no database, just the animation
         from app.ui.intro_process import run_intro_child
 
-        return run_intro_child(args.intro_title, args.intro_subtitle)
+        return run_intro_child(args.intro_title, args.intro_subtitle, args.intro_owner)
     install_exception_hooks()
     exit_code = EXIT_OK
     try:
@@ -745,10 +946,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code = _selftest(ctx)
         elif args.eval_bangla:
             exit_code = _eval_bangla(ctx, getattr(args, "model", None))
+        elif args.self_improve:
+            exit_code = _self_improve(ctx)
+        elif args.export_training:
+            from app.agent.self_improve import export_training
+
+            path = ctx.paths.data_dir / "exports" / "training.jsonl"
+            print(f"Wrote {export_training(ctx.database, path)} examples to {path} (redacted; for an optional fine-tune).")
+        elif args.model_roles:
+            exit_code = _model_roles(ctx, args.apply)
         elif args.compare_models is not None:
             exit_code = _compare_models(ctx, args.compare_models or None, args.switch)
         elif args.health_report:
             exit_code = _health_report(ctx)
+        elif args.restart:
+            exit_code = _restart(ctx, args.minimized)
+        elif args.always_on or args.always_on_off:
+            exit_code = _always_on(ctx, args.always_on)
         elif args.eval_quality:
             exit_code = _eval_quality(ctx, getattr(args, "model", None))
         elif args.perf:
@@ -756,6 +970,46 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             result = selfbench.run(ctx.paths.data_dir)
             exit_code = EXIT_OK if not result["suite"]["misses"] else EXIT_CHECK_FAILED
+        elif args.rollback_update:
+            from app.core import update_guard
+
+            try:
+                done = update_guard.rollback(ctx.paths)
+            except StorageError as exc:
+                _error(str(exc))
+                exit_code = EXIT_STORAGE_ERROR
+            else:
+                print(f"Database restored from {done['restored_from']}.\nThe database from before the rollback was kept as "
+                      f"{done['previous_database_kept_as']}.\n{done['next_step']}")
+        elif args.test_restore:
+            from app.memory import backup
+
+            found = backup.list_backups(ctx.paths.data_dir / "backups")
+            target = found[0] if args.test_restore == "newest" and found else Path(args.test_restore)
+            if args.test_restore == "newest" and not found:
+                print("There is no backup yet. Run: python run.py --backup-db")
+                exit_code = EXIT_STORAGE_ERROR
+            else:
+                outcome = backup.restore_test(target)
+                print(outcome.message())
+                exit_code = EXIT_OK if outcome.ok else EXIT_STORAGE_ERROR
+        elif args.audit_accessibility:
+            from app.core import a11y
+
+            findings = a11y.audit_theme()
+            print(a11y.report(findings))
+            exit_code = EXIT_OK if not findings else EXIT_CHECK_FAILED
+        elif args.export_tokens:
+            import json as _json
+
+            from app.ui.styles.tokens import as_dict
+
+            print(_json.dumps(as_dict(), indent=2))
+            exit_code = EXIT_OK
+        elif args.background:
+            from app.automation.background import run_background
+
+            exit_code = run_background(ctx, __version__)
         elif args.backup_db or args.restore_db:
             exit_code = _database_backup(ctx, args.restore_db)
         elif args.make_jarvis_model:
@@ -804,7 +1058,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from app.cli import run_chat
 
             exit_code = run_chat(ctx)
-        elif args.voice or args.devices or args.mic_test or args.say is not None or args.setup_voice:
+        elif args.voice or args.devices or args.mic_test or args.voice_doctor or args.wake_doctor or args.say is not None or args.setup_voice:
             from app import cli_voice
 
             if args.voice:
@@ -813,6 +1067,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 exit_code = cli_voice.run_devices(ctx)
             elif args.mic_test:
                 exit_code = cli_voice.run_mic_test(ctx)
+            elif args.voice_doctor:
+                exit_code = cli_voice.run_voice_doctor(ctx)
+            elif args.wake_doctor:
+                exit_code = cli_voice.run_wake_doctor(ctx)
             elif args.setup_voice:
                 exit_code = cli_voice.run_setup_voice(ctx)
             else:

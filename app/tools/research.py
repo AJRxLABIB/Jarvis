@@ -14,6 +14,7 @@ import asyncio
 import html
 import json
 import re
+from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
 from pydantic import Field
@@ -78,6 +79,95 @@ async def research(args: ResearchArgs, ctx: ToolContext) -> ToolResult:
     log_event(_log, "research_done", sources=len(sources))
     return ToolResult.success(f"{answer}\n\nSources:\n{shown}", answer=answer, sources=sources,
                               note=UNTRUSTED)
+
+
+# ------------------------------------------------------------------ research projects
+
+
+class ProjectArgs(ToolArgs):
+    action: Literal["create", "list", "add_source", "add_claim", "conclude", "show", "check_updates", "confirm", "delete", "watch"] = Field(
+        description="create a project; add a source (url + text you read) or a claim; conclude; show the report; "
+                    "check_updates re-reads the sources and reports what changed; confirm a re-checked claim; delete; "
+                    "watch = re-check its saved sources automatically every N days (watch_days 0 = stop)")
+    watch_days: int = Field(default=0, ge=0, le=90, description="For watch: check every N days; 0 turns monitoring off")
+    project: str | None = Field(default=None, max_length=80, description="Project name")
+    question: str | None = Field(default=None, max_length=400, description="For create: the research question")
+    criteria: str = Field(default="", max_length=400, description="For create: what to compare by")
+    url: str | None = Field(default=None, max_length=500, description="For add_source")
+    title: str = Field(default="", max_length=150, description="For add_source: the title of the source page")
+    source_date: str | None = Field(default=None, max_length=20, description="Date of the source, YYYY-MM-DD, if known")
+    text: str = Field(default="", max_length=20000, description="For add_source: the page text that was read")
+    topic: str = Field(default="", max_length=80, description="For add_claim: what the claim is about")
+    claim: str = Field(default="", max_length=500, description="For add_claim: the statement being recorded")
+    source_number: int | None = Field(default=None, ge=1, description="For add_claim: the source's number in the report")
+    kind: Literal["sourced", "inference"] = Field(default="sourced", description="For add_claim: sourced (from a source) or inference (your own conclusion)")
+    claim_id: int | None = Field(default=None, ge=1, description="For confirm: the id of the claim")
+
+
+def _project_risk(args: ProjectArgs, ctx: ToolContext) -> RiskLevel:
+    return RiskLevel.MODERATE if args.action in ("delete", "check_updates", "watch") else RiskLevel.SAFE
+
+
+async def research_project(args: ProjectArgs, ctx: ToolContext) -> ToolResult:
+    from app.core.research_store import ResearchStore
+
+    if ctx.database is None:
+        raise ToolError("Research projects need the database.", "no_database")
+    store = ResearchStore(ctx.database)
+    if args.action == "list":
+        rows = store.projects()
+        return ToolResult.success("; ".join(f"{r['name']} ({r['sources']} sources)" for r in rows) or "No research projects yet.",
+                                  projects=rows)
+    name = args.project or ""
+    if not name.strip():
+        raise ToolError("Which research project?", "missing_project")
+    if args.action == "create":
+        store.create(name, args.question or "", args.criteria)
+        return ToolResult.success(f"Created the research project '{name}'. Add sources and claims as you read.")
+    if args.action == "add_source":
+        if not args.url:
+            raise ToolError("Which web address?", "missing_url")
+        info = store.add_source(name, args.url, args.text, args.title, args.source_date)
+        extra = f" Its text matches {info['duplicate_of']}: probably the same article." if info["duplicate_of"] else ""
+        return ToolResult.success((f"Saved source {info['id']}." if info["new"] else "That source is already saved.") + extra,
+                                  **info)
+    if args.action == "add_claim":
+        sources = store.sources(store.project(name)["id"])
+        sid = sources[args.source_number - 1]["id"] if args.source_number and args.source_number <= len(sources) else None
+        cid = store.add_claim(name, args.topic or "general", args.claim, sid, args.kind)
+        return ToolResult.success(f"Saved the {args.kind} claim {cid}.", claim_id=cid)
+    if args.action == "conclude":
+        store.conclude(name, args.claim or args.text)
+        return ToolResult.success("Saved your conclusion.")
+    if args.action == "confirm":
+        if not args.claim_id:
+            raise ToolError("Which claim number?", "missing_claim")
+        store.confirm_claim(args.claim_id)
+        return ToolResult.success(f"Claim {args.claim_id} is marked as re-checked.")
+    if args.action == "delete":
+        store.delete(name)
+        return ToolResult.success(f"Deleted the research project '{name}'.")
+    if args.action == "watch":
+        store.watch(name, args.watch_days)
+        if not args.watch_days:
+            return ToolResult.success(f"Stopped monitoring '{name}'.")
+        return ToolResult.success(f"Jarvis will re-read the saved sources of '{name}' every {args.watch_days} day(s) while it "
+                                  "is running, and mark claims whose source changed as 'needs recheck'. Nothing else is fetched.")
+    if args.action == "check_updates":
+        project = store.project(name)
+        fetched: dict[str, str | None] = {}
+        for source in store.sources(project["id"]):
+            try:
+                _, _, text = await pages.fetch(source["url"])
+                fetched[source["url"]] = text
+            except ToolError:
+                fetched[source["url"]] = None
+        report = store.refresh(name, fetched)
+        text = (f"{len(report['changed'])} source(s) changed, {len(report['unchanged'])} unchanged, "
+                f"{len(report['unreadable'])} could not be read." + (" Claims from changed sources are marked 'needs recheck'."
+                                                                      if report["changed"] else ""))
+        return ToolResult.success(text, **report, note=UNTRUSTED)
+    return ToolResult.success(store.report(name), name=name)
 
 
 # ------------------------------------------------------------------ YouTube summaries
@@ -176,6 +266,15 @@ TOOLS: tuple[Tool, ...] = (
     Tool("research", "Research a question properly: search the web, READ the top pages and answer from them with "
          "numbered sources. Use for 'research...', 'find out...', questions needing several sources.", research,
          ResearchArgs, RiskLevel.SAFE, category="web", needs_network=True, timeout=120),
+    Tool("research_project", "Keep a named research project: question, sources (url, date, text), claims marked sourced "
+         "or inference, conflicts, a conclusion; show the cited report; check_updates re-reads the sources and says what "
+         "changed. Never invents sources.", research_project, ProjectArgs, RiskLevel.SAFE, "web", timeout=120,
+         risk=_project_risk, needs_network=False,
+         confirmation=lambda a, c: ("Delete the research project '%s' with all its sources and claims?" % a.project)
+         if a.action == "delete" else (
+             f"Re-read the saved sources of '{a.project}' every {a.watch_days} day(s) in the background?"
+             if a.action == "watch" and a.watch_days else
+             f"Re-read the sources of '{a.project}' on the web to see what changed?")),
     Tool("summarize_video", "Summarise a YouTube video from its captions (a link, or the video Jarvis is playing).",
          summarize_video, VideoArgs, RiskLevel.SAFE, category="web", needs_network=True, timeout=120),
 )

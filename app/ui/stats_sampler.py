@@ -32,7 +32,7 @@ class Sample:
     errors: list[str] = field(default_factory=list)
 
 
-def take(drive: str, with_processes: bool) -> Sample:
+def take(drive: str, with_processes: bool, helper=None) -> Sample:
     """One measurement. Never raises: a part that fails is left empty."""
     started = time.perf_counter()
     s = Sample()
@@ -66,7 +66,8 @@ def take(drive: str, with_processes: bool) -> Sample:
     except Exception:
         s.pids = None
     if with_processes:
-        s.processes = busiest_apps(s.cores)
+        rows = helper.busiest(s.cores) if helper is not None else None    # another process: never starves the window
+        s.processes = rows if rows is not None else busiest_apps(s.cores)
     s.taken_s = time.perf_counter() - started
     return s
 

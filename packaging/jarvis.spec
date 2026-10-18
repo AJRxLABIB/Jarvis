@@ -63,6 +63,9 @@ if os.path.isfile(_WAKE_APK):
 binaries += optional(collect_dynamic_libs, "sherpa_onnx")
 hiddenimports += optional(collect_submodules, "sherpa_onnx")
 datas += optional(collect_data_files, "cv2")
+# the 3D core: moderngl + its OpenGL context helpers
+hiddenimports += optional(collect_submodules, "moderngl") + optional(collect_submodules, "glcontext")
+binaries += optional(collect_dynamic_libs, "moderngl") + optional(collect_dynamic_libs, "glcontext")
 
 excludes = [
     "tkinter", "matplotlib", "IPython", "pytest", "_pytest", "tests", "PyQt5", "PyQt6",

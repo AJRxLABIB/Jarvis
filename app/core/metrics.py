@@ -52,8 +52,9 @@ def sample_now(drive: str = "C:\\") -> dict[str, Any]:
 
 
 class MetricsStore:
-    def __init__(self, database) -> None:
+    def __init__(self, database, retention: timedelta = RETENTION) -> None:
         self._db = database
+        self.retention = retention
 
     def record(self, reading: dict[str, Any], now: datetime | None = None) -> bool:
         """Store a reading unless one was stored in the last minute. Returns whether it was stored."""
@@ -67,7 +68,7 @@ class MetricsStore:
                          "VALUES (?, ?, ?, ?, ?, ?)",
                          (_iso(now), reading.get("cpu"), reading.get("mem_percent"), reading.get("disk_percent"),
                           reading.get("battery"), None if reading.get("plugged") is None else int(reading["plugged"])))
-            conn.execute("DELETE FROM metrics WHERE ts < ?", (_iso(now - RETENTION),))
+            conn.execute("DELETE FROM metrics WHERE ts < ?", (_iso(now - self.retention),))
         return True
 
     def history(self, hours: float = 24, now: datetime | None = None) -> list[dict]:
@@ -77,6 +78,14 @@ class MetricsStore:
                                 (_iso(now - timedelta(hours=hours)),)).fetchall()
         return [dict(r) for r in rows]
 
+    def delete(self, older_than_days: int | None = None, now: datetime | None = None) -> int:
+        """Forget readings: all of them, or only those older than N days. Returns how many were removed."""
+        with self._db.transaction() as conn:
+            if older_than_days is None:
+                return conn.execute("DELETE FROM metrics").rowcount
+            cutoff = _iso((now or datetime.now(timezone.utc)) - timedelta(days=older_than_days))
+            return conn.execute("DELETE FROM metrics WHERE ts < ?", (cutoff,)).rowcount
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -85,9 +94,53 @@ class Finding:
     message: str
     evidence: str
     suggestion: str
+    basis: str = "observed"   # "observed" = measured; "inferred" = a likely cause worked out from measurements
+    confidence: str = "high"  # high | medium | low - how sure the finding is, given how much was measured
 
     def line(self) -> str:
-        return f"[{self.severity}] {self.message} ({self.evidence}). {self.suggestion}"
+        how = "measured" if self.basis == "observed" else f"inferred, {self.confidence} confidence"
+        return f"[{self.severity}] {self.message} ({self.evidence}; {how}). {self.suggestion}"
+
+
+BASELINE_MIN_SAMPLES = 200      # about three hours of readings before "normal for you" means anything
+ABOVE_NORMAL_FACTOR = 1.25
+
+
+def _percentile(values: list[float], q: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(int(q * len(ordered)), len(ordered) - 1)]
+
+
+def baseline(rows: list[dict]) -> dict[str, dict[str, float]]:
+    """What is normal on THIS PC: median and 90th percentile of CPU and memory over the kept history."""
+    out: dict[str, dict[str, float]] = {}
+    for key in ("cpu", "mem_percent"):
+        values = _values(rows, key)
+        if len(values) >= BASELINE_MIN_SAMPLES:
+            out[key] = {"median": round(_percentile(values, 0.5), 1), "p90": round(_percentile(values, 0.9), 1),
+                        "samples": len(values)}
+    return out
+
+
+def analyse_baseline(rows: list[dict], recent: int = 15) -> list[Finding]:
+    """The last ``recent`` readings against this PC's own normal. An inference: 'unusual for you', not 'broken'."""
+    base = baseline(rows[:-recent] if len(rows) > recent else [])
+    findings = []
+    for key, label in (("cpu", "CPU"), ("mem_percent", "memory")):
+        if key not in base:
+            continue
+        tail = _values(rows[-recent:], key)
+        if len(tail) < recent // 2:
+            continue
+        now = sum(tail) / len(tail)
+        limit = max(base[key]["p90"] * ABOVE_NORMAL_FACTOR, 50.0)
+        if now > limit:
+            confidence = "high" if base[key]["samples"] >= 1000 else "medium"
+            findings.append(Finding("above_normal", "info", f"{label} use is higher than is normal for this PC",
+                                    f"{now:.0f}% over the last {len(tail)} minutes; usually at most {base[key]['p90']:.0f}%",
+                                    "Something new is running or a program changed; check what is open.",
+                                    basis="inferred", confidence=confidence))
+    return findings
 
 
 def _values(rows: list[dict], key: str) -> list[float]:
@@ -114,7 +167,8 @@ def analyse_history(rows: list[dict]) -> list[Finding]:
         if growth >= MEMORY_GROWTH_PER_HOUR and mem[-1][1] >= 60:
             findings.append(Finding("memory_growth", "warning", "Memory use keeps climbing",
                                     f"+{growth:.1f} points an hour, now {mem[-1][1]:.0f}%",
-                                    "A program may be leaking memory; restarting the biggest one usually helps."))
+                                    "A program may be leaking memory; restarting the biggest one usually helps.",
+                                    basis="inferred", confidence="medium" if len(mem) >= 30 else "low"))
         elif mem[-1][1] >= MEMORY_HIGH:
             findings.append(Finding("high_memory", "warning", "Memory is nearly full", f"{mem[-1][1]:.0f}% used",
                                     "Close programs you aren't using."))
@@ -183,12 +237,20 @@ def analyse_state(database, now: datetime | None = None, model_health: dict | No
             findings.append(Finding("model_failing", "warning", f"The model '{model}' keeps failing",
                                     f"{info['failures']} failures, last: {info['last_error'][:80]}",
                                     "Check that Ollama is running and the model is installed (`ollama list`)."))
+        rate = info.get("tool_call_ok_rate")
+        if rate is not None and info.get("tool_calls", 0) >= 5 and rate < 0.8:
+            findings.append(Finding("model_tool_calls", "warning", f"The model '{model}' often calls tools wrongly",
+                                    f"{round((1 - rate) * 100)}% of its last {info['tool_calls']} tool calls named a tool that "
+                                    "doesn't exist or had unusable arguments (this session)",
+                                    "Use a larger model for actions (AI_SMART_MODEL) or check `python run.py --eval-quality`."))
     return findings
 
 
 def diagnose(database, now: datetime | None = None, model_health: dict | None = None, hours: float = 24,
              workers: dict | None = None) -> list[Finding]:
-    return analyse_history(MetricsStore(database).history(hours, now)) + analyse_state(database, now, model_health, workers)
+    store = MetricsStore(database)
+    return (analyse_history(store.history(hours, now)) + analyse_baseline(store.history(24 * 14, now))
+            + analyse_state(database, now, model_health, workers))
 
 
 def summary(database, now: datetime | None = None, model_health: dict | None = None,

@@ -24,7 +24,9 @@ class SoundDevicePlayer:
         self.device = device
         self._sd = sd
 
-    def play(self, clip: AudioClip, *, volume: float, abort: threading.Event) -> bool:
+    def play(self, clip: AudioClip, *, volume: float, abort: threading.Event,
+             on_chunk=None) -> bool:
+        """``on_chunk(rms)`` is called as each ~50 ms piece goes to the speakers (for telling echo from your voice)."""
         if clip.samples.size == 0:
             return True
         sd = self._sd or import_sounddevice()
@@ -46,5 +48,8 @@ class SoundDevicePlayer:
                 if abort.is_set():
                     stream.abort()
                     return False
-                stream.write(samples[start:start + chunk].reshape(-1, 1))
+                piece = samples[start:start + chunk]
+                if on_chunk is not None:
+                    on_chunk(float(np.sqrt(np.mean(np.square(piece, dtype=np.float64)))) if piece.size else 0.0)
+                stream.write(piece.reshape(-1, 1))
         return True

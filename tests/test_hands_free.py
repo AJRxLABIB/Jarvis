@@ -67,6 +67,7 @@ class Harness:
             detector_factory=None if whisper else (lambda: self.detector),
             on_result=self.results.append, on_state=self.states.append, on_notice=self.notices.append,
             on_wake=lambda: self.wakes.append(1), should_pause=pause)
+        self.listener._mic_watch.seconds = 1e12  # the fake stream delivers silence faster than real time
 
     def run_until(self, condition, timeout: float = 5.0) -> bool:
         self.listener.start()

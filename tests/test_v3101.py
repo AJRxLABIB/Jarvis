@@ -32,7 +32,7 @@ def shortcut(text: str, site: bool = False) -> ToolCall | None:
     ("relaunch spotify please", "restart_application", {"name": "spotify"}),
     ("Open Netmirror in Google Chrome", "open_website", {"site": "Netmirror", "browser": "google chrome"}),
     ("Minimize Yourself, I need to see my screen", "jarvis_control", {"action": "hide_window"}),
-    ("Show me my screen", "jarvis_control", {"action": "hide_window"}),
+    ("Show me my screen", "jarvis_control", {"action": "window_overview"}),   # changed at the user's request: the overview
     ("Visualized my desktop", "describe_screen", {"target": "screen"}),
     ("what's on my screen?", "describe_screen", {"target": "screen"}),
 ])

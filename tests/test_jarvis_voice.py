@@ -55,9 +55,11 @@ class Plain(TTSEngine):
 
 
 def test_wrapper_applies_the_finish() -> None:
-    voice = JarvisVoice(Plain())
+    voice = JarvisVoice(Plain())                                    # natural finish: same length, no echo tail
     clip = voice.synthesize("hello")
-    assert clip.samples.size > tone(0.2).size and voice.voices() == ["JARVIS"] and "JARVIS voice" in voice.description
+    assert clip.samples.size == tone(0.2).size and voice.voices() == ["JARVIS"] and "JARVIS voice" in voice.description
+    classic = JarvisVoice(Plain(), style="classic")                 # the older synthetic edge adds a short tail
+    assert classic.synthesize("hello").samples.size > tone(0.2).size
 
 
 def test_jarvis_is_the_default_and_the_only_choice_offered(monkeypatch, tmp_path: Path) -> None:
@@ -67,7 +69,9 @@ def test_jarvis_is_the_default_and_the_only_choice_offered(monkeypatch, tmp_path
     monkeypatch.setattr(NeuralTTS, "load", lambda self: None)
     engine, problem = manager.create_engine(Settings(tts_engine="jarvis"), tmp_path / "piper")
     assert problem is None and isinstance(engine, JarvisVoice) and isinstance(engine.inner, NeuralTTS)
-    assert engine.inner.english_voice == "en-GB-RyanNeural" and engine.inner.pitch_offset < 0
+    assert engine.inner.english_voice == "en-GB-RyanNeural" and engine.inner.pitch_offset == 0   # its natural pitch
+    classic, _ = manager.create_engine(Settings(tts_engine="jarvis", tts_style="classic"), tmp_path / "piper")
+    assert classic.inner.pitch_offset < 0 and classic.style == "classic"
     source = (Path(__file__).parents[1] / "app" / "ui" / "settings_dialog.py").read_text(encoding="utf-8")
     assert 'FieldSpec("tts_engine", "Voice", "choice", options=("jarvis",)' in source
     assert "tts_kokoro_voice" not in source and "tts_sapi_voice" not in source

@@ -269,7 +269,11 @@ class SetupWizard(QWizard):
         except (ConfigError, OSError) as exc:
             self.button(QWizard.WizardButton.FinishButton).setText("Fix and finish")
             self.setWindowTitle(f"Set up Jarvis - could not save: {exc}")
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Set up Jarvis - could not save", str(exc))  # the title shows only line 1
             return
+        self._remember(self.updates(), finished=True)
         old = self.controller.ctx.settings
         changed = {f for f in type(old).model_fields if getattr(old, f) != getattr(self.saved, f)}
         self.controller.apply_settings(self.saved, changed)
@@ -279,3 +283,25 @@ class SetupWizard(QWizard):
             if any(m.startswith(RECOMMENDED_CHAT_MODEL) for m in installed):
                 self.controller.make_jarvis_model(RECOMMENDED_CHAT_MODEL, [])
         super().accept()
+
+    def _remember(self, answers: dict, *, finished: bool) -> None:
+        """One-time setup: kept in data/setup_state.json too, so a replaced .env doesn't bring the wizard back."""
+        try:
+            from app.core import setup_state
+
+            setup_state.remember(self.controller.ctx.paths.data_dir, answers, finished=finished)
+        except OSError:
+            pass
+
+    def reject(self) -> None:
+        """Cancel / close: don't ask again at every start (Menu > Setup wizard opens it any time)."""
+        if not self.controller.ctx.settings.setup_done:
+            self._remember({}, finished=False)
+            try:
+                from app.config.env_writer import update_env_file
+
+                update_env_file(self.controller.ctx.paths.env_file, {"SETUP_DONE": "true"})
+                self.controller.ctx.settings = self.controller.ctx.settings.model_copy(update={"setup_done": True})
+            except Exception:
+                pass
+        super().reject()

@@ -7,6 +7,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap, QRadialGrad
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from app.ui.styles.theme import STATE_COLORS
+from app.ui.styles.tokens import COLOR
 
 
 def make_icon(state: str = "IDLE", capturing: bool = False) -> QIcon:
@@ -27,7 +28,7 @@ def make_icon(state: str = "IDLE", capturing: bool = False) -> QIcon:
         from PySide6.QtGui import QPen
 
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor("#f87171"), 7))
+        painter.setPen(QPen(QColor(COLOR["danger"]), 7))
         painter.drawEllipse(5, 5, 54, 54)
     painter.end()
     return QIcon(pixmap)
@@ -62,6 +63,10 @@ class TrayController(QObject):
         add("listen", "Start Listening", controller.start_listening)
         add("stop_listen", "Stop Listening", controller.stop_listening)
         add("mute", "Mute Voice", lambda checked: controller.set_muted(checked), checkable=True)
+        mic = add("mute_mic", "Mute Microphone", lambda checked: controller.set_mic_muted(checked), checkable=True)
+        if hasattr(controller, "mic_muted_changed"):
+            controller.mic_muted_changed.connect(
+                lambda muted: (mic.blockSignals(True), mic.setChecked(muted), mic.blockSignals(False)))
         add("new_chat", "New Conversation", self._new_conversation)
         menu.addSeparator()
         add("settings", "Settings...", lambda: (self.show_window(), window.open_settings()))

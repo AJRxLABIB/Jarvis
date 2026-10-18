@@ -243,7 +243,7 @@ def edit_code(args: EditArgs, ctx: ToolContext) -> ToolResult:
     path, root, old, new, newline = planned_change(args, ctx)
     if ctx.paths is None:
         raise ToolError("There's no data folder for the backup, so I won't change code.", "no_backup")
-    backup_id = time.strftime("%Y%m%d-%H%M%S-") + hashlib.sha1(str(path).encode()).hexdigest()[:6]
+    backup_id = time.strftime("%Y%m%d-%H%M%S-") + hashlib.sha1(str(path).encode(), usedforsecurity=False).hexdigest()[:6]
     folder = ctx.paths.data_dir / BACKUP_DIR / backup_id
     folder.mkdir(parents=True, exist_ok=False)
     created = not old

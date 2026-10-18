@@ -33,6 +33,8 @@ PROCESS_MODULES = {
     "app/tools/system.py": "nvidia-smi for GPU statistics (fixed argument list)",
     "app/tools/winapi.py": "shutdown.exe with fixed arguments; os.startfile for validated paths/URLs",
     "app/vision/ocr.py": "tesseract.exe with fixed arguments",
+    "app/automation/supervisor.py": "the Windows service starts `run.py --background` (argument list, shell=False)",
+    "app/core/relaunch.py": "Jarvis starts its own replacement (`run.py --restart-after <pid>`, argument list, shell=False)",
     "app/mcp/client.py": "MCP servers the user configured in config/mcp.json (argument list, shell=False)",
 }
 PROCESS_CALLS = {"subprocess.Popen", "subprocess.run", "subprocess.call", "subprocess.check_call",

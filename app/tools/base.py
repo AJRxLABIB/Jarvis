@@ -138,6 +138,7 @@ class ToolContext:
     notify: Callable[[str, str], None] | None = None  # (title, message) -> shown/spoken by the host
     on_screen_capture: Callable[[bool], None] | None = None  # privacy indicator (SCREEN CAPTURE ACTIVE)
     ai: Any = None  # app.ai.manager.AIManager, for tools that ask a vision model
+    conversation: Any = None  # the ConversationManager using these tools ("where did that answer come from?")
     notes: Callable[[str], str] | None = None  # meeting notes: start / stop / status (set by the window)
     jarvis_control: Callable[[str], str] | None = None  # Jarvis's own screens/features by voice (set by the window)
     apply_setting: Callable[[str, str], None] | None = None  # change a setting by voice (set by the window)

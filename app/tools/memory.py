@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field
@@ -114,6 +115,89 @@ def recall(args: RecallArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success(f"I have {len(memories)} saved fact(s).", memories=[m.to_dict() for m in memories])
 
 
+class MemoryAdminArgs(ToolArgs):
+    action: Literal["categories", "export", "import", "disable_category", "enable_category", "forget_category"] = Field(
+        description="list categories, export everything to a file, import an export file, stop/resume using a "
+                    "category, or delete a category")
+    file: str | None = Field(default=None, max_length=300,
+                             description="For import: the export file's name in the exports folder (or a full path)")
+    category: str | None = Field(default=None, max_length=40, description="The memory category")
+    include_private: bool = Field(default=False, description="Include private memories in the export")
+
+
+def _admin_precheck(args: MemoryAdminArgs, ctx: ToolContext) -> None:
+    if args.action in ("disable_category", "enable_category", "forget_category") and not (args.category or "").strip():
+        raise ToolError("Which category? Say 'what categories of memory do you have' to list them.", "missing_category")
+
+
+def _admin_risk(args: MemoryAdminArgs, ctx: ToolContext) -> RiskLevel:
+    return {"forget_category": RiskLevel.DANGEROUS, "export": RiskLevel.MODERATE,
+            "import": RiskLevel.MODERATE}.get(args.action, RiskLevel.SAFE)
+
+
+def _admin_question(args: MemoryAdminArgs, ctx: ToolContext) -> str:
+    if args.action == "export":
+        extra = " INCLUDING private ones" if args.include_private else ""
+        return f"Write all your saved memories{extra} to a file in Jarvis's data folder?"
+    if args.action == "import":
+        return f"Import the memories in '{args.file}'? Existing facts are updated, nothing is deleted."
+    count = _memory(ctx).categories().get((args.category or "").strip().lower(), {}).get("total", 0)
+    return f"Delete all {count} memories in the category '{args.category}'? This can't be undone."
+
+
+def memory_admin(args: MemoryAdminArgs, ctx: ToolContext) -> ToolResult:
+    manager = _memory(ctx)
+    if args.action == "categories":
+        cats = manager.categories()
+        text = ", ".join(f"{c} ({v['active']}/{v['total']} in use)" for c, v in cats.items())
+        return ToolResult.success(f"Memory categories: {text}." if cats else "No memories are saved.", categories=cats)
+    if args.action == "export":
+        import json
+
+        rows = manager.export(args.include_private)
+        base = ctx.paths.data_dir if ctx.paths is not None else Path.home() / ".jarvis"
+        folder = base / "exports"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"memories-{ctx.clock():%Y%m%d-%H%M%S}.json"
+        path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        return ToolResult.success(f"Exported {len(rows)} memories to {path.name} in the exports folder"
+                                  + ("" if args.include_private else " (private ones left out)") + ".",
+                                  path=str(path), count=len(rows))
+    if args.action == "import":
+        import json
+
+        base = ctx.paths.data_dir if ctx.paths is not None else Path.home() / ".jarvis"
+        name = (args.file or "").strip().strip('"')
+        if not name:
+            exports = sorted((base / "exports").glob("memories-*.json"))
+            if not exports:
+                raise ToolError("Which file? There is no memory export in the exports folder.", "missing_file")
+            path = exports[-1]
+        else:
+            path = Path(name) if Path(name).is_absolute() else base / "exports" / name
+        if path.suffix.lower() != ".json" or not path.is_file():
+            raise ToolError(f"I can't find the memory file '{name or path.name}' (a .json export).", "not_found")
+        if path.stat().st_size > 5_000_000:
+            raise ToolError("That file is too big for a memory export.", "too_big")
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ToolError(f"That file isn't a readable memory export: {exc}", "invalid") from exc
+        counts = manager.import_rows(rows)
+        return ToolResult.success(f"Imported from {path.name}: {counts['added']} new, {counts['updated']} updated, "
+                                  f"{counts['skipped']} skipped (empty, too long or secret-looking).", **counts)
+    category = (args.category or "").strip().lower()
+    if category not in manager.categories():
+        raise ToolError(f"There is no memory category '{category}'.", "not_found")
+    if args.action == "forget_category":
+        return ToolResult.success(f"Deleted {manager.forget_category(category)} memories in '{category}'.")
+    changed = manager.set_category_disabled(category, args.action == "disable_category")
+    verb = "won't use" if args.action == "disable_category" else "will use"
+    return ToolResult.success(f"I {verb} the {changed} memories in '{category}' "
+                              + ("(they are kept; say 'enable' to use them again)." if args.action == "disable_category"
+                                 else "again."))
+
+
 class ForgetArgs(ToolArgs):
     what: str | None = Field(default=None, max_length=100, validation_alias=AliasChoices("what", "query", "topic", "about"),
                              description="What to forget, e.g. 'my project folder', or 'that' for the last one")
@@ -149,10 +233,11 @@ def explain_memory(args: ExplainArgs, ctx: ToolContext) -> ToolResult:
 
 class ManageMemoryArgs(ToolArgs):
     what: str | None = Field(default=None, max_length=100, description="Which memory; empty or 'that' = the last one")
-    action: Literal["disable", "enable", "private", "not_private", "expire", "history"] = Field(
+    action: Literal["disable", "enable", "private", "not_private", "expire", "history", "edit"] = Field(
         description="disable = stop using it (kept), enable, private = never give it to the AI model, expire = "
-                    "forget it on the 'until' day, history = its earlier versions")
+                    "forget it on the 'until' day, history = its earlier versions, edit = change its words to 'text'")
     until: str | None = Field(default=None, max_length=40, description="For expire: 'today', 'Friday', '15 October'")
+    text: str | None = Field(default=None, max_length=500, description="For edit: the new wording")
 
 
 def manage_memory(args: ManageMemoryArgs, ctx: ToolContext) -> ToolResult:
@@ -167,6 +252,10 @@ def manage_memory(args: ManageMemoryArgs, ctx: ToolContext) -> ToolResult:
         manager.set_private(memory, args.action == "private")
         return ToolResult.success(("Private now - I won't give it to the AI model: " if args.action == "private"
                                    else "Not private any more: ") + memory.content)
+    if args.action == "edit":
+        before = memory.content
+        changed = manager.edit(memory, args.text or "")
+        return ToolResult.success(f"Changed. Before: {before}. Now: {changed.content}.", id=changed.id)
     if args.action == "expire":
         expires = _expiry(args.until or "today", ctx)
         manager.set_expiry(memory, expires)
@@ -181,6 +270,39 @@ def manage_memory(args: ManageMemoryArgs, ctx: ToolContext) -> ToolResult:
 class KnowArgs(ToolArgs):
     about: Literal["everything", "project", "goal", "mission", "app", "person", "layout", "nickname"] = Field(
         default="everything", description="What kind of thing")
+
+
+def answer_sources(_: NoArgs, ctx: ToolContext) -> ToolResult:
+    """Where the last answer's facts came from (from the record of what really ran, not from the model's words)."""
+    conversation = getattr(ctx, "conversation", None)
+    sources = getattr(conversation, "last_sources", None) if conversation is not None else None
+    if not sources:
+        return ToolResult.success("I have no record for the last answer yet.", sources=None)
+    parts = []
+    for t in sources.get("tools", []):
+        check = (" and I checked the result afterwards" if t["verified"] is True else
+                 " but I couldn't confirm it afterwards" if t["verified"] is False else "")
+        parts.append(f"{t['tool']} {'worked' if t['ok'] else 'failed'}{check}")
+    memories = sources.get("memories", [])
+    if memories:
+        parts.append("saved memories you told me earlier: " + "; ".join(m["content"] for m in memories[:5]))
+    model = sources.get("model") or "the AI model"
+    if not parts:
+        return ToolResult.success(f"That answer came only from the AI model ({model}): no tool ran and no saved memory "
+                                  "matched, so treat it as unchecked.", sources=sources)
+    return ToolResult.success("Facts from tools/memory: " + ". ".join(parts) + f". The wording (and anything else) is "
+                              f"from the AI model ({model}), not checked.", sources=sources)
+
+
+def memory_used(_: NoArgs, ctx: ToolContext) -> ToolResult:
+    manager = _memory(ctx)
+    used = list(getattr(manager, "last_used", []) or [])
+    if not used:
+        return ToolResult.success("I didn't use any saved memories for my last answer.", memories=[])
+    lines = "; ".join(f"#{i} \"{text}\" ({why})" for i, text, why in used[:12])
+    return ToolResult.success(f"For my last answer I had these saved memories: {lines}. They are what you told me "
+                              "earlier, not something I just checked.",
+                              memories=[{"id": i, "content": t, "why": w} for i, t, w in used])
 
 
 def what_do_you_know(args: KnowArgs, ctx: ToolContext) -> ToolResult:
@@ -230,8 +352,17 @@ TOOLS: tuple[Tool, ...] = (
          resolve_memory_conflict, ConflictArgs, RiskLevel.SAFE, category="memory"),
     Tool("explain_memory", "Why Jarvis remembers something and where it came from ('why do you remember that?', "
          "'where did you learn my project folder?').", explain_memory, ExplainArgs, RiskLevel.SAFE, "memory"),
+    Tool("memory_admin", "Memory housekeeping: list categories, export all memories to a file, stop or resume using "
+         "a whole category, or delete a category.", memory_admin, MemoryAdminArgs, RiskLevel.SAFE, "memory",
+         precheck=_admin_precheck, risk=_admin_risk, confirmation=_admin_question),
     Tool("manage_memory", "Control one memory: stop using it, use it again, make it private, let it expire, or show "
          "its earlier versions.", manage_memory, ManageMemoryArgs, RiskLevel.SAFE, "memory"),
+    Tool("answer_sources", "Where the last answer's facts came from: which tools ran (and whether their result was "
+         "checked), which saved memories matched, and what was only the AI's wording ('where did you get that?', "
+         "'is that verified?').", answer_sources, NoArgs, RiskLevel.SAFE, "memory"),
+    Tool("memory_used", "Which saved memories Jarvis gave the AI for its last answer, and why each one ('why did you "
+         "mention that?', 'what do you remember that you used just now?').", memory_used, NoArgs, RiskLevel.SAFE,
+         "memory"),
     Tool("what_do_you_know", "What Jarvis knows about the user's environment - projects (and their stack), goals, "
          "the unfinished mission, most-used apps, contacts' names, layouts, nicknames - and where each fact comes from.",
          what_do_you_know, KnowArgs, RiskLevel.SAFE, "memory"),

@@ -255,7 +255,7 @@ def test_tray_menu_entries_all_work(qapp, tmp_path: Path) -> None:
     opened, quit_called = [], []
     tray = TrayController(window, controller, lambda: opened.append(1), lambda: quit_called.append(1))
     try:
-        assert set(tray.actions) == {"open", "hands_free", "listen", "stop_listen", "mute", "new_chat", "settings", "memory", "automations", "logs", "exit"}
+        assert set(tray.actions) == {"open", "hands_free", "listen", "stop_listen", "mute", "mute_mic", "new_chat", "settings", "memory", "automations", "logs", "exit"}
         tray.actions["logs"].trigger()
         tray.actions["exit"].trigger()
         tray.actions["mute"].trigger()
@@ -278,7 +278,7 @@ def test_no_empty_assistant_label_around_tool_lines(qapp) -> None:
     chat.append_stream("It is noon.")
     chat.finish_reply("It is noon.")
     assert chat.messages == [("tool", "[tool] get_datetime(): ok"), ("assistant", "It is noon.")]
-    assert chat.toPlainText().count("JARVIS ›") == 1
+    assert chat.toPlainText().count("JARVIS") == 1   # exactly one assistant bubble header
 
 
 def test_reply_that_was_never_streamed_is_still_shown(qapp) -> None:
@@ -292,7 +292,7 @@ def test_screen_capture_indicator_and_wiring(qapp, tmp_path: Path) -> None:
     controller, _, _ = make_controller(tmp_path)
     window = MainWindow(controller)
     tray = TrayController(window, controller, lambda: None, lambda: None)
-    window.SCREEN_INDICATOR_MIN_MS = 50
+    window.SCREEN_INDICATOR_MIN_MS = 500  # was 50: too tight when earlier GUI tests leave events queued
     try:
         assert controller.executor.context.ai is controller.ai
         assert not window.screen_indicator.isVisibleTo(window)
@@ -470,6 +470,176 @@ def test_command_center_layout(qapp, tmp_path: Path) -> None:
         window._refresh_dashboard(counts=True)
         assert window.modules["hands_free"].text() == "OFF" and window.overview["actions"].text() == "PROTECTED"
         assert window.live_voice_button.text() == "LIVE VOICE: OFF"
+        # the layout from the reference picture: page indicator + five tabs, header items and the side input all work
+        window.tabs[1].click()
+        assert window.page_indicator.text() == "SYSTEM"
+        window.nav_buttons["hud"].click()
+        assert window.pages.currentIndex() == 0 and window.page_indicator.text() == "CORE LIVE"
+        sent = []
+        window.controller.send_text = sent.append
+        window.comms_input.setText("  what time is it  ")
+        window._send_comms()
+        assert sent == ["what time is it"] and window.comms_input.text() == ""
+        window._send_comms()                                         # empty: nothing sent twice
+        assert sent == ["what time is it"]
+        toggles = []
+        window._toggle_hands_free = toggles.append
+        window.modules["hands_free"].toggled.emit()
+        assert toggles == [True]                                    # hands-free is off, so the switch turns it on
+        assert window.live_box_side.text() == window.live_box.text()
     finally:
         window.allow_close = True
         window.close()
+
+
+def test_bubbles_donuts_and_switches_draw_and_keep_state(qapp) -> None:
+    from app.ui.dashboard import DonutGauge, LevelBars, ModuleRow
+
+    chat = ChatView("Jarvis")
+    chat.add_message("user", "hello")
+    chat.add_message("assistant", "Hi, Labib.")
+    assert chat.messages == [("user", "hello"), ("assistant", "Hi, Labib.")]
+    assert chat.toPlainText().count("YOU") == 1 and chat.toPlainText().count("JARVIS") == 1
+    donut = DonutGauge("CPU")
+    donut.set_value(250)
+    assert donut.value == 100.0
+    donut.set_value(None)
+    assert donut.value is None
+    row = ModuleRow("Hands-free")
+    row.set("ON", "ok")
+    assert row.dot.on is True
+    row.set("OFF", "off")
+    assert row.dot.on is False
+    bars = LevelBars()
+    for level in (0.2, 5.0, -1.0):
+        bars.push(level)
+    assert max(bars.levels) <= 1.0 and min(bars.levels) >= 0.0
+
+
+def test_meters_spectrum_wave_bubble_and_plasma_orb(qapp) -> None:
+    from PySide6.QtGui import QPixmap
+
+    from app.ui.chat import waveform_pixmap
+    from app.ui.dashboard import SpectrumStrip, VerticalMeters
+    from app.ui.visualizer import OrbWidget
+
+    meters = VerticalMeters()
+    meters.set_values([10, 250, None, -5])           # clamped; missing readings stay empty
+    assert meters.values[:4] == [10.0, 100.0, None, 0.0] and len(meters.values) == 6
+    strip = SpectrumStrip()
+    for level in (0.1, 2.0, -3.0):
+        strip.push(level)
+    assert max(strip.levels) <= 1.0 and min(strip.levels) >= 0.0
+    assert not waveform_pixmap([0.1, 0.9, 0.5, 0.7, 0.2, 0.6], "#38bdf8").isNull()
+    chat = ChatView("Jarvis")
+    chat.add_message("user", "play music", wave=[0.0, 0.1, 0.6, 0.9, 0.8, 0.7, 0.4, 0.2])
+    chat.add_message("user", "typed, no wave", wave=None)
+    assert [m[1] for m in chat.messages] == ["play music", "typed, no wave"]
+    assert chat.document().resource(3, __import__("PySide6.QtCore", fromlist=["QUrl"]).QUrl("wave:1")) is not None
+    orb = OrbWidget()
+    orb.resize(600, 500)
+    for state in ("IDLE", "LISTENING", "SPEAKING", "THINKING"):
+        orb.set_state(state)
+        orb.set_level(-20.0)
+        orb._frame()
+        pix = QPixmap(orb.size())
+        orb.render(pix)
+        assert not pix.isNull()
+
+
+def test_spoken_wave_is_only_for_spoken_messages_and_trims_silence(qapp, tmp_path: Path) -> None:
+    controller, *_ = make_controller(tmp_path)
+    try:
+        controller.microphone_active.emit(True)
+        for dbfs in (-90, -90, -30, -20, -25, -90):
+            controller.level_changed.emit(dbfs)
+        controller.last_message_spoken = False
+        assert controller.spoken_wave() is None                       # typed message: no waveform
+        controller.last_message_spoken = True
+        wave = controller.spoken_wave()
+        assert wave is not None and len(wave) == 3 and all(0.0 <= v <= 1.0 for v in wave)
+        controller.microphone_active.emit(False)
+        controller.microphone_active.emit(True)                        # a new utterance starts clean
+        assert controller.spoken_wave() is None
+    finally:
+        controller.shutdown()
+
+
+def test_hidden_controls_keep_working_through_the_menu(qapp, tmp_path: Path) -> None:
+    """Content removed from the dashboard must not remove what it did: every hidden control is still reachable."""
+    from app.ui.main_window import MainWindow
+
+    controller = make_controller(tmp_path)[0]
+    window = MainWindow(controller)
+    try:
+        menus = {a.text(): a.menu() for a in window.menu.actions() if a.menu() is not None}
+        pages = {a.text(): a for a in menus["Pages"].actions()}
+        assert set(pages) >= {"Core Live", "System", "Memory", "Automations", "Notes", "Devices", "Phone", "Privacy",
+                              "Logs", "Settings"}
+        pages["System"].trigger()
+        assert window.pages.currentIndex() == 1
+        pages["Core Live"].trigger()
+        assert window.pages.currentIndex() == 0
+        sent = []
+        controller.send_text = sent.append
+        quick = {a.text(): a for a in menus["Quick actions"].actions()}
+        assert len(quick) == 6
+        quick["Lock Pc"].trigger()
+        assert sent == ["lock my pc"]                                  # same handler as the hidden button
+        labels = {a.text() for a in window.menu.actions()}
+        for needed in ("Settings...", "Privacy dashboard...", "Automations...", "Logs...", "Run self-test",
+                       "Speed report", "Always listening (hands-free)"):
+            assert needed in labels, needed
+        assert window.input.isVisibleTo(window) and window.send_button.isVisibleTo(window)
+        assert window.stop_button.isVisibleTo(window) and window.live_voice_button.isVisibleTo(window)
+        assert window.mic_button.isVisibleTo(window)
+        for badge in (window.mic_indicator, window.screen_indicator, window.camera_indicator):
+            assert badge.parent() is not None                          # privacy indicators are still in the window
+    finally:
+        window.allow_close = True
+        window.close()
+        controller.shutdown()
+
+
+def test_core_has_no_border_and_the_background_draws_the_holographic_layer(qapp, tmp_path: Path) -> None:
+    from PySide6.QtGui import QPixmap
+
+    from app.ui.main_window import MainWindow
+
+    controller = make_controller(tmp_path)[0]
+    window = MainWindow(controller)
+    try:
+        window.resize(1600, 900)
+        window.show()
+        qapp.processEvents()
+        background = window.backdrop
+        if getattr(background, "backdrop_mode", False):            # GPU path: the 3D core is the window background
+            assert background is window.orb and background.slot is window.core_slot
+            assert background._slot_rect() is not None and window.centralWidget() is background
+            return
+        holo = background._holo()
+        assert holo is not None and holo[1] > 50                       # centre + radius of the core, in window terms
+        assert background._holo_band().width() == background.width()   # streaks/waves span the whole window
+        assert window.orb.external_holo is True                        # the core no longer draws its own copy
+        pix = QPixmap(background.size())
+        background.render(pix)                                         # painting the layer works
+        from app.ui.dashboard import DashPanel
+
+        assert any(panel.frameless for panel in background.findChildren(DashPanel))   # the core panel has no border
+    finally:
+        window.allow_close = True
+        window.close()
+        controller.shutdown()
+
+
+def test_taskbar_logo_and_own_app_identity(qapp) -> None:
+    """The taskbar shows Jarvis's logo under Jarvis's own identity, not Python's icon (IDLE)."""
+    import sys
+    from app.ui import app_icon
+
+    icon = app_icon.app_icon()
+    assert not icon.isNull() and len(icon.availableSizes()) >= 8
+    assert app_icon.draw_logo(64).toImage().pixelColor(32, 32).lightness() > 200      # the glowing centre
+    assert app_icon.APP_ID and "." in app_icon.APP_ID
+    if sys.platform != "win32":
+        assert app_icon.set_app_id() is False

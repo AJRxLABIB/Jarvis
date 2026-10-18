@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -69,6 +70,81 @@ def create_backup(db_path: Path, folder: Path, *, keep: int = 7, now: datetime |
         old.unlink(missing_ok=True)
     log_event(_log, "db_backup", path=str(target), schema_version=version)
     return target
+
+
+@dataclass
+class RestoreTest:
+    ok: bool
+    backup: str
+    schema_before: int = 0
+    schema_after: int = 0
+    tables: dict[str, int] = field(default_factory=dict)
+    problems: list[str] = field(default_factory=list)
+    seconds: float = 0.0
+
+    def message(self) -> str:
+        rows = sum(self.tables.values())
+        if self.ok:
+            upgraded = f", upgraded v{self.schema_before} -> v{self.schema_after}" if self.schema_after != self.schema_before else ""
+            return (f"Restore test passed for {self.backup}: it opened in an isolated copy{upgraded}, passed its integrity "
+                    f"check and accepted a write; {len(self.tables)} tables, {rows} rows ({self.seconds:.1f}s). "
+                    "Your real database was not touched.")
+        return f"Restore test FAILED for {self.backup}: " + "; ".join(self.problems)
+
+
+def restore_test(backup: Path, scratch_parent: Path | None = None) -> RestoreTest:
+    """Prove a backup can really be restored: copy it to a throw-away folder, open it the way Jarvis does (including any
+    migrations), check integrity and foreign keys, count the rows, and make sure a write works. The live database and the
+    backup file are never modified, and the scratch copy is always deleted."""
+    import shutil
+    import tempfile
+    import time
+
+    from app.memory.database import Database
+
+    started = time.monotonic()
+    report = RestoreTest(False, backup.name)
+    scratch = Path(tempfile.mkdtemp(prefix="jarvis-restore-test-", dir=str(scratch_parent) if scratch_parent else None))
+    try:
+        if not backup.is_file():
+            report.problems.append("the backup file does not exist")
+            return report
+        try:
+            result, report.schema_before = _check(backup)
+        except StorageError as exc:
+            report.problems.append(str(exc))
+            return report
+        if result != "ok":
+            report.problems.append(f"the file failed its integrity check ({result})")
+            return report
+        if report.schema_before > LATEST_SCHEMA_VERSION:
+            report.problems.append(f"it is from a newer Jarvis (schema v{report.schema_before})")
+            return report
+        copy = scratch / "assistant.db"
+        shutil.copyfile(backup, copy)
+        try:
+            db = Database(copy)
+            db.initialize()                                   # exactly what a restored install does at its first start
+            report.schema_after = int(db.schema_version())
+            with db.connect() as conn:
+                broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if broken:
+                    report.problems.append(f"{len(broken)} rows point at records that do not exist")
+                names = [r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+                for name in names:
+                    report.tables[name] = int(conn.execute('SELECT COUNT(*) FROM "' + name.replace('"', '""') + '"').fetchone()[0])
+            with db.transaction() as conn:                     # a write must work; then it is undone
+                conn.execute("CREATE TEMP TABLE restore_probe (x INTEGER)")
+                conn.execute("INSERT INTO restore_probe VALUES (1)")
+        except Exception as exc:
+            report.problems.append(f"opening the restored copy failed: {str(exc)[:160]}")
+            return report
+        report.ok = not report.problems
+        return report
+    finally:
+        report.seconds = time.monotonic() - started
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def restore_backup(db_path: Path, backup: Path, folder: Path) -> Path:

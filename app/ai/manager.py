@@ -181,6 +181,7 @@ class AIManager:
                 return model, source
             if source == "saved":
                 log_event(_log, "saved_model_missing", model=name)
+                self.__dict__["_saved_missing"] = name           # told once with the next answer (see resolve notice)
                 continue
             installed = ", ".join(m.name for m in chat_models)
             origin = "AI_MODEL in .env" if source == "env" else "the selected model"
@@ -303,7 +304,7 @@ class AIManager:
 
     async def _prepare(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec],
                        fast: bool = False, smart: bool = False, coding: bool = False,
-                       sensitive: bool = False) -> ChatRequest:
+                       sensitive: bool = False, untrusted: bool = False) -> ChatRequest:
         if sensitive:
             from app.ai.router import is_local_host
 
@@ -323,22 +324,53 @@ class AIManager:
         elif model is None and fast:
             model = await self._fast_model()
             role = "fast"
+        substituted = None                     # why the chosen role model isn't used (shown to you once, never silent)
         if model is not None and not self.health.available(model.name):
             log_event(_log, "model_skipped_unhealthy", model=model.name, seconds=round(self.health.cooldown_left(model.name)))
+            substituted = (model.name, "kept failing, so it's resting for a few minutes")
             model = None  # it keeps failing: use the default model until its cool-off ends
         if model is not None and not could_ever_fit(model.size_bytes, total_memory_bytes()):
             log_event(_log, "model_too_big_for_this_pc", model=model.name, size=model.size_bytes)
+            substituted = (model.name, "is too big for this PC's memory")
             model = None  # bigger than this PC's RAM: it could never load
+        if model is not None and tools and model.supports_tools is False:
+            substituted = (model.name, "can't use tools")
         if model is None or (tools and model.supports_tools is False):
             model, _ = await self.resolve_model()
             role = "default"
         self.last_route = {"role": role, "model": model.name, "fallback": None}
+        if substituted is not None and substituted[0] != model.name:
+            self.last_route["fallback"] = self._announce_once(f"{substituted[0]} {substituted[1]}")
+        missing = self.__dict__.pop("_saved_missing", None)
+        if missing and not self.last_route.get("fallback"):
+            self.last_route["fallback"] = self._announce_once(f"your selected model {missing} is no longer installed")
+        if getattr(self.settings, "ai_auto_switch", False):
+            model = await self._auto_switch(model, tools, untrusted)
         if tools and model.supports_tools is False:
             raise ModelCapabilityError(
                 f"The model '{model.name}' does not support tool calling. Choose a model that does."
             )
         think = self.settings.ai_think if model.supports_thinking else None
         return ChatRequest(model=model.name, messages=tuple(messages), tools=tuple(tools), think=think)
+
+    async def _auto_switch(self, model: ModelInfo, tools: Sequence[ToolSpec], untrusted: bool) -> ModelInfo:
+        """AI_AUTO_SWITCH: replace ``model`` by an installed, benchmark-backed one when app/ai/switching.py says so."""
+        from app.ai import switching
+
+        installed = [m for m in await self.models() if m.can_chat and (m.supports_tools is not False or not tools)
+                     and self.health.available(m.name) and could_ever_fit(m.size_bytes, total_memory_bytes())]
+        pick = switching.decide(model.name, [m.name for m in installed],
+                                switching.load_evidence(self.settings.data_dir), self.health.summary(),
+                                untrusted=untrusted, tools=bool(tools))
+        if pick is None:
+            return model
+        target = find_model(installed, pick.model)
+        if target is None:
+            return model
+        log_event(_log, "model_auto_switched", old=model.name, new=target.name)
+        self.last_route = {"role": "auto-switch", "model": target.name, "switched": pick.reason,
+                           "fallback": self._announce_once(f"AI_AUTO_SWITCH moved from {model.name} ({pick.reason})")}
+        return target
 
     def _record_failure(self, model: str, exc: Exception) -> None:
         """Count a failure against the model's health - except 'the conversation is too long', which isn't its fault."""
@@ -347,6 +379,14 @@ class AIManager:
         self.health.failure(model, f"{exc.__class__.__name__}: {exc}")
 
     last_route: dict | None = None  # the model the last request used (and a fallback, if one happened)
+
+    def _announce_once(self, reason: str) -> str | None:
+        """A model substitution is told to you the first time it happens (then only logged): honest, not noisy."""
+        seen = self.__dict__.setdefault("_announced", set())
+        if reason in seen:
+            return None
+        seen.add(reason)
+        return reason
 
     async def _fallback(self, request: ChatRequest, exc: Exception) -> ChatRequest | None:
         """A role model (fast/smart/coding) failed: try AI_MODEL once. None when there's nothing to fall back to."""
@@ -365,8 +405,8 @@ class AIManager:
 
     async def chat(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec] = (),
                    fast: bool = False, smart: bool = False, coding: bool = False,
-                   sensitive: bool = False) -> ChatResponse:
-        request = await self._prepare(messages, tools, fast, smart, coding, sensitive)
+                   sensitive: bool = False, untrusted: bool = False) -> ChatResponse:
+        request = await self._prepare(messages, tools, fast, smart, coding, sensitive, untrusted)
         started = time.monotonic()
         try:
             response = await self.provider.chat(request)
@@ -391,14 +431,17 @@ class AIManager:
     async def stream_chat(
         self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec] = (), fast: bool = False,
         smart: bool = False, coding: bool = False, sensitive: bool = False,
+        untrusted: bool = False,
     ) -> AsyncIterator[tuple[str, ChatChunk]]:
         """Yields (model name, chunk). ``fast``: AI_FAST_MODEL, ``smart``: AI_SMART_MODEL, ``coding``:
         AI_CODING_MODEL (if set and installed). A failure before the first chunk falls back to AI_MODEL once."""
-        request = await self._prepare(messages, tools, fast, smart, coding, sensitive)
+        request = await self._prepare(messages, tools, fast, smart, coding, sensitive, untrusted)
         started = False
         began = time.monotonic()
         try:
             async for chunk in self.provider.stream_chat(request):
+                if not started:
+                    self.health.first_token(request.model, time.monotonic() - began)
                 started = True
                 yield request.model, chunk
             self.health.success(request.model, time.monotonic() - began)

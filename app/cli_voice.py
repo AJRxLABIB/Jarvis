@@ -124,6 +124,12 @@ def create_stt(ctx: "AppContext", *, offline: bool | None = None, background_upg
     from app.voice.stt_select import stt_candidates
 
     s = ctx.settings
+    try:                                             # spellings of the name you approved with --wake-doctor
+        from app.voice import wake_doctor
+
+        wake_doctor.activate(ctx.paths.data_dir)
+    except Exception:
+        pass
     candidates = stt_candidates(s)
     first = candidates[0]
     return FasterWhisperSTT(
@@ -287,6 +293,51 @@ def run_mic_test(ctx: "AppContext", out: TextIO = sys.stdout, seconds: float = 4
     _write(out, f"Heard: \"{transcript.text or '(nothing)'}\"  confidence {transcript.confidence:.2f}, "
                 f"{transcript.elapsed_ms} ms ({getattr(stt, 'description', 'speech recognition')})\n")
     return 0
+
+
+def run_voice_doctor(ctx: "AppContext", out: TextIO = sys.stdout, seconds: float = 3.0) -> int:
+    """Measure every microphone and say which one to use and what to fix (see app/voice/doctor.py)."""
+    from app.voice import doctor
+
+    if not ctx.settings.microphone_enabled:
+        _write(out, "The microphone is turned off in Settings (MICROPHONE_ENABLED=false). Turn it on first.\n")
+        return 1
+    stt = None
+    try:
+        stt = create_stt(ctx, background_upgrade=False)
+    except Exception:
+        stt = None                                           # the level check still works without the recognizer
+
+    def transcribe(audio):
+        return stt.transcribe(audio, ctx.settings.voice_language)
+
+    try:
+        return doctor.run_doctor(ctx.settings, out=out, seconds=seconds, transcribe=transcribe if stt is not None else None)
+    except AudioError as exc:
+        _write(out, f"{exc}\n")
+        return 1
+
+
+def run_wake_doctor(ctx: "AppContext", out: TextIO = sys.stdout) -> int:
+    """Say the wake phrase a few times, see what was heard, and teach Jarvis your spelling of its name."""
+    from app.voice import wake_doctor
+    from app.voice.vad import create_vad
+
+    if not ctx.settings.microphone_enabled:
+        _write(out, "The microphone is turned off in Settings (MICROPHONE_ENABLED=false). Turn it on first.\n")
+        return 1
+    stt = create_stt(ctx, background_upgrade=False)
+    mic = Microphone(ctx.settings.microphone_device, enabled=True)
+    vad = create_vad(ctx.settings.vad_engine)
+
+    def listen() -> str:
+        vad.reset() if hasattr(vad, "reset") else None
+        recording = mic.record(silence_timeout=ctx.settings.silence_timeout, start_timeout=6.0, max_seconds=8.0, vad=vad)
+        if not recording.speech_detected or recording.audio.size == 0:
+            return ""
+        return stt.transcribe(recording.audio, ctx.settings.voice_language).text
+
+    return wake_doctor.run(ctx.settings, ctx.paths.data_dir, out=out, ask=input, listen=listen)
 
 
 def run_setup_voice(ctx: "AppContext", out: TextIO = sys.stdout) -> int:

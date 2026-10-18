@@ -313,12 +313,12 @@ def _mouse_control(args: MouseArgs, ctx: ToolContext) -> ToolResult:
 
 class JarvisArgs(ToolArgs):
     action: Literal["open_settings", "open_memory", "open_privacy", "open_logs", "open_automations", "mission_control",
-                    "open_notifications", "emergency_controls", "evolution_center", "task_center", "my_day",
-                    "show_system",
+                    "open_notifications", "emergency_controls", "evolution_center", "task_center", "my_day", "workflow_studio",
+                    "security_center", "show_system",
                     "show_dashboard", "enroll_voice", "teach_wake_word", "train_voice", "make_jarvis_model",
                     "self_test", "speed_report", "check_updates", "phone_remote", "new_conversation", "hide_window",
-                    "show_window", "setup_wizard", "hands_free_off", "close_dialog", "health_report", "use_best_model", "full_screen", "exit_full_screen", "stay_on_top", "not_on_top",
-                    "compare_models"] = Field(
+                    "show_window", "setup_wizard", "hands_free_off", "mute_microphone", "close_dialog", "health_report", "use_best_model", "full_screen", "exit_full_screen", "stay_on_top", "not_on_top",
+                    "compare_models", "restart_jarvis", "window_overview", "tab_overview"] = Field(
                         description="What Jarvis should do")
 
 

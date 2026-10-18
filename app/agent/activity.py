@@ -10,6 +10,8 @@ and the answer says so rather than guessing.
 
 from __future__ import annotations
 
+from app.utils.timefmt import time12
+
 import json
 import re
 from dataclasses import dataclass
@@ -200,10 +202,10 @@ def summarize(actions: list[Action], label: str) -> str:
         elif a.tool not in ("close_application",):
             add(other, a.message.rstrip("."))
     first, last = actions[0].at, actions[-1].at
-    when = (f"between {first:%H:%M} and {last:%H:%M}" if (last - first) >= timedelta(minutes=5)
-            else f"around {first:%H:%M}")
+    when = (f"between {time12(first)} and {time12(last)}" if (last - first) >= timedelta(minutes=5)
+            else f"around {time12(first)}")
     if (last.date() != first.date()):
-        when = f"from {first:%a %H:%M} to {last:%a %H:%M}"
+        when = f"from {first:%a} {time12(first)} to {last:%a} {time12(last)}"
     parts = []
     if apps:
         parts.append("opened " + _list(apps))

@@ -23,8 +23,28 @@ from app import __version__
 TRANSPORT: httpx.BaseTransport | None = None  # tests replace this
 
 
+MAX_MANIFEST_BYTES = 256 * 1024
+MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
+
+
 class UpdateError(Exception):
     pass
+
+
+def _require_https(response: httpx.Response) -> None:
+    """A redirect must not drop the connection to plain http (the manifest and installer travel over https only)."""
+    for hop in [*response.history, response]:
+        if hop.url.scheme != "https":
+            raise UpdateError("The update server redirected to an unencrypted address; the update was refused.")
+
+
+def safe_installer_name(info: "UpdateInfo") -> str:
+    """A plain file name for the installer: letters, digits, dot, dash, underscore; .exe or .msi only."""
+    raw = Path(info.url.split("?")[0].split("#")[0]).name
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", raw).lstrip(".")
+    if not cleaned.lower().endswith((".exe", ".msi")):
+        cleaned = f"JarvisSetup-{re.sub(r'[^0-9A-Za-z.]', '', info.version) or 'update'}.exe"
+    return cleaned[:100]
 
 
 @dataclass(frozen=True)
@@ -45,10 +65,16 @@ def check(manifest_url: str, current: str = __version__) -> UpdateInfo | None:
     if not manifest_url.lower().startswith("https://"):
         raise UpdateError("The update manifest must be an https:// URL.")
     try:
-        with httpx.Client(transport=TRANSPORT, timeout=10.0, follow_redirects=True) as client:
+        with httpx.Client(transport=TRANSPORT, timeout=10.0, follow_redirects=True, max_redirects=5,
+                          trust_env=False) as client:
             response = client.get(manifest_url)
             response.raise_for_status()
+            _require_https(response)
+            if len(response.content) > MAX_MANIFEST_BYTES:
+                raise UpdateError("The update manifest is unreasonably large and was ignored.")
             data = response.json()
+    except UpdateError:
+        raise
     except (httpx.HTTPError, ValueError) as exc:
         raise UpdateError(f"Could not check for updates: {exc}") from exc
     try:
@@ -64,17 +90,27 @@ def check(manifest_url: str, current: str = __version__) -> UpdateInfo | None:
 def download(info: UpdateInfo, folder: Path, require_signature: bool = False) -> Path:
     """Download the installer and verify its SHA-256 and code signature (a failure deletes it)."""
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / (Path(info.url.split("?")[0]).name or f"JarvisSetup-{info.version}.exe")
+    target = folder / safe_installer_name(info)
     digest = hashlib.sha256()
+    written = 0
     try:
-        with httpx.Client(transport=TRANSPORT, timeout=60.0, follow_redirects=True) as client:
+        with httpx.Client(transport=TRANSPORT, timeout=60.0, follow_redirects=True, max_redirects=5,
+                          trust_env=False) as client:
             with client.stream("GET", info.url) as response:
                 response.raise_for_status()
+                _require_https(response)
                 with target.open("wb") as out:
                     for chunk in response.iter_bytes():
+                        written += len(chunk)
+                        if written > MAX_INSTALLER_BYTES:
+                            raise UpdateError("The download is larger than any Jarvis installer should be; stopped.")
                         digest.update(chunk)
                         out.write(chunk)
+    except UpdateError:
+        target.unlink(missing_ok=True)
+        raise
     except httpx.HTTPError as exc:
+        target.unlink(missing_ok=True)   # never leave a half-downloaded installer behind
         raise UpdateError(f"The download failed: {exc}") from exc
     if digest.hexdigest() != info.sha256:
         target.unlink(missing_ok=True)

@@ -140,9 +140,34 @@ def home_control(args: HomeArgs, ctx: ToolContext) -> ToolResult:
         service = SERVICES[args.action].get(domain, f"turn_{args.action}")
     _request(ctx, "POST", f"/api/services/{domain}/{service}", {"entity_id": entity["entity_id"]})
     _CACHE.clear()
-    words = {"on": "on", "off": "off", "toggle": "toggled"}
-    return ToolResult.success(f"{_name(entity)} is {words[args.action]}." if args.action != "toggle"
-                              else f"Toggled {_name(entity)}.", device=_name(entity), service=service)
+    expected = {"on": "on", "off": "off"}.get(args.action) if domain in CHECKABLE else None
+    if expected is None:                       # covers, locks, scenes...: their state changes later / differently
+        return ToolResult.success(f"Sent '{service}' to {_name(entity)} (Home Assistant accepted it; I can't confirm "
+                                  "the device's new state yet).", device=_name(entity), service=service, verified=None)
+    reported = _state_now(ctx, entity["entity_id"])
+    if reported == expected:
+        return ToolResult.success(f"{_name(entity)} is {expected} - Home Assistant confirms it.", device=_name(entity),
+                                  service=service, verified=True)
+    return ToolResult.failure("not_verified", f"I asked Home Assistant to turn {_name(entity)} {expected}, but it "
+                              f"still reports '{reported}'. The device may be offline.", device=_name(entity),
+                              service=service, verified=False)
+
+
+CHECKABLE = ("light", "switch", "fan", "input_boolean", "humidifier")
+
+
+def _state_now(ctx: ToolContext, entity_id: str, tries: int = 3) -> str:
+    """The entity's state as Home Assistant reports it now (a device can take a moment: asked up to 3 times)."""
+    state = "unknown"
+    for attempt in range(tries):
+        try:
+            state = str((_request(ctx, "GET", f"/api/states/{entity_id}") or {}).get("state", "unknown"))
+        except ToolError:
+            return "unknown"
+        if state in ("on", "off") or attempt == tries - 1:
+            return state
+        time.sleep(0.4)
+    return state
 
 
 def home_status(_: NoArgs, ctx: ToolContext) -> ToolResult:

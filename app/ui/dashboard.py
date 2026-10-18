@@ -5,7 +5,10 @@ pretending to be measurements."""
 
 from __future__ import annotations
 
+from app.utils.timefmt import time12
+
 import math
+from datetime import datetime
 import time
 import weakref
 from collections import deque
@@ -17,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.hud import mono_font as _mono
+from app.ui.styles.tokens import COLOR
 
 
 def mono_font(size: float, bold: bool = False, spacing: float = 0.0):
@@ -28,16 +32,16 @@ def mono_font(size: float, bold: bool = False, spacing: float = 0.0):
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, spacing)
     return font
 
-CYAN = "#22d3ee"
-BLUE = "#38bdf8"
+CYAN = COLOR["cyan"]
+BLUE = COLOR["accent"]
 ORANGE = "#f59e0b"
-GREEN = "#34d399"
-RED = "#f87171"
-PURPLE = "#a78bfa"
-GOLD = "#f5b642"
+GREEN = COLOR["ok"]
+RED = COLOR["danger"]
+PURPLE = COLOR["violet"]
+GOLD = COLOR["gold"]
 DIM = "#6b8aa6"
 TEXT = "#cfe3f3"
-EDGE = "#0f3a55"
+EDGE = COLOR["dash_edge"]
 
 STATUS_COLORS = {"ok": GREEN, "warn": ORANGE, "bad": RED, "off": DIM, "info": CYAN}
 
@@ -163,9 +167,13 @@ class DashPanel(QFrame):
         self._shimmer_at = time.monotonic()
         motion.CLOCK.join(self._tick)
 
+    frameless = False         # True: no frame, fill or corners (the core sits straight on the window background)
+
     def paintEvent(self, _event) -> None:  # noqa: N802
         from app.ui.motion import ease_out
 
+        if self.frameless:
+            return
         now = time.monotonic()
         grow = ease_out(self.boot_progress(now))
         p = QPainter(self)
@@ -255,16 +263,93 @@ class StatusRow(QWidget):
         return self.value.text()
 
 
+class DotLamp(QWidget):
+    """● a small status lamp: lit in the status colour when the module is on, dim when it is off."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.on = False
+        self.color = QColor(DIM)
+        self.setFixedSize(10, 16)
+
+    def set_state(self, on: bool, color: str) -> None:
+        if on == self.on and QColor(color) == self.color:
+            return
+        self.on, self.color = on, QColor(color)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = QPointF(5, 8)
+        if self.on:
+            glow = QRadialGradient(c, 5)
+            halo = QColor(self.color)
+            halo.setAlpha(110)
+            glow.setColorAt(0, halo)
+            glow.setColorAt(1, QColor(0, 0, 0, 0))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(glow)
+            p.drawEllipse(c, 5, 5)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.color if self.on else QColor(DIM))
+        p.drawEllipse(c, 2.6, 2.6)
+        p.end()
+
+
+class ToggleSwitch(QWidget):
+    """A small pill switch; clicking it emits ``clicked`` (the row decides what that does)."""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.on = False
+        self.color = QColor(DIM)
+        self.setFixedSize(28, 16)
+        self.setAccessibleName("module switch")
+
+    def set_state(self, on: bool, color: str) -> None:
+        if on == self.on and QColor(color) == self.color:
+            return
+        self.on, self.color = on, QColor(color)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = QColor(self.color)
+        track.setAlpha(120 if self.on else 45)
+        p.setPen(QPen(self.color, 1))
+        p.setBrush(track)
+        p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 7.5, 7.5)
+        knob_x = self.width() - 13 if self.on else 3
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(COLOR["text_strong"]) if self.on else QColor(DIM))
+        p.drawEllipse(QRectF(knob_x, 3, 10, 10))
+        p.end()
+
+
 class ModuleRow(StatusRow):
     """● MODULE NAME ................ STATE (the dot shows whether it is on)"""
 
-    def __init__(self, label: str, parent: QWidget | None = None) -> None:
+    toggled = Signal()       # a click on the switch (only rows created with switch=True)
+
+    def __init__(self, label: str, parent: QWidget | None = None, switch: bool = False) -> None:
         self.dot = None
         super().__init__(label, parent)
-        self.dot = QLabel("●")
-        self.dot.setFont(mono_font(7))
+        self.dot = ToggleSwitch() if switch else DotLamp()
+        if switch:
+            self.dot.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.dot.setToolTip("Click to switch")
+            self.dot.clicked.connect(self.toggled.emit)
         self.layout().insertWidget(0, self.dot)
-        self.layout().insertSpacing(1, 4)
+        self.layout().insertSpacing(1, 6)
         self.set("--", "off")
 
     def set(self, text: str, status: str = "info") -> None:
@@ -275,8 +360,218 @@ class ModuleRow(StatusRow):
         super().set(text, status)
         color = STATUS_COLORS.get(status, status)
         if self.dot is not None:
-            self.dot.setStyleSheet(f"color:{color};")
+            self.dot.set_state(status != "off", color)
         self.value.setStyleSheet(f"color:{TEXT if status in ('ok', 'info') else color};")
+
+
+class DonutGauge(QWidget):
+    """A ring that fills to a percentage, the number in the middle and a caption under it (CPU, memory)."""
+
+    def __init__(self, caption: str, color: str = CYAN, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.caption, self.color = caption.upper(), QColor(color)
+        self.value: float | None = None
+        self.setMinimumSize(74, 84)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(84)
+
+    def set_value(self, value: float | None) -> None:
+        value = None if value is None else max(0.0, min(100.0, float(value)))
+        if value != self.value:
+            self.value = value
+            self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        size = min(self.width(), self.height() - 16) - 8
+        rect = QRectF((self.width() - size) / 2, 2, size, size)
+        track = QColor(self.color)
+        track.setAlpha(40)
+        p.setPen(QPen(track, 6))
+        p.drawArc(rect, 0, 360 * 16)
+        if self.value is not None:
+            pen = QPen(self.color, 6)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawArc(rect, 90 * 16, int(-360 * 16 * self.value / 100))
+        p.setPen(QColor(COLOR["text_strong"]))
+        p.setFont(mono_font(9, bold=True))
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "--" if self.value is None else f"{self.value:.0f}%")
+        p.setPen(QColor(DIM))
+        p.setFont(mono_font(6.5, bold=True))
+        p.drawText(QRectF(0, self.height() - 14, self.width(), 14), Qt.AlignmentFlag.AlignCenter, self.caption)
+        p.end()
+
+
+class FrequencyCard(QWidget):
+    """A small dial (CPU load) and two read-outs: the CPU clock frequency and the battery (or AC)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.freq, self.cpu, self.battery = "--", None, None
+        self.setFixedHeight(44)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_values(self, freq: str, cpu: float | None, battery: float | None) -> None:
+        if (freq, cpu, battery) != (self.freq, self.cpu, self.battery):
+            self.freq, self.cpu, self.battery = freq, cpu, battery
+            self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        dial = QRectF(4, 4, 36, 36)
+        p.setPen(QPen(QColor(DIM), 3))
+        p.drawArc(dial, 0, 360 * 16)
+        if self.cpu is not None:
+            pen = QPen(QColor(CYAN), 3)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawArc(dial, 90 * 16, int(-360 * 16 * max(0.0, min(100.0, self.cpu)) / 100))
+        p.setPen(QColor(COLOR["text_strong"]))
+        p.setFont(mono_font(6.5, bold=True))
+        p.drawText(dial, Qt.AlignmentFlag.AlignCenter, "--" if self.cpu is None else f"{self.cpu:.0f}")
+        x, w = 48.0, self.width() - 50.0
+        for row, (label, value, fill, color) in enumerate((
+                ("FREQUENCY", self.freq, self.cpu, CYAN),
+                ("BATTERY", "AC" if self.battery is None else f"{self.battery:.0f}%",
+                 100.0 if self.battery is None else self.battery, GREEN))):
+            y = 4 + row * 20
+            p.setFont(mono_font(7, bold=True))
+            p.setPen(QColor(TEXT))
+            p.drawText(QRectF(x, y, w, 12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+            p.setPen(QColor(color))
+            p.drawText(QRectF(x, y, w, 12), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, value)
+            track = QColor(color)
+            track.setAlpha(40)
+            p.fillRect(QRectF(x, y + 14, w, 2), track)
+            if fill is not None:
+                p.fillRect(QRectF(x, y + 14, w * max(0.0, min(100.0, fill)) / 100, 2), QColor(color))
+        p.end()
+
+
+class VerticalMeters(QWidget):
+    """Six upright glowing meters with a short label under each (CPU, memory, GPU, disk, GPU memory, battery).
+    A meter with no reading (``None``) is drawn empty and dim."""
+
+    LABELS = ("CPU", "MEM", "GPU", "DSK", "VRM", "BAT")
+    COLORS = (BLUE, PURPLE, GOLD, CYAN, GREEN, GREEN)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.values: list[float | None] = [None] * len(self.LABELS)
+        self.setMinimumHeight(110)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(120)
+
+    def set_values(self, values: list[float | None]) -> None:
+        clean = [None if v is None else max(0.0, min(100.0, float(v))) for v in values][:len(self.LABELS)]
+        clean += [None] * (len(self.LABELS) - len(clean))
+        if clean != self.values:
+            self.values = clean
+            self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        n = len(self.LABELS)
+        slot = self.width() / n
+        top, bottom = 4.0, self.height() - 16.0
+        p.setFont(mono_font(6.5, bold=True))
+        for i, (label, color, value) in enumerate(zip(self.LABELS, self.COLORS, self.values)):
+            x = i * slot + slot / 2
+            track = QRectF(x - 5, top, 10, bottom - top)
+            edge = QColor(color)
+            edge.setAlpha(40)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(edge)
+            p.drawRoundedRect(track, 4, 4)
+            if value is not None:
+                h = max(6.0, (bottom - top) * value / 100)
+                fill = QRectF(x - 5, bottom - h, 10, h)
+                glow = QColor(color)
+                glow.setAlpha(55)
+                p.setBrush(glow)
+                p.drawRoundedRect(QRectF(x - 8, bottom - h - 2, 16, h + 4), 6, 6)    # the bar's soft glow
+                grad = QLinearGradient(fill.topLeft(), fill.bottomLeft())
+                grad.setColorAt(0, QColor(color).lighter(140))
+                grad.setColorAt(1, QColor(color))
+                p.setBrush(grad)
+                p.drawRoundedRect(fill, 4, 4)
+                p.setBrush(QColor(COLOR["text_strong"]))
+                p.drawEllipse(QPointF(x, bottom - h), 3.4, 3.4)   # the slider knob
+            p.setPen(QColor(DIM))
+            p.drawText(QRectF(x - slot / 2, bottom + 2, slot, 12), Qt.AlignmentFlag.AlignCenter, label)
+        p.end()
+
+
+class SpectrumStrip(QWidget):
+    """The audio visualiser under the core: upright bars (the microphone / speech level over the last seconds, newest on
+    the right), a thin continuous waveform over them, a faint grid with time marks. Flat when nothing is heard."""
+
+    POINTS = 160
+    BARS = 64
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.levels: deque[float] = deque([0.0] * self.POINTS, maxlen=self.POINTS)
+        self.setFixedHeight(70)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def push(self, level: float) -> None:
+        self.levels.append(max(0.0, min(1.0, level)))
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        base = h - 14.0
+        grid = QColor(CYAN)
+        grid.setAlpha(26)
+        p.setPen(QPen(grid, 1))
+        for gx in range(0, w, 32):
+            p.drawLine(gx, 2, gx, int(base))
+        for gy in (base * 0.25, base * 0.5, base * 0.75):
+            p.drawLine(0, int(gy), w, int(gy))
+        p.setPen(QPen(QColor(CYAN), 1))
+        p.drawLine(0, int(base), w, int(base))
+        levels = list(self.levels)
+        step = len(levels) / self.BARS
+        slot = w / self.BARS
+        colors = (QColor(CYAN), QColor(BLUE), QColor(PURPLE), QColor(GOLD))
+        for i in range(self.BARS):
+            chunk = levels[int(i * step):int((i + 1) * step) or 1]
+            level = max(chunk) if chunk else 0.0
+            bar_h = 2 + (base - 6) * level
+            color = colors[min(len(colors) - 1, int(i / self.BARS * len(colors)))]
+            grad = QLinearGradient(0, base - bar_h, 0, base)
+            top = QColor(color).lighter(130)
+            bottom = QColor(color)
+            bottom.setAlpha(90)
+            grad.setColorAt(0, top)
+            grad.setColorAt(1, bottom)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(grad)
+            p.drawRect(QRectF(i * slot + 1, base - bar_h, max(1.5, slot - 2.5), bar_h))
+        line = QPainterPath()
+        n = len(levels)
+        for i, level in enumerate(levels):
+            pt = QPointF(w * i / (n - 1), base - 3 - (base - 8) * level * 0.85)
+            if i == 0:
+                line.moveTo(pt)
+            else:
+                line.lineTo(pt)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(COLOR["text_strong"]), 1))
+        p.drawPath(line)
+        p.setFont(mono_font(6))
+        p.setPen(QColor(DIM))
+        for k in range(6):                       # time marks: seconds ago (about 6 s across)
+            x = w * k / 5
+            p.drawText(QRectF(x - 20, base + 2, 40, 11), Qt.AlignmentFlag.AlignCenter, f"-{5 - k}s" if k < 5 else "now")
+        p.end()
 
 
 class ThinBar(QWidget):
@@ -350,6 +645,7 @@ class EventLog(QTextBrowser):
 
     def __init__(self, parent: QWidget | None = None, empty: str = "Waiting for events...") -> None:
         super().__init__(parent)
+        self.setAccessibleName("Live events")
         self.setFont(mono_font(7.5))
         self.setOpenLinks(False)
         self.setStyleSheet("QTextBrowser { background: transparent; border: none; color: #9fb6c9; }")
@@ -361,7 +657,7 @@ class EventLog(QTextBrowser):
         text = " ".join(str(text).split())
         if not text:
             return
-        self.lines.append((time.strftime("%H:%M:%S"), kind, text[:220]))
+        self.lines.append((time12(datetime.now(), True), kind, text[:220]))
         self._render()
 
     def clear_lines(self) -> None:
@@ -494,7 +790,7 @@ class CoreGauge(QWidget):
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        side = min(self.width(), self.height()) - 8
+        side = min(self.width(), self.height()) - 48
         rect = QRectF((self.width() - side) / 2, (self.height() - side) / 2, side, side)
         spin = (time.monotonic() * 30) % 360  # the dashed ring turns slowly; a spark orbits it
         p.save()
@@ -505,6 +801,22 @@ class CoreGauge(QWidget):
         p.setPen(dashed)
         p.drawEllipse(QPointF(0, 0), side / 2, side / 2)
         p.restore()
+        now = time.monotonic()
+        cloud = QColor(PURPLE)
+        for i in range(140):                      # a particle mesh around the ring (decoration, always moving)
+            a = math.radians(i * 2.571 + now * (3 + (i % 7)))
+            r = side / 2 + 4 + 16 * abs(math.sin(i * 12.9898 + now * 0.35))
+            dot = QColor(cloud if i % 2 else QColor(CYAN))
+            dot.setAlpha(40 + int(110 * abs(math.sin(now * 0.9 + i * 0.7))))
+            p.setPen(QPen(dot, 1.3))
+            p.drawPoint(QPointF(rect.center().x() + r * math.cos(a), rect.center().y() + r * math.sin(a)))
+        for i in range(36):                       # a drifting halo of particles around the ring (decoration)
+            a = math.radians(i * 10 + now * (6 + (i % 5) * 3))
+            r = side / 2 + 5 + 7 * abs(math.sin(now * 0.7 + i * 1.3))
+            dot = QColor(self.color if i % 3 else QColor(CYAN))
+            dot.setAlpha(60 + int(120 * abs(math.sin(now * 1.1 + i))))
+            p.setPen(QPen(dot, 1.6))
+            p.drawPoint(QPointF(rect.center().x() + r * math.cos(a), rect.center().y() + r * math.sin(a)))
         orbit = math.radians(-spin * 2.2)
         spark = QPointF(rect.center().x() + side / 2 * math.cos(orbit), rect.center().y() + side / 2 * math.sin(orbit))
         glow = QRadialGradient(spark, 7)
@@ -529,9 +841,9 @@ class CoreGauge(QWidget):
                           inner.center().y() - inner.height() / 2 * math.sin(end))
             p.setPen(QPen(QColor("#e8fbff"), side * 0.035))
             p.drawPoint(tip)
-        p.setPen(QColor("#e8f6ff"))
-        p.setFont(mono_font(9, bold=True))
-        p.drawText(QRectF(inner.left(), inner.center().y() - 16, inner.width(), 16), Qt.AlignmentFlag.AlignCenter,
+        p.setPen(QColor(COLOR["text_strong"]))
+        p.setFont(mono_font(15, bold=True))
+        p.drawText(QRectF(inner.left(), inner.center().y() - 26, inner.width(), 28), Qt.AlignmentFlag.AlignCenter,
                    self.text)
         p.setFont(mono_font(7.5))
         p.drawText(QRectF(inner.left(), inner.center().y() + 1, inner.width(), 16), Qt.AlignmentFlag.AlignCenter,
@@ -645,12 +957,14 @@ class ShineTitle(QWidget):
 
 
 class LevelBars(QWidget):
-    """||||| a small live microphone level (in the card over the core)."""
+    """An equalizer: rounded, glowing bars that follow the microphone level (in the card over the core)."""
+
+    BARS = 8
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.levels: deque[float] = deque([0.0] * 8, maxlen=8)
-        self.setFixedSize(64, 26)
+        self.levels: deque[float] = deque([0.0] * self.BARS, maxlen=self.BARS)
+        self.setFixedSize(96, 32)
 
     def push(self, level: float) -> None:
         self.levels.append(max(0.0, min(1.0, level)))
@@ -658,7 +972,15 @@ class LevelBars(QWidget):
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        step = self.width() / self.BARS
         for i, level in enumerate(self.levels):
-            h = 4 + 20 * level
-            p.fillRect(QRectF(i * 8, 26 - h, 3, h), QColor(CYAN))
+            h = 5 + (self.height() - 5) * level
+            rect = QRectF(i * step + 2, self.height() - h, step - 6, h)
+            grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            grad.setColorAt(0, QColor(CYAN))
+            grad.setColorAt(1, QColor(BLUE))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(grad)
+            p.drawRoundedRect(rect, 2, 2)
         p.end()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,7 @@ from app.memory.settings_store import SettingsStore
 from app.security.confirmations import ConfirmationRequest
 from app.tts.manager import TTSManager
 from app.tts.text import SentenceSplitter
+from app.config.live_fields import REMOTE_FIELDS
 from app.utils.async_runner import AsyncRunner
 from app.utils.logging_setup import get_logger, log_event
 from app.voice.microphone import Microphone
@@ -109,6 +111,8 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
     _dim_request = Signal(int, object)  # software screen dimming: (level, threading.Event)
     step_aside_requested = Signal(object)  # the window fades into the mini orb; the object: a threading.Event or None
     _gpu_fit_checked = Signal()  # a warm-up finished: tell the user once if the model doesn't fit the GPU  # from a worker thread: warm the model up again (on the window's thread)
+    display_settings_changed = Signal()   # 3D core quality / speed / glow / motion changed
+    mic_muted_changed, transcribing = Signal(bool), Signal(bool)   # mic mute (nothing listens) / command -> text
     user_message = Signal(str)
     assistant_started = Signal()
     assistant_delta = Signal(str)
@@ -144,6 +148,7 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
     _setting_request = Signal(str, str)  # (field, value) changed by voice
     notifications_changed = Signal(int)  # unread notifications
     _emergency_request = Signal()  # emergency stop asked for by voice (runs on the window's thread)
+    _cancel_request = Signal()     # "cancel" from a phone: stop the current request only (window's thread)
     _stop_remote_request = Signal()
 
     def __init__(
@@ -247,6 +252,7 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         self.executor.context.mode_control = self._mode_control
         self.executor.context.emergency = self._emergency_control
         self._emergency_request.connect(self.emergency_stop)
+        self._cancel_request.connect(self.cancel)
         self._stop_remote_request.connect(self.stop_remote)
         self._focus = None  # app.agent.focus.FocusSession while focusing
         self._focus_timer = None
@@ -261,8 +267,14 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         self._downloads_timer.timeout.connect(self._sort_downloads)
         if ctx.settings.auto_sort_downloads:
             self._downloads_timer.start()
+        self._start_clipboard_memory()
         self._suggestion_accepted.connect(lambda text: self.send_text(text, spoken=True))
         self.voice_engine_changed.connect(self._gpu_memory_saver)
+        self.voice_levels: deque[float] = deque(maxlen=240)   # the microphone while you spoke (0..1), for the chat waveform
+        self.last_message_spoken = False
+        self._mic_on = False
+        self.microphone_active.connect(self._mic_changed)
+        self.level_changed.connect(self._collect_level)
         self._rewarm.connect(self.warm_up_model)
         self._gpu_fit_checked.connect(self._report_gpu_fit)
         self._remote_send.connect(lambda text: self.send_text(text, source="phone"))
@@ -271,6 +283,7 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         self.remote_hub = None
         self.hands_free = None  # HandsFreeListener while always-listening is on
         self.tts.start()
+        self.tts.prewarm(self._usual_phrases(), delay=15.0)  # the wake greeting etc., ready soon after start
         self.scheduler = None
         if ctx.database is not None:
             from app.automation.scheduler import Scheduler
@@ -527,9 +540,12 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         import time as _time
 
         heard = self._timing.get("heard") if spoken else None
+        voice_event = self._timing.get("voice_event") if spoken else None
         self._last_activity = _time.monotonic()
         self._model_unloaded = False
-        self._timing = {"sent": _time.monotonic(), "heard": heard, "spoken": spoken or self.speak_typed_replies}
+        self._timing = {"sent": _time.monotonic(), "heard": heard, "spoken": spoken or self.speak_typed_replies,
+                        "voice_event": voice_event}
+        self.last_message_spoken = bool(spoken)
         self.user_message.emit(text)
         self.assistant_started.emit()
         self._set_state("THINKING")
@@ -540,7 +556,7 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         return True
 
     async def _respond(self, text: str, speak: bool, source: str = "text") -> AssistantReply:
-        splitter = SentenceSplitter()
+        splitter = SentenceSplitter(quick_start=True)       # starts speaking at the first clause, not the first full stop
         self._reply_so_far = ""
 
         def on_delta(delta: str) -> None:
@@ -567,8 +583,7 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
                 self.tts.speak(rest)
             elif not reply.ok:
                 self.tts.speak(reply.text)
-        if getattr(reply, "checklist", ""):
-            self.notice.emit(reply.checklist)
+        self.notice.emit(reply.checklist) if getattr(reply, "checklist", "") else self._emit_sources(reply)
         return reply
 
     def _emit_timing(self) -> None:
@@ -580,6 +595,13 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         result = {"heard": t.get("heard"), "ai": (first - t["sent"]) if first else None,
                   "voice": (t["audio"] - first) if t.get("audio") and first else None}
         self.timing.emit(result)
+        try:
+            if t.get("voice_event") and first and self.ctx.database is not None:
+                from app.core.voice_stats import VoiceStats
+
+                VoiceStats(self.ctx.database).first_reply(t["voice_event"], int((first - t["sent"]) * 1000))
+        except Exception:
+            _log.warning("could not record the first-reply time", exc_info=True)
         try:
             t["entry"] = self.speed_log.add(result)
             if t.get("model"):
@@ -669,6 +691,9 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
 
     def apply_settings(self, settings, changed: set[str]) -> None:
         """Apply the settings that can change while running; the rest need a restart."""
+        if changed & {"visual_quality", "core_speed", "glow_intensity", "reduced_motion", "core_hud_rings"}:
+            self.ctx.settings = settings
+            self.display_settings_changed.emit()
         if "tts_speed" in changed:
             self.tts.speed = settings.tts_speed
         if "tts_volume" in changed:
@@ -734,6 +759,9 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
                     self.refresh_status()
 
             future.add_done_callback(done)
+        if changed & REMOTE_FIELDS:
+            self.apply_remote_settings(settings)
+        self.ctx.settings = self.executor.context.settings = settings  # what was saved is what Jarvis now uses
         log_event(_log, "settings_applied", changed=sorted(changed))
 
     def set_muted(self, muted: bool) -> None:

@@ -209,6 +209,7 @@ def home(monkeypatch):
     from app.tools import smart_home
 
     calls: list[tuple[str, str, dict | None, str]] = []
+    live: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
@@ -217,6 +218,13 @@ def home(monkeypatch):
             return httpx.Response(401)
         if request.url.path == "/api/states":
             return httpx.Response(200, json=STATES)
+        if request.url.path.startswith("/api/states/"):          # like real HA: one entity's current state
+            entity_id = request.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(200, json={"entity_id": entity_id, "state": live.get(entity_id, "off")})
+        if request.url.path.startswith("/api/services/") and body:
+            service = request.url.path.rsplit("/", 1)[-1]
+            if service in ("turn_on", "turn_off"):
+                live[body["entity_id"]] = "on" if service == "turn_on" else "off"
         return httpx.Response(200, json=[])
 
     monkeypatch.setattr(smart_home, "TRANSPORT", httpx.MockTransport(handler))
@@ -239,8 +247,8 @@ def test_home_devices_are_found_by_sound(home) -> None:
 def test_home_control_calls_the_right_service(home) -> None:
     smart_home, ctx, calls = home
     result = smart_home.home_control(smart_home.HomeArgs(device="bedroom fan", action="on"), ctx)
-    assert result.ok and "Bedroom Fan is on" in result.message
-    assert calls[-1][:3] == ("POST", "/api/services/fan/turn_on", {"entity_id": "fan.bedroom_fan"})
+    assert result.ok and "Bedroom Fan is on" in result.message and result.data["verified"] is True
+    assert ("POST", "/api/services/fan/turn_on", {"entity_id": "fan.bedroom_fan"}) in [c[:3] for c in calls]
     smart_home.home_control(smart_home.HomeArgs(device="front door", action="off"), ctx)
     assert calls[-1][1] == "/api/services/lock/lock"
     smart_home.home_control(smart_home.HomeArgs(device="garage", action="on"), ctx)

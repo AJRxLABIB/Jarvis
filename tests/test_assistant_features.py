@@ -105,14 +105,14 @@ def test_briefing(weather, monkeypatch) -> None:
     monkeypatch.setattr(assistant, "_battery_line", lambda: "Battery 80%, charging.")
     monkeypatch.setattr("app.utils.network.is_offline_now", lambda settings: False)
     result = asyncio.run(daily_briefing(NoArgs(), ctx(home_location="Dhaka", user_address="sir")))
-    assert result.message.startswith("Good morning, sir. It's 07:30 on Thursday, 24 September.")
+    assert result.message.startswith("Good morning, sir. It's 7:30 AM on Thursday, 24 September.")
     assert "31°C" in result.message and result.message.endswith("Battery 80%, charging.")
 
 
 def test_briefing_without_home_city_or_network(monkeypatch) -> None:
     monkeypatch.setattr(assistant, "_battery_line", lambda: None)
     result = asyncio.run(daily_briefing(NoArgs(), ctx()))
-    assert result.message == "Good morning. It's 07:30 on Thursday, 24 September."
+    assert result.message == "Good morning. It's 7:30 AM on Thursday, 24 September."
 
 
 @pytest.mark.parametrize(("text", "tool", "args"), [

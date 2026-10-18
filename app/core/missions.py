@@ -42,7 +42,6 @@ if TYPE_CHECKING:
 
 _log = get_logger("core.missions")
 MAX_STEPS = 12
-RETRYABLE_ERRORS = frozenset({"timeout", "internal", "not_verified", "offline", "rate_limited"})
 NOT_A_STEP = frozenset({
     "start_mission", "resume_mission", "cancel_mission", "mission_status", "mission_history", "rollback_mission", "task_center", "undo_last_action", "set_reminder",
     "schedule_task", "save_workflow", "run_workflow", "manage_automation", "forget_everything", "forget_history",
@@ -357,10 +356,16 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
                     store.save_step(mission, step)
                     break
                 level = int(execution.level) if execution.level is not None else 3
-                if result.error in RETRYABLE_ERRORS and level == 0 and step.attempts < 2:
-                    log_event(_log, "mission_step_retry", mission=mission.id, step=step.n, error=result.error)
-                    await asyncio.sleep(1.0)
+                from app.core import retry
+
+                again, wait, why = retry.should_retry(result.error, result.message or "", step.attempts,
+                                                      repeatable=(level == 0))
+                if again:
+                    log_event(_log, "mission_step_retry", mission=mission.id, step=step.n, error=result.error,
+                              why=why)
+                    await asyncio.sleep(wait)
                     continue
+                step.result = f"{step.result} ({why})" if step.result else why
                 step.state = "failed"
                 store.save_step(mission, step)
                 note = f"Paused at step {step.n} ({step.title}): {result.message}"

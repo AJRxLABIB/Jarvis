@@ -69,6 +69,7 @@ def _simplify_schema(schema: dict[str, Any]) -> dict[str, Any]:
 class ToolRegistry:
     def __init__(self, tools: Iterable[Tool] = ()) -> None:
         self._tools: dict[str, Tool] = {}
+        self._spec_cache: dict[str, tuple[Tool, ToolSpec]] = {}   # building a JSON schema takes ~0.2 ms; specs() runs per request
         for tool in tools:
             self.register(tool)
 
@@ -95,10 +96,16 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def specs(self) -> list[ToolSpec]:
-        return [
-            ToolSpec(t.name, t.description, _simplify_schema(t.args_model.model_json_schema()))
-            for t in self._tools.values()
-        ]
+        """One spec per tool, in registration order. Specs are built once per tool object and reused (they are frozen and
+        nothing edits their schemas); a tool replaced under the same name gets a fresh one."""
+        out = []
+        for name, tool in self._tools.items():
+            cached = self._spec_cache.get(name)
+            if cached is None or cached[0] is not tool:
+                cached = (tool, ToolSpec(tool.name, tool.description, _simplify_schema(tool.args_model.model_json_schema())))
+                self._spec_cache[name] = cached
+            out.append(cached[1])
+        return out
 
 
 # -------------------------------------------------------------------- executor
@@ -164,6 +171,44 @@ class ToolExecutor:
         self.confirmer = confirmer or DenyConfirmer()
         self.audit = audit
         self.confirm_timeout = confirm_timeout
+
+    def _full_power_allows(self) -> bool:
+        """Full power applies only to requests from you at this PC (typed or spoken) - never to a phone, an automation,
+        an agent or Jarvis's own internal steps."""
+        if not getattr(self.context.settings, "full_power", False):
+            return False
+        from app.core import runs
+
+        run = runs.current()
+        return run is None or run.source in ("text", "voice", "cli")
+
+    def _standing_grant(self, tool: Tool, args: Any):
+        """A live "don't ask me again" approval covering this exact call (app/security/grants.py), or None. Never used while
+        any emergency switch is on (and then every grant is revoked), and re-checked against the fixed grantable() rules."""
+        database = getattr(self.context, "database", None)
+        if database is None:
+            return None
+        try:
+            from app.core import emergency
+            from app.security.grants import GrantStore, grantable
+
+            store = GrantStore(database)
+            if emergency.STATE.active():
+                store.revoke_all()
+                return None
+            from app.core import runs
+
+            run = runs.current()
+            if run is not None and run.source == "phone":
+                return None          # grants were made on THIS PC: a request from a phone always asks (device-scoped)
+            grant = store.find(tool.name, args.model_dump(mode="json"))
+            if grant is None or not grantable(tool.name, tool.category, RiskLevel.MODERATE)[0]:
+                return None
+            store.used(grant)
+            return grant
+        except Exception:
+            _log.warning("standing approval check failed; asking as usual", exc_info=True)
+            return None
 
     def _audit(self, event: str, call: ToolCall, **kwargs: Any) -> None:
         if self.audit is not None:
@@ -290,18 +335,50 @@ class ToolExecutor:
                 ToolResult.failure("rate_limited", "Too many actions in a short time, so this one was not done. Wait a moment."),
                 level, decision,
             )
+        if decision == Decision.BLOCK and level == RiskLevel.CRITICAL and self._full_power_allows():
+            # FULL_POWER: nothing is off-limits, but a critical action always asks you - on screen, for this exact
+            # call (no voice "yes", no phone, no standing approval, no direct-command shortcut, no automation)
+            decision = Decision.CONFIRM
+            self._audit("critical_needs_you", call, level=int(level), decision="full_power")
         if decision == Decision.BLOCK:
             return done(
-                ToolResult.failure("blocked", "Not done: this action is blocked by the permission settings."),
+                ToolResult.failure("blocked", "Not done: this action is blocked by the permission settings."
+                                   + (" (FULL_POWER is off - Settings > Security.)" if level == RiskLevel.CRITICAL
+                                      and not getattr(self.context.settings, "full_power", False) else "")),
                 level, decision,
             )
-        if (decision == Decision.CONFIRM and user_command and level < RiskLevel.CRITICAL
+        from app.security import autonomy
+
+        settings = self.context.settings
+        autonomy_level = autonomy.normalise(getattr(settings, "autonomy", "routine"))
+        from app.core import runs as _runs
+
+        current_run = _runs.current()
+        if current_run is not None and current_run.source == "phone":       # a phone request: the stricter level
+            autonomy_level = autonomy.stricter(autonomy_level, getattr(settings, "autonomy_remote", "routine"))
+        refusal = autonomy.blocked_in(autonomy_level, tool.name, args.model_dump(), tool.category,
+                                      autonomy.categories(getattr(settings, "autonomy_block_categories", "")))
+        if refusal is not None:
+            self._audit("autonomy_blocked", call, level=int(level), decision="blocked", details={"mode": autonomy_level})
+            code = "suggest_mode" if autonomy_level == "suggest" and refusal.startswith("Suggested") else "observe_mode"
+            return done(ToolResult.failure(code, refusal), level, Decision.BLOCK)
+        strict = autonomy.must_ask(autonomy_level, tool.name, args.model_dump(), tool.category,
+                                   autonomy.categories(getattr(settings, "autonomy_ask_categories", "")))
+        if strict and decision == Decision.ALLOW:
+            decision = Decision.CONFIRM                  # approval mode: everything that changes something asks
+        if (decision == Decision.CONFIRM and user_command and level < RiskLevel.CRITICAL and not strict
                 and tool.direct_without_confirmation is not None and tool.direct_without_confirmation(args, self.context)):
             self._audit("confirmation_skipped", call, level=int(level), decision="user_command")
             decision = Decision.ALLOW
-        if decision == Decision.CONFIRM and preapproved and level == RiskLevel.MODERATE:
+        if decision == Decision.CONFIRM and preapproved and level == RiskLevel.MODERATE and not strict:
             self._audit("confirmation_preapproved", call, level=int(level), decision="approved_plan")
             decision = Decision.ALLOW
+        if decision == Decision.CONFIRM and level == RiskLevel.MODERATE and taint_reason is None and not strict:
+            grant = self._standing_grant(tool, args)
+            if grant is not None:
+                self._audit("confirmation_skipped", call, level=int(level), decision="standing_approval",
+                            details={"grant": grant.id})
+                decision = Decision.ALLOW
         if decision == Decision.CONFIRM:
             summary = tool.confirmation_text(args, self.context)
             if taint_reason is not None:

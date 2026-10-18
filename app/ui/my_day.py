@@ -13,7 +13,6 @@ Esc closes. Your own clicks change your own list directly; nothing here lets a m
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -48,9 +47,12 @@ class AddTodoDialog(QDialog):
         self.repeat.setToolTip("A repeating item needs a due day")
         self.after = QLineEdit()
         self.after.setPlaceholderText("optional: words of another item that must be done first")
+        self.minutes = QLineEdit()
+        self.minutes.setPlaceholderText("optional: estimated minutes, for the day plan")
         form = QFormLayout()
         for label, widget in (("&Text", self.text), ("&Due", self.due), ("&Priority", self.priority),
-                              ("&Category", self.category), ("&Repeat", self.repeat), ("&After", self.after)):
+                              ("&Category", self.category), ("&Repeat", self.repeat), ("&After", self.after),
+                              ("&Minutes", self.minutes)):
             form.addRow(label, widget)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -63,7 +65,8 @@ class AddTodoDialog(QDialog):
     def values(self) -> dict:
         return {"text": self.text.text().strip(), "due": self.due.text().strip() or None,
                 "priority": self.priority.currentText(), "category": self.category.text().strip(),
-                "repeat": self.repeat.currentText(), "after": self.after.text().strip() or None}
+                "repeat": self.repeat.currentText(), "after": self.after.text().strip() or None,
+                "minutes": int(self.minutes.text()) if self.minutes.text().strip().isdigit() else None}
 
 
 class MyDayDialog(QDialog):
@@ -86,14 +89,25 @@ class MyDayDialog(QDialog):
         self.evening = QPushButton("&Evening summary")
         self.evening.setCheckable(True)
         self.evening.toggled.connect(self.refresh)
+        self.plan_button = QPushButton("&Plan my day")
+        self.plan_button.setToolTip("Order today's to-dos by urgency and time; changes nothing on your list or calendar")
+        self.plan_button.clicked.connect(lambda: self._show_plan(False))
+        self.review_button = QPushButton("&Review plan")
+        self.review_button.setToolTip("Compare today's plan with what is really done")
+        self.review_button.clicked.connect(lambda: self._show_plan(True))
         today = QWidget()
         today_layout = QVBoxLayout(today)
         today_layout.addWidget(self.today_text, 1)
-        today_layout.addWidget(self.evening, 0, Qt.AlignmentFlag.AlignLeft)
+        plan_row = QHBoxLayout()
+        plan_row.addWidget(self.evening)
+        plan_row.addWidget(self.plan_button)
+        plan_row.addWidget(self.review_button)
+        plan_row.addStretch(1)
+        today_layout.addLayout(plan_row)
 
         # To-dos
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Priority", "To-do", "Due", "Category", "Repeats", "Waiting for"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Priority", "To-do", "Due", "Category", "Repeats", "Waiting for", "Minutes"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -172,6 +186,15 @@ class MyDayDialog(QDialog):
         self._fill_missions()
         self._selection_changed()
 
+    def _show_plan(self, review: bool) -> None:
+        """Plan (or review) today with the same function the voice tool uses; the answer replaces the overview text."""
+        try:
+            result = productivity.plan_my_day(productivity.PlanArgs(review=review), self.ctx)
+            self.today_text.setPlainText(result.message)
+            self._say("Review of today's plan." if review else "Plan made. Add minutes to your to-dos to make it more exact.")
+        except ToolError as exc:
+            self._say(str(exc), error=True)
+
     def _today_text(self, data: dict) -> str:
         lines = [command_center.describe(data, evening=self.evening.isChecked()), ""]
         todos = data.get("todos")
@@ -199,7 +222,8 @@ class MyDayDialog(QDialog):
         today = self.ctx.clock().date().isoformat()
         for row, item in enumerate(self.items):
             cells = (PRIORITY_LABEL.get(item["priority"], "Normal"), item["text"], item["due"] or "",
-                     item["category"], item["repeat"], item["blocked_by"] or "")
+                     item["category"], item["repeat"], item["blocked_by"] or "",
+                     str(item["minutes"]) if item.get("minutes") else "?")
             for col, value in enumerate(cells):
                 cell = QTableWidgetItem(value)
                 if item["due"] and item["due"] < today:

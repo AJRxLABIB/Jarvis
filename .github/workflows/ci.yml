@@ -32,16 +32,28 @@ jobs:
         run: python -m pytest -q -p no:cacheprovider --junitxml=test-results.xml
       - name: Security checks
         run: python -m pytest -q -p no:cacheprovider tests/test_security_static.py
-      - name: Dependency vulnerabilities (pip-audit, informational)
-        continue-on-error: true
+      # BLOCKING: a known vulnerability in a dependency listed in requirements.txt fails the build. An accepted risk
+      # goes in packaging/audit-ignore.txt as "<VULN-ID>  # reason, review by YYYY-MM-DD" so the exception is visible.
+      - name: Dependency vulnerabilities (pip-audit, blocking)
+        shell: pwsh
         run: |
           python -m pip install pip-audit
-          python -m pip_audit
+          $ignore = @()
+          if (Test-Path packaging/audit-ignore.txt) {
+            Get-Content packaging/audit-ignore.txt | Where-Object { $_ -match '^\s*[A-Za-z]+-[0-9A-Za-z-]+' } |
+              ForEach-Object { $ignore += '--ignore-vuln'; $ignore += (($_.Trim()) -split '\s+')[0] }
+          }
+          python -m pip_audit -r requirements.txt @ignore
+      # Informational: what is installed, its licences and a CycloneDX SBOM. Fails only if a package declares no licence.
+      - name: Dependency inventory (SBOM, licences, lock list)
+        run: python packaging/dependency_report.py dist-report
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results
-          path: test-results.xml
+          path: |
+            test-results.xml
+            dist-report/
 
   build-smoke:
     # the packaged app must start: catches missing modules that tests (run from source) can't see

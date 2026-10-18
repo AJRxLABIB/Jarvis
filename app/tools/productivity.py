@@ -93,7 +93,7 @@ def _db(ctx: ToolContext):
 
 def open_todos(ctx: ToolContext) -> list[dict]:
     with _db(ctx).connect() as conn:
-        rows = conn.execute("SELECT id, text, due, priority, category, repeat, depends_on, postponed FROM todos "
+        rows = conn.execute("SELECT id, text, due, priority, category, repeat, depends_on, postponed, minutes FROM todos "
                             "WHERE done = 0 ORDER BY due IS NULL, due, priority, id").fetchall()
     items = [dict(r) for r in rows]
     open_ids = {i["id"]: i["text"] for i in items}
@@ -111,6 +111,7 @@ class TodoArgs(ToolArgs):
         default="", description="Make it come back after it's done (needs a due day)")
     after: str | None = Field(default=None, max_length=300,
                               description="Another open item (number or words) that must be done first")
+    minutes: int | None = Field(default=None, ge=5, le=480, description="Estimated minutes it will take (for the day plan)")
 
 
 PRIORITY = {"high": 1, "normal": 2, "low": 3}
@@ -148,9 +149,10 @@ def add_todo(args: TodoArgs, ctx: ToolContext) -> ToolResult:
     text = redact(args.text.strip())
     depends_on = _find(ctx, args.after)["id"] if args.after else None
     with _db(ctx).transaction() as conn:
-        conn.execute("INSERT INTO todos (text, due, created_at, priority, category, repeat, depends_on) "
-                     "VALUES (?, ?, ?, ?, ?, ?, ?)", (text, due, now.isoformat(), PRIORITY[args.priority],
-                                                      " ".join(args.category.split()), args.repeat, depends_on))
+        conn.execute("INSERT INTO todos (text, due, created_at, priority, category, repeat, depends_on, minutes) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (text, due, now.isoformat(), PRIORITY[args.priority],
+                                                         " ".join(args.category.split()), args.repeat, depends_on,
+                                                         args.minutes))
     when = f" for {datetime.fromisoformat(due):%A %d %B}" if due else ""
     extra = (f", {args.priority} priority" if args.priority != "normal" else "") + \
         (f", repeats {args.repeat}" if args.repeat else "") + (", after the item it depends on" if depends_on else "")
@@ -217,9 +219,9 @@ def complete_todo(args: TodoItemArgs, ctx: ToolContext) -> ToolResult:
     with _db(ctx).transaction() as conn:
         conn.execute("UPDATE todos SET done = 1, done_at = ? WHERE id = ?", (now.isoformat(), item["id"]))
         if again:  # a repeating item: the next one is created, this one stays in the history
-            conn.execute("INSERT INTO todos (text, due, created_at, priority, category, repeat, depends_on) "
-                         "VALUES (?, ?, ?, ?, ?, ?, ?)", (item["text"], again, now.isoformat(), item["priority"],
-                                                          item["category"], item["repeat"], None))
+            conn.execute("INSERT INTO todos (text, due, created_at, priority, category, repeat, depends_on, minutes) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (item["text"], again, now.isoformat(), item["priority"],
+                                                             item["category"], item["repeat"], None, item.get("minutes")))
     notes = []
     if item.get("blocked_by"):
         notes.append(f"it was waiting for '{item['blocked_by']}', which is still open")
@@ -234,8 +236,9 @@ def complete_todo(args: TodoItemArgs, ctx: ToolContext) -> ToolResult:
 
 
 class UpdateTodoArgs(TodoItemArgs):
-    action: Literal["postpone", "set_due", "set_priority"] = Field(
-        description="postpone = move it later (a day, or to 'due'); set_due; set_priority")
+    action: Literal["postpone", "set_due", "set_priority", "set_minutes"] = Field(
+        description="postpone = move it later (a day, or to 'due'); set_due; set_priority; set_minutes (time estimate)")
+    minutes: int | None = Field(default=None, ge=5, le=480, description="For set_minutes: estimated minutes")
     due: str | None = Field(default=None, max_length=20, description="For set_due / postpone: today, tomorrow, a weekday "
                                                                       "or YYYY-MM-DD")
     priority: Literal["high", "normal", "low"] | None = Field(default=None, description="For set_priority")
@@ -245,6 +248,11 @@ def update_todo(args: UpdateTodoArgs, ctx: ToolContext) -> ToolResult:
     item = _find(ctx, args.item)
     now = ctx.clock()
     with _db(ctx).transaction() as conn:
+        if args.action == "set_minutes":
+            if args.minutes is None:
+                raise ToolError("How many minutes will it take?", "missing_minutes")
+            conn.execute("UPDATE todos SET minutes = ? WHERE id = ?", (args.minutes, item["id"]))
+            return ToolResult.success(f"'{item['text']}' is estimated at {args.minutes} minutes.", item=item)
         if args.action == "set_priority":
             if args.priority is None:
                 raise ToolError("Which priority: high, normal or low?", "missing_priority")
@@ -303,6 +311,46 @@ def command_center(args: CenterArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success(center.describe(data, evening=args.evening), **data)
 
 
+# ------------------------------------------------------------------ day plan
+
+class PlanArgs(ToolArgs):
+    available_minutes: int | None = Field(default=None, ge=0, le=960,
+                                          description="Minutes you have today; omit to use the rest of the working day "
+                                                      "minus your calendar")
+    interruption_minutes: int = Field(default=0, ge=0, le=960, description="Time just lost to an interruption (replans)")
+    review: bool = Field(default=False, description="Compare today's saved plan with what is really done")
+
+
+def plan_my_day(args: PlanArgs, ctx: ToolContext) -> ToolResult:
+    """Plan (or replan) today from the to-do list and calendar; or review the day. Changes no to-do and no calendar."""
+    from app.core import dayplan
+
+    database = _db(ctx)
+    now = ctx.clock()
+    if args.review:
+        data = dayplan.review(database, now)
+        return ToolResult.success(dayplan.describe_review(data), **data)
+    events: list[dict] = []
+    note = ""
+    try:
+        from app.tools import outlook
+
+        events = outlook.calendar_events(outlook.CalendarArgs(day="today"), ctx).data["events"]
+    except Exception:
+        note = "I could not read your calendar, so the plan ignores appointments."
+    before = dayplan.saved_ids(database, now.date().isoformat())
+    available = args.available_minutes if args.available_minutes is not None else dayplan.available_minutes(
+        now, events, args.interruption_minutes)
+    plan = dayplan.build(open_todos(ctx), now, available, events)
+    dayplan.save(database, plan, now)
+    text = dayplan.describe(plan)
+    if before is not None:
+        dropped = [i for i in before if i not in {p.id for p in plan.items}]
+        if dropped:
+            text += f"\nReplanned: {len(dropped)} earlier item(s) no longer fit today."
+    return ToolResult.success(text + (f"\n{note}" if note else ""), **plan.to_dict(), calendar_read=not note)
+
+
 # ------------------------------------------------------------------ meeting notes
 
 class NotesArgs(ToolArgs):
@@ -326,6 +374,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool("add_todo", "Add something to the user's to-do list, optionally with a due day.", add_todo, TodoArgs,
          RiskLevel.MODERATE, category="todo", timeout=10, confirmation=lambda a, _: f"Add '{a.text}' to your list?",
          direct_without_confirmation=lambda a, _: True),
+    Tool("plan_my_day", "Plan today from the to-do list, time estimates and calendar: ordered items with reasons, the "
+         "next action, what doesn't fit, blocked items and conflicts. Replans after an interruption "
+         "(interruption_minutes); review=true compares the plan with what is done. Changes no to-do or calendar.",
+         plan_my_day, PlanArgs, RiskLevel.SAFE, category="todo", timeout=30),
     Tool("list_todos", "What is on the user's to-do list.", list_todos, NoArgs, RiskLevel.SAFE, category="todo"),
     Tool("complete_todo", "Mark a to-do item done (by number or words).", complete_todo, TodoItemArgs,
          RiskLevel.MODERATE, category="todo", timeout=10, confirmation=lambda a, _: f"Mark '{a.item}' done?",

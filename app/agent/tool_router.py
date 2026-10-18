@@ -23,13 +23,19 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
              "second screen", "other screen", "monitor", "arrange"),
     "web": ("search", "google", "youtube", "website", "site", "browser", "web", "url", "gmail", "github", "look up",
             "latest", "news", "who is", "what is", "how to", "internet", "online", "documentation", "docs",
-            "research", "find out", "sources", "summari", "video", "compare"),
+            "research", "find out", "sources", "summari", "video", "compare", "research project"),
     "files": ("file", "folder", "pdf", "doc", "document", "download", "desktop", "picture", "photo", "video", "music",
               "rename", "move", "copy", "delete", "remove", "create", "make", "find", "size", "list", "show", "open",
               "organi", "tidy", "clean up", "recycle", "zip", "unzip", "extract", "merge", "compress", "shrink",
-              "convert", "jpg", "png", "webp", "photos", "word to pdf", "docx"),
+              "convert", "jpg", "png", "webp", "photos", "word to pdf", "docx", "duplicate", "same file", "copies"),
+    "finance": ("expense", "expenses", "spent", "spend", "spending", "budget", "money", "cost", "paid", "pay for",
+                "taka", " tk", "৳", "খরচ", "বাজেট"),
+    "personal": ("journal", "diary", "note to self", "voice note", "write down", "jot", "habit", "habits", "streak",
+                 "drink water", "exercise", "workout", "meditat", "did my", "mood"),
     "system": ("cpu", "ram", "memory", "battery", "process", "disk", "storage", "space", "network", "internet speed",
-               "gpu", "uptime", "running", "usage", "using", "kill", "force", "performance", "temperature"),
+               "gpu", "uptime", "running", "usage", "using", "kill", "force", "performance", "temperature",
+               "health", "normal for my pc", "activity", "timeline", "what did you do", "what did you change",
+               "not verified", "profile", "settings profile", "meeting mode", "night mode", "performance mode", "switch to", "troubleshoot", "not working", "doesn't work", "fix my setup", "what's wrong", "tamper", "log intact", "which program", "before the crash", "before it crashed", "trace", "integration", "connected", "voice stats", "how is voice"),
     "windows": ("volume", "mute", "unmute", "sound", "louder", "quieter", "lock", "sleep", "restart", "reboot",
                 "shut", "shutdown", "sign out", "log out", "logout", "power", "settings", "setting", "update",
                 "upgrade", "bluetooth", "wifi", "wi-fi", "display", "brightness", "brighter", "dimmer", "dim ",
@@ -41,11 +47,12 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
                 "summari", "link", "button", "scroll", "back", "tell me", "what's there", "whats there",
                 "what is there", "what's on", "explain", "docs", "documentation", ".com", ".org", ".io", ".dev",
                 "http", "www"),
-    "automation": ("remind", "reminder", "schedule", "every day", "every morning", "every night", "every week",
+    "automation": ("simulate", "simulation", "what if", "what would happen", "background mode", "in the background", "run without the window", "remind", "reminder", "schedule", "every day", "every morning", "every night", "every week",
                    "every monday", "weekday", "daily", "o'clock", "tomorrow", " am", " pm", "at 1", "at 2", "at 3",
                    "at 4", "at 5", "at 6", "at 7", "at 8", "at 9", "minutes", "hour", "battery reaches",
                    "battery drops", "battery below", "workflow", "routine", "automation", "environment", "start my",
-                   "goal", "mission", "prepare", "plan ", "deadline", "this month", "this week", "লক্ষ্য"),
+                   "goal", "mission", "prepare", "plan ", "deadline", "this month", "this week", "লক্ষ্য",
+                   "export workflow", "import workflow", "resume "),
     "vision": ("screen", "screenshot", "screen shot", "this error", "error message", "this page", "this window",
                "explain this", "summarise this", "summarize this", "what does this say", "read this", "snip", "ocr", "capture", "looking at", "look at", "can you see",
                "see my", "see this", "see what", "what's this", "whats this", "what is this", "this error",
@@ -55,33 +62,38 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
              "briefing", "brief me", "good morning", "my day", "music", "song", "track", "play", "pause", "resume",
              "skip", "spotify", "video", "news", "headline", "queue", "ad ", "ads", "captions", "subtitles",
              "forward", "rewind", "repeat", "like this"),
-    "memory": ("remember", "forget", "recall", "memory", "memories", "know about me", "saved", "remind me what",
+    "memory": ("remember", "forget", "learned", "learnt", "tune your ai", "smarter", "upgrade your brain", "getting better", "improving", "where did you get", "is that verified", "source", "mention that", "why did you say", "import memor", "edit memor", "change memor", "recall", "memory", "memories", "know about me", "saved", "remind me what",
                "did i say", "did i tell", "we talked", "last time", "last week", "yesterday", "was i doing",
                "did i do", "i was working", "left off", "before lunch", "this morning", "my document",
                "my documents", "my notes", "my files", "pdf", "thesis", "index", "according to", "in the document",
                "working on", "context", "what am i doing", "what do you understand", "decision", "related to",
-               "which files", "which project", "worked on"),
+               "which files", "which project", "worked on", "learn", "flashcard", "revision", "spaced",
+               "export my memories", "memory categor", "search everything"),
     "screen": ("click", "double click", "right click", "press", "type ", "scroll", "button", "shortcut", "ctrl",
                "alt+", "enter key", "fill", "select the", "tap on", "tick", "untick", "check the box", "ok button"),
     "phone": ("call", "phone", "ring", "dial", "sms", "text message", "message to", "contact", "contacts", "number",
-              "whatsapp", "messages", "texted", "messaged"),
-    "home": ("light", "lights", "fan", "switch", "lamp", "ac", "air condition", "curtain", "tv", "door", "lock the",
+              "whatsapp", "messages", "texted", "messaged", "sync", "android", "jarvis mobile", "my phone", "flashlight", "torch",
+              "find my phone", "mobile"),
+    "home": ("light", "lights", "plug", "socket", "shelly", "tasmota", "wled", "led strip", "brightness", "fan", "switch", "lamp", "ac", "air condition", "curtain", "tv", "door", "lock the",
              "smart home", "turn on the", "turn off the", "bulb", "লাইট", "ফ্যান", "বাতি"),
     "voice": ("nickname", "call it", "means", "mistake", "review", "fix", "setting", "turn on", "turn off",
               "dictation", "dictate", "type what i say", "enroll", "wake word", "train", "self test", "speed report",
               "jarvis model", "update jarvis", "hide", "show yourself", "new conversation", "suggestion", "memory",
               "interpret", "translat", "quiz", "study", "test me"),
+    "approvals": ("don't ask me again", "dont ask me again", "stop asking", "ask me again", "standing approval", "pre-approve",
+                  "preapprove", "approvals", "always allow", "stop confirming"),
     "clipboard": ("clipboard", "copied", "i copied", "what i copy", "paste", "copy it", "copy that", "copy this",
                   "copy the", "কপি"),
     "todo": ("to-do", "todo", "to do list", "my list", "on my list", "task list", "tasks", "checklist", "add to",
              "mark ", "done with", "finished", "shopping list", "লিস্ট", "তালিকা", "কাজের", "focus", "concentrate",
-             "do not disturb", "quiet time", "deep work", "pomodoro", "মনোযোগ"),
+             "do not disturb", "quiet time", "deep work", "pomodoro", "মনোযোগ", "plan my day", "replan",
+             "review my day", "what should i do", "time estimate", "minutes for"),
     "notes": ("notes", "note taking", "take notes", "lecture", "class notes", "meeting notes", "record the meeting",
               "transcribe", "minutes of", "নোট", "লেকচার"),
-    "office": ("calendar", "meeting", "meetings", "schedule today", "appointment", "email", "emails", "mail",
-               "inbox", "outlook", "send a mail", "reply to"),
+    "office": ("google", "google drive", "google calendar", "drive file", "my drive", "calendar", "meeting", "meetings", "schedule today", "appointment", "email", "emails", "mail",
+               "inbox", "outlook", "send a mail", "reply to", "triage", "draft", "phishing", "suspicious", "urgent email", "conflict", "overlap", "double booked", "double-booked", "clash"),
     "dev": ("git", "commit", "branch", "status", "test", "npm", "pip", "python", "node", "project", "repo", "code",
-            "build", "install", "dependenc", "server", "dev", "editor", "vs code", "vscode", "run"),
+            "build", "install", "dependenc", "server", "dev", "editor", "vs code", "vscode", "run", "github", "pull request", "pull requests", "assigned to me"),
     "evolution": ("improve yourself", "improve your", "upgrade yourself", "proposal", "self-improv", "self improv",
                   "your own code", "your code", "your source", "roll back", "rollback", "evolution", "fix yourself"),
 }
@@ -101,10 +113,21 @@ def categories_for(text: str) -> set[str]:
 FALLBACK = frozenset({"apps", "info", "web"})
 
 
+_TOKEN_CACHE: dict[int, tuple[ToolSpec, int]] = {}
+
+
 def spec_tokens(spec: ToolSpec) -> int:
-    """Rough token count of one tool description as the model sees it (~3.3 characters per token)."""
-    return int(len(json.dumps({"name": spec.name, "description": spec.description, "parameters": spec.parameters},
-                              ensure_ascii=False)) / 3.3) + 8
+    """Rough token count of one tool description as the model sees it (~3.3 characters per token). Cached per spec
+    object (the cache keeps the spec alive, so an id can never be reused for a different one)."""
+    hit = _TOKEN_CACHE.get(id(spec))
+    if hit is not None and hit[0] is spec:
+        return hit[1]
+    tokens = int(len(json.dumps({"name": spec.name, "description": spec.description, "parameters": spec.parameters},
+                                ensure_ascii=False)) / 3.3) + 8
+    if len(_TOKEN_CACHE) > 2000:
+        _TOKEN_CACHE.clear()
+    _TOKEN_CACHE[id(spec)] = (spec, tokens)
+    return tokens
 
 
 def select_specs(registry: ToolRegistry, text: str, recent_tools: Iterable[str] = (),
@@ -121,7 +144,8 @@ def select_specs(registry: ToolRegistry, text: str, recent_tools: Iterable[str] 
     if not named and recent:
         order += [c for c in sorted(FALLBACK) if c not in order]
     # Tools from groups the router has no keywords for (plugins, custom tools) are always offered.
-    pairs = list(zip(registry.specs(), registry.tools))
+    all_specs = registry.specs()
+    pairs = list(zip(all_specs, registry.tools))
     chosen = [spec for spec, tool in pairs if tool.category in ALWAYS or tool.category not in KEYWORDS]
     budget = None if max_tokens is None else max_tokens - sum(spec_tokens(s) for s in chosen)
     for category in order:
@@ -136,7 +160,7 @@ def select_specs(registry: ToolRegistry, text: str, recent_tools: Iterable[str] 
             budget -= cost
         chosen += group
     names = {spec.name for spec in chosen}
-    return [spec for spec in registry.specs() if spec.name in names]
+    return [spec for spec in all_specs if spec.name in names]
 
 
 def _fit(group: list[ToolSpec], budget: int) -> list[ToolSpec]:

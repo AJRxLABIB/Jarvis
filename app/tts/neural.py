@@ -33,13 +33,16 @@ _BRIGHT = re.compile(r"!|\b(great|awesome|done|ready|welcome|good morning|congra
                      re.I)
 
 
-def prosody(text: str, speed: float = 1.0, rate_offset: int = 0, pitch_offset: int = 0) -> tuple[str, str]:
-    """(rate, pitch) for a sentence, e.g. ("+5%", "+4Hz"). Offsets shape a voice profile (JARVIS: calmer, deeper)."""
+def prosody(text: str, speed: float = 1.0, rate_offset: int = 0, pitch_offset: int = 0,
+            gentle: bool = False) -> tuple[str, str]:
+    """(rate, pitch) for a sentence, e.g. ("+5%", "+4Hz"). Offsets shape a voice profile. ``gentle``: the small,
+    human-sized changes of tone (a softer sentence a little slower, good news a little brighter), not big jumps."""
     rate, pitch = round((speed - 1.0) * 100) + rate_offset, pitch_offset
+    soft, bright = ((-3, -1), (+2, +1)) if gentle else ((-6, -3), (+4, +4))
     if _SOFT.search(text):
-        rate, pitch = rate - 6, pitch - 3
+        rate, pitch = rate + soft[0], pitch + soft[1]
     elif _BRIGHT.search(text):
-        rate, pitch = rate + 4, pitch + 4
+        rate, pitch = rate + bright[0], pitch + bright[1]
     return f"{rate:+d}%", f"{pitch:+d}Hz"
 
 
@@ -63,9 +66,10 @@ class NeuralTTS(TTSEngine):
 
     def __init__(self, english_voice: str, bangla_voice: str, *, fallback: TTSEngine | None = None,
                  synthesize_mp3: Callable[[str, str, str, str], bytes] | None = None,
-                 decoder: Callable[[bytes], np.ndarray] = decode_mp3, rate_offset: int = 0,
+                 decoder: Callable[[bytes], np.ndarray] = decode_mp3, rate_offset: int = 0, gentle: bool = False,
                  pitch_offset: int = 0) -> None:
         self.rate_offset, self.pitch_offset = rate_offset, pitch_offset  # English sentences only
+        self.gentle = gentle
         self.english_voice = english_voice
         self.bangla_voice = bangla_voice
         self.fallback = fallback
@@ -110,7 +114,8 @@ class NeuralTTS(TTSEngine):
     def synthesize(self, text: str, speed: float = 1.0) -> AudioClip:
         bangla = bool(BENGALI.search(text))
         if time.monotonic() >= self._offline_until:
-            rate, pitch = prosody(text, speed, 0 if bangla else self.rate_offset, 0 if bangla else self.pitch_offset)
+            rate, pitch = prosody(text, speed, 0 if bangla else self.rate_offset, 0 if bangla else self.pitch_offset,
+                                  gentle=self.gentle)
             try:
                 data = self._synthesize_mp3(text, self.voice_for(text), rate, pitch)
                 samples = self._decode(data)

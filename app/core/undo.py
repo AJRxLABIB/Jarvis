@@ -52,6 +52,10 @@ def inverse_of(call: ToolCall, result: "ToolResult") -> Inverse | None:
     if call.name == "rename_item" and path and old:
         return Inverse(ToolCall("rename_item", {"path": path, "new_name": Path(old).name}),
                        f"rename {Path(path).name} back to {Path(old).name}")
+    if call.name == "batch_rename" and args.get("apply") and data.get("renamed"):
+        pairs = [[new_path, old_name] for new_path, old_name in data["renamed"]]
+        return Inverse(ToolCall("batch_rename", {"pairs": pairs, "apply": True}),
+                       f"give the {len(pairs)} renamed file(s) their old names back")
     if call.name == "edit_code" and data.get("backup"):
         name = Path(str(path)).name if path else "the file"
         return Inverse(ToolCall("restore_code", {"backup": data["backup"]}),

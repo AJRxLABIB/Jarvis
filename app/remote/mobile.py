@@ -50,14 +50,15 @@ NONCE_KEEP_SECONDS = 600
 MAX_ARGUMENT_CHARS = 8000
 TRUST_STATES = ("pending", "trusted", "restricted", "revoked")
 # What a phone may be allowed to do. "emergency" can't be taken away from a trusted phone.
-PERMISSIONS = ("read", "chat", "approve", "control", "power", "screen", "files", "admin")
+PERMISSIONS = ("read", "chat", "approve", "control", "power", "screen", "files", "sync", "admin")
 DEFAULT_PERMISSIONS = ("read", "chat", "approve")  # the minimum; control / power are switched on by you, on the PC
 RESTRICTED_PERMISSIONS = ("read",)
 LABELS = {"read": "see status, notifications and messages", "chat": "talk to Jarvis",
           "approve": "answer Jarvis's approval questions", "control": "volume, media, open apps",
           "power": "lock, sleep, hibernate, restart, shut down, wake other PCs",
           "screen": "see and control the screen (mouse and keyboard) in an active session",
-          "files": "browse and transfer files", "admin": "system settings (not yet available)"}
+          "files": "browse and transfer files", "sync": "sync to-dos with the PC (only the data you switch on)",
+          "admin": "system settings (not yet available)"}
 
 # command -> (permission needed, tool it becomes (or None = handled here), argument rules)
 COMMANDS: dict[str, tuple[str | None, str | None]] = {
@@ -67,6 +68,7 @@ COMMANDS: dict[str, tuple[str | None, str | None]] = {
     "chat": ("chat", None),
     "approve": ("approve", None),
     "emergency_stop": (None, None),   # always allowed for a trusted or restricted phone
+    "cancel": ("chat", None),         # stop the current request (not the automations; nothing is undone)
     "lock": ("power", "power_control"),
     "sleep": ("power", "power_control"),
     "hibernate": ("power", "power_control"),
@@ -93,6 +95,16 @@ COMMANDS: dict[str, tuple[str | None, str | None]] = {
     "mouse": ("screen", None),
     "key": ("screen", None),
     "register_auth_key": (None, None),     # enrol the biometric key (signed by the base key)
+    "sync_status": ("sync", None),         # what is switched on for this phone, last sync, last error
+    "sync_pull": ("sync", None),           # to-do changes since a cursor (0 = snapshot)
+    "sync_push": ("sync", None),           # to-do edits from the phone (conflicts are refused, not overwritten)
+    "push_register": ("sync", None),       # the phone's FCM token, so the PC can send a content-free wake-up ping
+    "sync_forget": ("sync", None),         # the phone asks the PC to delete its sync bookkeeping
+    "notifications": ("read", None),       # generic one-line notices (polling; NOT push)
+    "phone_commands": ("read", None),      # the phone checks in: its state + collects actions the PC queued for it
+    "phone_result": ("read", None),        # ... and reports how each one went
+    "phone_notify": ("sync", None),        # a notification the user chose to forward (codes removed)
+    "phone_share": ("sync", None),         # text / a link shared to the PC from the phone's share menu
 }
 
 # Commands that change something on the PC: the phone must sign them with its SECOND key, the one Android
@@ -100,9 +112,19 @@ COMMANDS: dict[str, tuple[str | None, str | None]] = {
 STEP_UP_COMMANDS = frozenset({
     "lock", "sleep", "hibernate", "restart", "shutdown", "wake_device", "volume", "media", "open_app", "close_app",
     "window", "brightness", "open_website", "browser", "put_file", "get_file", "mouse", "key",
+    "sync_push", "approve",
 })
 _ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+
+
+def _is_denial(arguments) -> bool:
+    """True when an ``approve`` request says no (approved is exactly False)."""
+    try:
+        data = json.loads(arguments or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("approved") is False
 
 
 class MobileError(Exception):
@@ -224,6 +246,10 @@ class MobileRegistry:
             row = conn.execute(f"SELECT {self.COLUMNS} FROM mobile_devices WHERE id = ?", (device_id,)).fetchone()
         return self._row(row) if row else None
 
+    @property
+    def database(self) -> "Database":
+        return self._db
+
     def all(self) -> list[MobileDevice]:
         with self._db.connect() as conn:
             rows = conn.execute(f"SELECT {self.COLUMNS} FROM mobile_devices ORDER BY paired_at DESC").fetchall()
@@ -247,6 +273,13 @@ class MobileRegistry:
                          "revoked_at = ? WHERE id = ?",
                          (trust, json.dumps(permissions), now if trust == "trusted" else None,
                           now if trust == "revoked" else None, device_id))
+        if trust == "revoked":   # a revoked phone loses its sync choices and operation history at once
+            from app.remote.sync import SyncStore
+
+            SyncStore(self._db).forget_device(device_id)
+            from app.remote.push import PushStore
+
+            PushStore(self._db).forget(device_id)
         self.security_event(device_id, f"trust_{trust}", device.name)
         return self.get(device_id)  # type: ignore[return-value]
 
@@ -410,14 +443,20 @@ class MobileRegistry:
         if abs(now_ms - timestamp) > CLOCK_WINDOW_MS:
             raise MobileError(408, "expired", "The request is too old (or the phone's clock is wrong).")
         step_up = command in STEP_UP_COMMANDS
-        if step_up:
+        # Saying NO to a pending action is always safe: a denial may be signed with the base key. Saying YES (letting
+        # Jarvis act) needs the fingerprint / PIN key - an approval from a stolen, unlocked-app phone is not enough.
+        denial = command == "approve" and _is_denial(envelope.get("arguments"))
+        if step_up and not (denial and not device.auth_public_key):
             if not device.auth_public_key:
                 raise MobileError(403, "no_auth_key", "This action needs the phone's protected key. Open JARVIS "
                                   "Mobile and finish setup (it makes a fingerprint/PIN-protected key).")
             verifying_key = load_public_key(device.auth_public_key)  # released on the phone only after biometrics
         else:
             verifying_key = load_public_key(device.public_key)
-        if not verify_signature(verifying_key, signed_text(envelope), envelope["signature"]):
+        signature_ok = verify_signature(verifying_key, signed_text(envelope), envelope["signature"])
+        if not signature_ok and denial and verifying_key is not None and device.public_key:
+            signature_ok = verify_signature(load_public_key(device.public_key), signed_text(envelope), envelope["signature"])
+        if not signature_ok:
             self.security_event(device.id, "bad_signature", command)
             raise MobileError(401, "bad_signature", "The signature doesn't match this phone's key.")
         self._use_nonce(device.id, envelope["nonce"])

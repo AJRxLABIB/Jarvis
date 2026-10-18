@@ -15,7 +15,7 @@ from app.ui.controller import AssistantController
 from app.ui.hotkeys import HotkeyManager
 from app.ui.main_window import MainWindow
 from app.ui.styles.theme import STYLESHEET
-from app.ui.tray import TrayController, make_icon
+from app.ui.tray import TrayController
 from app.utils.logging_setup import get_logger, log_event
 
 if TYPE_CHECKING:
@@ -31,17 +31,27 @@ def instance_lock_path() -> Path:
 
 
 def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
+    # Background threads (speech, TTS, stats) hand the interpreter back to the window's thread every 1 ms instead of
+    # every 5 ms, so drawing the next frame is never kept waiting long: smoother animation while Jarvis works
+    sys.setswitchinterval(0.001)
+    from app.ui.app_icon import app_icon, set_app_id
+
+    set_app_id()                      # its own taskbar button with the Jarvis logo (not Python's icon and name)
     app = QApplication.instance() or QApplication(argv or sys.argv[:1])
     app.setApplicationName(__app_name__)
     app.setQuitOnLastWindowClosed(False)  # keeps running in the tray
     app.setStyleSheet(STYLESHEET)
-    app.setWindowIcon(make_icon())
+    app.setWindowIcon(app_icon())
 
     lock = QLockFile(str(instance_lock_path()))
     lock.setStaleLockTime(0)
     if not lock.tryLock(200):
-        QMessageBox.information(None, __app_name__, "The assistant is already running (see the system tray).")
-        return 0
+        # a background host (python run.py --background) holds the lock: ask it to stop, then take over
+        from app.automation import background
+
+        if not background.hand_over(ctx.paths.data_dir, lambda: lock.tryLock(200)):
+            QMessageBox.information(None, __app_name__, "The assistant is already running (see the system tray).")
+            return 0
 
     import time as _time
 
@@ -57,8 +67,8 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
         # First thing: the intro, in its own process, so it plays smoothly while everything below loads.
         from app.ui.intro_process import IntroLauncher
 
-        launcher = IntroLauncher(".".join(ctx.settings.assistant_name.upper()) + ".",
-                                 f"Personal AI assistant  ·  v{__version__}  ·  all on this PC", lambda: None)
+        launcher = IntroLauncher(".".join(ctx.settings.assistant_name.upper()) + ".", "", lambda: None,
+                                 owner=getattr(ctx.settings, "user_name", ""))
         if not launcher.start():
             launcher = None
     crash_report = crash.start(ctx)
@@ -67,6 +77,16 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
     if crash_report is not None:
         window.chat.add_message("notice", f"Jarvis didn't close normally last time. A crash report (private data "
                                           f"removed) was saved to {crash_report}.")
+
+    try:   # first start after an update: did the new version come up healthy? (app/core/update_guard.py)
+        from app.core import update_guard
+
+        update_result = update_guard.startup_check(ctx, __version__)
+        if update_result is not None:
+            window.chat.add_message("notice" if update_result.state in ("healthy", "not_installed") else "error",
+                                    update_result.message())
+    except Exception:
+        _log.warning("the post-update check could not run", exc_info=True)
 
     def open_logs() -> None:
         tray.show_window()
@@ -128,9 +148,8 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
     elif getattr(ctx.settings, "intro_animation", True) and motion.ENABLED:
         from app.ui.intro import IntroScreen
 
-        intro = IntroScreen(".".join(ctx.settings.assistant_name.upper()) + ".",
-                            f"Personal AI assistant  ·  v{__version__}  ·  all on this PC",
-                            intro_status_lines(ctx, controller))
+        intro = IntroScreen(".".join(ctx.settings.assistant_name.upper()) + ".", "",
+                            intro_status_lines(ctx, controller), owner=getattr(ctx.settings, "user_name", ""))
         intro.finished.connect(lambda: window.show_start(full_screen))
         window._intro = intro  # keep it alive until it closes itself
         window._started = False
@@ -159,8 +178,10 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
     QTimer.singleShot(300, controller.tts.start)  # the voice engine loads in its own thread
     QTimer.singleShot(700, controller.start_hands_free)  # only if HANDS_FREE=true (loads speech recognition)
     QTimer.singleShot(0, lambda: log_event(_log, "window_ready", ms=int((_time.perf_counter() - started) * 1000)))
-    if not ctx.settings.setup_done:
-        QTimer.singleShot(1200, window.open_setup_wizard)  # first run
+    from app.core import setup_state
+
+    if not ctx.settings.setup_done and not setup_state.is_done(ctx.paths.data_dir):
+        QTimer.singleShot(1200, window.open_setup_wizard)  # first run only (Menu > Setup wizard opens it later)
     QTimer.singleShot(8000, controller.check_for_updates)  # only if UPDATE_MANIFEST_URL is set
     window.chat.add_message("notice", "Hello. Type a message or press Talk. Hotkeys: "
                                       + ", ".join(f"{a.replace('_', ' ')} = {c}" for a, c in ctx.config.shortcuts.hotkeys.items()))

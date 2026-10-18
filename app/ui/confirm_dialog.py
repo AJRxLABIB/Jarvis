@@ -7,8 +7,9 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app.security.confirmations import ConfirmationRequest
+from app.ui.styles.tokens import COLOR
 
-_LEVEL_COLORS = {"safe": "#38bdf8", "moderate": "#fbbf24", "dangerous": "#f87171", "critical": "#ef4444"}
+_LEVEL_COLORS = {"safe": COLOR["accent"], "moderate": COLOR["warn"], "dangerous": COLOR["danger"], "critical": "#ef4444"}
 
 
 class ConfirmDialog(QDialog):

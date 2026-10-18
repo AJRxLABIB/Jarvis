@@ -65,7 +65,7 @@ def test_summary_from_the_real_log(tmp_path: Path) -> None:
     log(database, day(14, 0), "open_application", name="Steam")  # after lunch
     start, end, label = activity.period("before lunch", NOW)
     text = activity.summarize(activity.load(database, start, end), label)
-    assert text == ("This morning, between 09:10 and 11:40, I opened Visual Studio Code; went to YouTube; "
+    assert text == ("This morning, between 9:10 AM and 11:40 AM, I opened Visual Studio Code; went to YouTube; "
                     "played kk songs.")
     assert "WordShop" not in text and "Steam" not in text
 

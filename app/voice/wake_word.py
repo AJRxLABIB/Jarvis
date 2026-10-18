@@ -247,8 +247,20 @@ _GREETING_VARIANTS = {"hey": {"hey", "hi", "hay", "hei", "a", "ay", "eh", "as", 
 _WORD = re.compile(r"[A-Za-z0-9']+")
 
 
+_PERSONAL_ALIASES: frozenset[str] = frozenset()   # spellings YOU approved with `--wake-doctor` (data\wake_aliases.json)
+
+
+def set_personal_aliases(aliases) -> None:
+    global _PERSONAL_ALIASES
+    _PERSONAL_ALIASES = frozenset(str(a).lower() for a in aliases)
+
+
 def _similar(a: str, b: str) -> bool:
     return a == b or SequenceMatcher(None, a, b).ratio() >= 0.75
+
+
+def _name_matches(spoken: str, expected: str, is_name: bool) -> bool:
+    return _similar(spoken, expected) or (is_name and spoken in _PERSONAL_ALIASES)
 
 
 def strip_wake_phrase(text: str, wake_word: str) -> tuple[str, bool]:
@@ -264,11 +276,11 @@ def strip_wake_phrase(text: str, wake_word: str) -> tuple[str, bool]:
         if len(words) < len(candidate):
             continue
         ok = True
-        for spoken, expected in zip(words, candidate):
+        for position, (spoken, expected) in enumerate(zip(words, candidate)):
             s = spoken.group().lower()
             if expected in _GREETING_VARIANTS and s in _GREETING_VARIANTS[expected]:
                 continue
-            if not _similar(s, expected):
+            if not _name_matches(s, expected, position == len(candidate) - 1):
                 ok = False
                 break
         if ok:
@@ -286,7 +298,9 @@ _FILLERS = frozenset({"mm", "mmm", "mmmm", "hmm", "hm", "hmmm", "mhm", "mmhmm", 
                       "hm-hmm", "shh", "psst", "ooh", "aah", "hmph"})
 # What Whisper typically "hears" in silence or noise when nobody asked it anything.
 _NOISE_PHRASES = frozenset({"you", "thank you", "thanks", "thanks for watching", "thank you for watching", "bye",
-                            "okay", "ok", "so", "the", "i", "yeah", "please subscribe", "subtitles by", "music"})
+                            "okay", "ok", "so", "the", "i", "yeah", "please subscribe", "subtitles by", "music",
+                            "thank you thank you", "thank you so much for watching", "see you next time",
+                            "thanks for listening", "subscribe", "like and subscribe"})
 
 
 def _words(text: str) -> list[str]:

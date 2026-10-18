@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import AliasChoices, Field
@@ -193,12 +195,16 @@ class NameArgs(ToolArgs):
 
 class RunWorkflowArgs(NameArgs):
     resume: bool = Field(default=False, description="Continue a workflow that stopped, from the step it stopped at")
+    on_uncertain: Literal["skip", "repeat"] | None = Field(
+        default=None, description="Only with resume: when the stopped step may or may not have happened and it changes "
+                                  "something, say 'skip' (it did happen) or 'repeat' (it did not). Without this, such a "
+                                  "step is never repeated automatically")
 
 
 async def run_workflow(args: RunWorkflowArgs, ctx: ToolContext) -> ToolResult:
     task = _store(ctx).find(args.name)
     scheduler = ctx.get_scheduler()
-    report = await scheduler.run(task, manual=True, resume=args.resume)
+    report = await scheduler.run(task, manual=True, resume=args.resume, uncertain=args.on_uncertain if args.resume else None)
     data = {"steps": report.steps, "failed_step": report.failed_step}
     if report.ok:
         return ToolResult.success(report.message, **data)
@@ -256,6 +262,78 @@ def workflow_versions(args: NameArgs, ctx: ToolContext) -> ToolResult:
                                          "steps": len(v["steps"])} for v in versions])
 
 
+class ExportArgs(NameArgs):
+    description: str = Field(default="", max_length=300, description="What the workflow is for")
+    expected_outcome: str = Field(default="", max_length=300, description="What should be true when it finishes")
+
+
+def export_workflow(args: ExportArgs, ctx: ToolContext) -> ToolResult:
+    """Write a workflow to a JSON file in the exports folder, with the tools and risk it needs declared."""
+    from app.automation import portable
+
+    task = _store(ctx).find(args.name)
+    doc = portable.export_document(task, ctx.get_tool_registry(), ctx, args.description, args.expected_outcome)
+    base = ctx.paths.data_dir if ctx.paths is not None else Path.home() / ".jarvis"
+    folder = base / "exports" / "workflows"
+    folder.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", task.name).strip("_") or "workflow"
+    path = folder / f"{safe}.jarvis-workflow.json"
+    path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    return ToolResult.success(f"Exported '{task.name}' to {path.name} (needs: {', '.join(doc['requires']['tools']) or 'nothing'}; "
+                              f"highest risk {doc['requires']['max_risk']}). The file is data only; its schedule is not exported.",
+                              path=str(path), requires=doc["requires"])
+
+
+class ImportArgs(ToolArgs):
+    path: str = Field(min_length=1, max_length=400, description="Path of a .jarvis-workflow.json file")
+    replace: bool = Field(default=False, description="Replace a workflow with the same name (the old one is kept as a version)")
+    check_only: bool = Field(default=False, description="Only check the file and say what importing would do")
+
+
+def _import_read(args: ImportArgs, ctx: ToolContext) -> str:
+    path = ctx.get_path_policy().resolve(args.path, must_exist=True)
+    if not path.is_file():
+        raise ToolError("That is not a file.", "not_a_file")
+    if path.stat().st_size > 64_000:
+        raise ToolError("That file is too large to be a workflow.", "too_large")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _import_precheck(args: ImportArgs, ctx: ToolContext) -> None:
+    from app.automation import portable
+
+    report = portable.validate_import(_import_read(args, ctx), ctx.get_tool_registry(), ctx)
+    if not report.ok:
+        raise ToolError(report.text(), "invalid_workflow")
+
+
+def _import_question(args: ImportArgs, ctx: ToolContext) -> str:
+    from app.automation import portable
+
+    report = portable.validate_import(_import_read(args, ctx), ctx.get_tool_registry(), ctx)
+    steps = "; ".join(s.describe() for s in report.steps)
+    return f"Import the workflow '{report.name}' (highest risk {report.max_risk})? Steps: {steps}. It will not run until you ask."
+
+
+def import_workflow(args: ImportArgs, ctx: ToolContext) -> ToolResult:
+    from app.automation import portable
+
+    report = portable.validate_import(_import_read(args, ctx), ctx.get_tool_registry(), ctx)
+    if not report.ok:
+        raise ToolError(report.text(), "invalid_workflow")
+    store = _store(ctx)
+    exists = any(t.name.lower() == report.name.lower() for t in store.all())
+    if args.check_only:
+        return ToolResult.success(report.text() + (" A workflow with this name exists." if exists else ""),
+                                  name=report.name, exists=exists, warnings=report.warnings)
+    if exists and not args.replace:
+        raise ToolError(f"A workflow called '{report.name}' already exists. Say 'replace' to overwrite it "
+                        "(the old one is kept as a version).", "exists")
+    task, replaced = _save(ctx, report.name, ManualTrigger(), report.steps)
+    return ToolResult.success(f"{'Replaced' if replaced else 'Imported'} the workflow '{task.name}' ({len(task.steps)} steps). "
+                              "It has not been run; its schedule is never imported.", name=task.name)
+
+
 class RestoreArgs(NameArgs):
     version: int = Field(ge=1, description="The version number to bring back")
 
@@ -269,7 +347,137 @@ def restore_workflow(args: RestoreArgs, ctx: ToolContext) -> ToolResult:
                               **task.to_dict())
 
 
+class SimulateArgs(ToolArgs):
+    workflow: str = Field(min_length=1, max_length=80, description="Name of a saved workflow or automation to simulate")
+    what_if: Literal["normal", "tool_fails", "tool_times_out", "permission_denied", "response_lost", "crash_and_restart",
+                     "duplicate_trigger", "emergency_stop"] = Field(
+        default="normal", description="The situation to play through (nothing real runs in any of them)")
+    tool: str | None = Field(default=None, max_length=60, description="Which step's tool the situation happens to "
+                                                                       "(default: the first tool step)")
+    resumes: int = Field(default=1, ge=0, le=3, description="How many times 'resume' is said after a failure")
+    treat_as_idempotent: bool = Field(default=False, description="Pretend repeating that tool's effect is harmless")
+    on_uncertain: Literal["skip", "repeat"] | None = Field(
+        default=None, description="What you would tell 'resume' about a state-changing step whose outcome is unknown")
+
+
+def simulate_workflow_tool(args: SimulateArgs, ctx: ToolContext) -> ToolResult:
+    """Play a saved workflow through a what-if with scripted pretend tools, on a scratch database. Changes nothing."""
+    from app.automation import simulator as sim
+
+    if ctx.database is None:
+        raise ToolError("Workflows need the database.", "no_database")
+    task = AutomationStore(ctx.database).find(args.workflow)
+    steps = [s.model_dump(exclude_none=True) for s in task.steps]
+    tool_steps = [s["tool"] for s in steps if s.get("type", "tool") == "tool"]
+    if not tool_steps:
+        raise ToolError(f"'{task.name}' has no tool steps to simulate.", "nothing_to_simulate")
+    target = args.tool or tool_steps[0]
+    if target not in tool_steps:
+        raise ToolError(f"'{task.name}' has no step using '{target}'. Its tools: {', '.join(dict.fromkeys(tool_steps))}.",
+                        "unknown_step")
+    scenario = sim.scenario_for(args.what_if, target, args.resumes, args.treat_as_idempotent, args.on_uncertain)
+    from app.tools.catalog import build_default_registry
+
+    report = sim.simulate_workflow(steps, scenario, build_default_registry())
+    return ToolResult.success(report.describe(), simulated=True, final_ok=report.final_ok, duplicated=report.duplicated,
+                              effects=report.effects)
+
+
+class BackgroundArgs(ToolArgs):
+    action: Literal["status", "pause", "resume", "stop"] = Field(
+        description="status = is a background host running and what is it doing; pause / resume / stop it")
+
+
+def _background_risk(args: BackgroundArgs, ctx: ToolContext) -> RiskLevel:
+    return RiskLevel.SAFE if args.action == "status" else RiskLevel.MODERATE
+
+
+def background_mode(args: BackgroundArgs, ctx: ToolContext) -> ToolResult:
+    """See and control the optional windowless background host (python run.py --background). Starting it is never done
+    from here: only you start it, from a terminal or the opt-in scheduled task."""
+    from app.automation import background
+
+    if ctx.paths is None:
+        raise ToolError("Background mode needs the data folder.", "no_context")
+    state = background.read_state(ctx.paths.data_dir)
+    running = background.is_running(ctx.paths.data_dir)
+    if args.action == "status":
+        if not running:
+            return ToolResult.success("No background host is running. Automations run only while this window is open "
+                                      "(or if you start `python run.py --background`).", running=False)
+        text = (f"The background host is {state['status']} (pid {state['pid']}, started {state['started_at'][:16]}, last "
+                f"heartbeat {state['heartbeat'][11:19]}); {len(state.get('running_now', []))} automation(s) running now.")
+        return ToolResult.success(text, running=True, **{k: state.get(k) for k in ("status", "notices", "stalled")})
+    if not running:
+        return ToolResult.success(f"Nothing to {args.action}: no background host is running.", running=False)
+    background.request(ctx.paths.data_dir, args.action)
+    return ToolResult.success(f"Asked the background host to {args.action}; it reads the request within a few seconds.",
+                              running=True, requested=args.action)
+
+
+class MobileSyncArgs(ToolArgs):
+    action: Literal["status", "enable", "disable", "forget"] = Field(
+        description="status = what each paired phone may sync; enable / disable one dataset for a phone; forget = delete "
+                    "a phone's sync bookkeeping")
+    phone: str = Field(default="", max_length=80, description="The phone's name (as shown in Jarvis Mobile settings); "
+                                                              "optional when only one phone is paired")
+    dataset: Literal["todos", "notifications", ""] = Field(default="", description="todos or notifications")
+
+
+def _mobile_sync_risk(args: MobileSyncArgs, ctx: ToolContext) -> RiskLevel:
+    return RiskLevel.SAFE if args.action == "status" else RiskLevel.MODERATE
+
+
+def mobile_sync(args: MobileSyncArgs, ctx: ToolContext) -> ToolResult:
+    """Choose, on the PC, which data a paired phone may sync. Nothing is shared until you enable it here."""
+    from app.remote.mobile import MobileRegistry
+    from app.remote.sync import DATASETS, SyncStore
+
+    if ctx.database is None:
+        raise ToolError("Phone sync needs the database.", "no_context")
+    phones = [d for d in MobileRegistry(ctx.database).all() if d.trust in ("trusted", "restricted")]
+    if not phones:
+        return ToolResult.success("No paired phone is trusted yet, so nothing is synced.", phones=0)
+    if args.phone:
+        phones = [d for d in phones if d.name.lower() == args.phone.lower()]
+        if not phones:
+            raise ToolError(f"No trusted phone is named '{args.phone}'.", "not_found")
+    store = SyncStore(ctx.database)
+    if args.action == "status":
+        lines = []
+        for device in phones:
+            on = store.enabled(device.id)
+            lines.append(f"{device.name}: syncing {', '.join(on) if on else 'nothing'}"
+                         + ("" if "sync" in device.permissions else " (the phone lacks the 'sync' permission)"))
+        return ToolResult.success("\n".join(lines) + "\nSyncing is by polling, not push; the phone must ask.", phones=len(phones))
+    if len(phones) > 1:
+        raise ToolError("More than one phone is paired; say which one (phone=<name>).", "ambiguous")
+    device = phones[0]
+    if args.action == "forget":
+        removed = store.forget_device(device.id)
+        return ToolResult.success(f"Deleted {device.name}'s sync settings and history ({removed} rows). Your to-dos are unchanged.")
+    if args.dataset not in DATASETS:
+        raise ToolError("Say which data: todos or notifications.", "invalid")
+    store.set_enabled(device.id, args.dataset, args.action == "enable")
+    note = "" if "sync" in device.permissions or args.action == "disable" else (
+        " The phone still needs the 'sync' permission (Jarvis Mobile settings in the window).")
+    return ToolResult.success(f"{'Enabled' if args.action == 'enable' else 'Disabled'} syncing {args.dataset} with {device.name}.{note}")
+
+
 TOOLS: tuple[Tool, ...] = (
+    Tool("mobile_sync", "Choose which data a paired Android phone may sync with this PC (to-dos, generic notifications) "
+         "or turn it off or delete the phone's sync data. Nothing syncs until you enable it.", mobile_sync, MobileSyncArgs,
+         RiskLevel.SAFE, "phone", timeout=15, risk=_mobile_sync_risk,
+         confirmation=lambda a, c: f"{a.action.capitalize()} {a.dataset or 'phone'} sync?"),
+    Tool("simulate_workflow", "Play a saved workflow through a what-if (a step fails, times out, is denied, loses its "
+         "answer, the program crashes and restarts, it is triggered twice, or the emergency stop is pressed) using pretend "
+         "tools on a scratch database. Nothing real runs; every result is labelled SIMULATED. Finds design problems such "
+         "as a step that would run twice after a crash.", simulate_workflow_tool, SimulateArgs, RiskLevel.SAFE,
+         "automation", timeout=60),
+    Tool("background_mode", "See or control the optional windowless background host that runs scheduled automations: "
+         "status, pause, resume or stop. It never starts it. Steps that need your approval are refused there.",
+         background_mode, BackgroundArgs, RiskLevel.SAFE, "automation", timeout=15, risk=_background_risk,
+         confirmation=lambda a, c: f"{a.action.capitalize()} the background host?"),
     Tool("set_reminder", "Remind the user of something at a time, in N minutes, or repeatedly (daily/weekdays).",
          set_reminder, ReminderArgs, RiskLevel.SAFE, "automation"),
     Tool("snooze_reminder", "Snooze the reminder that just went off (or a named one): remind again in N minutes.",
@@ -284,6 +492,13 @@ TOOLS: tuple[Tool, ...] = (
     Tool("run_workflow", "Run a saved workflow, e.g. 'development environment'. resume=true continues one that "
          "stopped, from the step it stopped at.", run_workflow, RunWorkflowArgs,
          RiskLevel.SAFE, "automation", timeout=900),
+    Tool("export_workflow", "Export a saved workflow to a portable JSON file (data only) that declares the tools and "
+         "risk it needs.", export_workflow, ExportArgs, RiskLevel.MODERATE, "automation",
+         confirmation=lambda a, c: f"Write the workflow '{a.name}' to a file in Jarvis's exports folder?"),
+    Tool("import_workflow", "Import a workflow file (.jarvis-workflow.json): checked strictly, saved as a manual "
+         "workflow, never run by importing, never more powerful than it declares. check_only=true just reports.",
+         import_workflow, ImportArgs, RiskLevel.MODERATE, "automation", precheck=_import_precheck,
+         confirmation=_import_question),
     Tool("list_automations", "List reminders, scheduled automations and workflows.", list_automations, NoArgs,
          RiskLevel.SAFE, "automation"),
     Tool("manage_automation", "Pause, resume, delete or run now an automation or reminder.", manage_automation,

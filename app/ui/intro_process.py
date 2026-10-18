@@ -29,7 +29,7 @@ _log = get_logger("ui.intro")
 
 # ------------------------------------------------------------------ the child (intro process)
 
-def run_intro_child(title: str, subtitle: str) -> int:
+def run_intro_child(title: str, subtitle: str, owner: str = "") -> int:
     import os
 
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
@@ -39,7 +39,11 @@ def run_intro_child(title: str, subtitle: str) -> int:
     from app.tools import winapi
     from app.ui.intro import IntroScreen
 
+    from app.ui.app_icon import app_icon, set_app_id
+
+    set_app_id()                      # the intro belongs to the same taskbar button as Jarvis
     app = QApplication(sys.argv[:1])
+    app.setWindowIcon(app_icon())
     states: dict[str, tuple[str, str]] = {}
     order: list[str] = []
     flags = {"ready": False, "gone": False}
@@ -64,7 +68,7 @@ def run_intro_child(title: str, subtitle: str) -> int:
         return lambda: states.get(label, ("STARTING", "wait"))
 
     labels = ["Speech output", "Speech recognition", "AI model", "Hands-free", "Wake word", "Memory"]
-    intro = IntroScreen(title, subtitle, [(label, line(label)) for label in labels], wait_for_ready=True)
+    intro = IntroScreen(title, subtitle, [(label, line(label)) for label in labels], wait_for_ready=True, owner=owner)
 
     def finale() -> None:
         winapi.allow_any_foreground()  # we are in front: let Jarvis take over the focus
@@ -92,10 +96,12 @@ def run_intro_child(title: str, subtitle: str) -> int:
 
 # ------------------------------------------------------------------ the parent (Jarvis)
 
-def child_command(title: str, subtitle: str) -> list[str]:
+def child_command(title: str, subtitle: str, owner: str = "") -> list[str]:
     from app.utils.paths import is_frozen, project_root
 
     args = ["--intro-child", "--intro-title", title, "--intro-subtitle", subtitle]
+    if owner:
+        args += ["--intro-owner", owner]
     if is_frozen():
         return [sys.executable, *args]
     return [sys.executable, str(project_root() / "run.py"), *args]
@@ -105,8 +111,8 @@ class IntroLauncher:
     """Starts the intro process, feeds it the real states, and calls ``on_finale`` when it's time."""
 
     def __init__(self, title: str, subtitle: str, on_finale: Callable[[], None],
-                 popen: Callable[..., subprocess.Popen] = subprocess.Popen) -> None:
-        self.title, self.subtitle = title, subtitle
+                 popen: Callable[..., subprocess.Popen] = subprocess.Popen, owner: str = "") -> None:
+        self.title, self.subtitle, self.owner = title, subtitle, owner
         self.on_finale = on_finale
         self._popen = popen
         self.process: subprocess.Popen | None = None
@@ -115,7 +121,7 @@ class IntroLauncher:
     def start(self) -> bool:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
         try:
-            self.process = self._popen(child_command(self.title, self.subtitle), stdin=subprocess.PIPE,
+            self.process = self._popen(child_command(self.title, self.subtitle, self.owner), stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
                                        encoding="utf-8", creationflags=flags)
         except OSError:

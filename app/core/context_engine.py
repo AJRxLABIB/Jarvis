@@ -16,6 +16,8 @@ window titles aren't read. The screen is never captured by the context engine.
 
 from __future__ import annotations
 
+from app.utils.timefmt import time12
+
 import re
 import threading
 import time
@@ -282,7 +284,7 @@ class ContextEngine:
 
             actions = current_session(ctx.database, datetime.now().astimezone(), lookback=timedelta(hours=3))[-5:]
             if actions:
-                facts["recent_actions"] = Fact([f"{a.at:%H:%M} {a.tool}" for a in actions],
+                facts["recent_actions"] = Fact([f"{time12(a.at)} {a.tool}" for a in actions],
                                                "what Jarvis did for you (audit log)", KNOWN)
             with ctx.database.connect() as conn:
                 unread = conn.execute("SELECT COUNT(*) FROM notifications WHERE read = 0 AND archived = 0").fetchone()[0]

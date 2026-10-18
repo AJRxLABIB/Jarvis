@@ -635,6 +635,385 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        25,
+        "voice_events",
+        (
+            # how voice interaction is actually going: one row per thing heard, no audio and no text
+            """
+            CREATE TABLE voice_events (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           TEXT NOT NULL,
+                status       TEXT NOT NULL,
+                language     TEXT,
+                confidence   REAL,
+                stt_ms       INTEGER,
+                first_reply_ms INTEGER,
+                handled      INTEGER
+            )
+            """,
+            "CREATE INDEX idx_voice_events_ts ON voice_events (ts)",
+        ),
+    ),
+    Migration(
+        26,
+        "personal_workspace",
+        (
+            # estimated minutes for a to-do (the daily plan needs a time budget)
+            "ALTER TABLE todos ADD COLUMN minutes INTEGER",
+            # the plan made for a day: only to-do ids and reasons, so no task is ever duplicated
+            """
+            CREATE TABLE day_plans (
+                day        TEXT PRIMARY KEY,
+                plan       TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            # named research projects: sources and the claims each one supports
+            """
+            CREATE TABLE research_projects (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                question   TEXT NOT NULL,
+                criteria   TEXT NOT NULL DEFAULT '',
+                conclusion TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE research_sources (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id  INTEGER NOT NULL REFERENCES research_projects(id) ON DELETE CASCADE,
+                url         TEXT NOT NULL,
+                title       TEXT NOT NULL DEFAULT '',
+                source_date TEXT,
+                fetched_at  TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                UNIQUE (project_id, url)
+            )
+            """,
+            """
+            CREATE TABLE research_claims (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES research_projects(id) ON DELETE CASCADE,
+                source_id  INTEGER REFERENCES research_sources(id) ON DELETE CASCADE,
+                topic      TEXT NOT NULL,
+                claim      TEXT NOT NULL,
+                kind       TEXT NOT NULL DEFAULT 'sourced' CHECK (kind IN ('sourced', 'inference')),
+                needs_recheck INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                CHECK (kind = 'inference' OR source_id IS NOT NULL)
+            )
+            """,
+            # learning: one row per thing being learned, with spaced-repetition state
+            """
+            CREATE TABLE learning_items (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic      TEXT NOT NULL,
+                question   TEXT NOT NULL,
+                answer     TEXT NOT NULL,
+                source     TEXT NOT NULL DEFAULT 'you',
+                language   TEXT NOT NULL DEFAULT 'en',
+                ease       REAL NOT NULL DEFAULT 2.5,
+                interval_days INTEGER NOT NULL DEFAULT 0,
+                repetitions INTEGER NOT NULL DEFAULT 0,
+                due        TEXT NOT NULL,
+                correct    INTEGER NOT NULL DEFAULT 0,
+                wrong      INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_learning_due ON learning_items (due)",
+            # email drafts: written, edited and approved by you; never sent from here
+            """
+            CREATE TABLE mail_drafts (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                to_addr    TEXT NOT NULL DEFAULT '',
+                subject    TEXT NOT NULL,
+                body       TEXT NOT NULL,
+                in_reply_to TEXT NOT NULL DEFAULT '',
+                state      TEXT NOT NULL DEFAULT 'draft' CHECK (state IN ('draft', 'approved', 'discarded', 'sent')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
+    Migration(
+        27,
+        "audit_chain_and_process_samples",
+        (
+            # tamper-evident audit trail (see app/core/auditchain.py)
+            "ALTER TABLE audit_log ADD COLUMN prev_hash TEXT",
+            "ALTER TABLE audit_log ADD COLUMN entry_hash TEXT",
+            """
+            CREATE TABLE audit_head (
+                id        INTEGER PRIMARY KEY CHECK (id = 1),
+                last_id   INTEGER NOT NULL,
+                last_hash TEXT NOT NULL
+            )
+            """,
+            # per-process resource samples (name and numbers only; never command lines or window titles)
+            """
+            CREATE TABLE process_samples (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts      TEXT NOT NULL,
+                name    TEXT NOT NULL,
+                cpu     REAL NOT NULL,
+                mem_mb  REAL NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_process_samples_ts ON process_samples (ts)",
+            "CREATE INDEX idx_process_samples_name ON process_samples (name)",
+            # watched research projects: re-checked on a schedule you switch on
+            "ALTER TABLE research_projects ADD COLUMN watch_days INTEGER",
+            "ALTER TABLE research_projects ADD COLUMN last_checked TEXT",
+        ),
+    ),
+    Migration(
+        28,
+        "integration_tests",
+        (
+            # the last smoke test of each outside service: what was checked, the result and when (never a secret)
+            """
+            CREATE TABLE integration_tests (
+                key       TEXT PRIMARY KEY,
+                verdict   TEXT NOT NULL,
+                detail    TEXT NOT NULL DEFAULT '',
+                tested_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
+    Migration(
+        29,
+        "workflow_progress_outcome",
+        (
+            # how the checkpointed step ended: 'failed' = it definitely did nothing; NULL = unknown (a crash, a timeout, a
+            # lost answer). An unknown outcome of a state-changing step is never repeated without you saying so.
+            "ALTER TABLE workflow_progress ADD COLUMN outcome TEXT",
+        ),
+    ),
+    Migration(
+        30,
+        "phone_sync",
+        (
+            # which data each paired phone may sync (nothing until YOU switch a dataset on, on the PC)
+            """
+            CREATE TABLE sync_prefs (
+                device_id    TEXT NOT NULL,
+                dataset      TEXT NOT NULL,
+                enabled      INTEGER NOT NULL DEFAULT 0,
+                updated_at   TEXT NOT NULL,
+                last_sync_at TEXT,
+                last_error   TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (device_id, dataset)
+            )
+            """,
+            # an append-only change log of the synced data (written by triggers, so every change is seen whoever made it)
+            """
+            CREATE TABLE sync_log (
+                seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset   TEXT NOT NULL,
+                record_id INTEGER NOT NULL,
+                op        TEXT NOT NULL CHECK (op IN ('upsert', 'delete')),
+                rev       INTEGER NOT NULL,
+                payload   TEXT NOT NULL DEFAULT '{}',
+                ts        TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_sync_log_record ON sync_log (dataset, record_id)",
+            # operations already applied for a phone: a repeated delivery returns the saved answer instead of applying twice
+            """
+            CREATE TABLE sync_ops (
+                device_id  TEXT NOT NULL,
+                op_id      TEXT NOT NULL,
+                result     TEXT NOT NULL,
+                applied_at TEXT NOT NULL,
+                PRIMARY KEY (device_id, op_id)
+            )
+            """,
+            """
+            CREATE TRIGGER sync_todos_insert AFTER INSERT ON todos BEGIN
+                INSERT INTO sync_log (dataset, record_id, op, rev, payload, ts)
+                VALUES ('todos', NEW.id, 'upsert',
+                        (SELECT COALESCE(MAX(rev), 0) + 1 FROM sync_log WHERE dataset = 'todos' AND record_id = NEW.id),
+                        json_object('text', NEW.text, 'due', NEW.due, 'done', NEW.done, 'done_at', NEW.done_at,
+                                    'minutes', NEW.minutes),
+                        strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+            END
+            """,
+            """
+            CREATE TRIGGER sync_todos_update AFTER UPDATE ON todos BEGIN
+                INSERT INTO sync_log (dataset, record_id, op, rev, payload, ts)
+                VALUES ('todos', NEW.id, 'upsert',
+                        (SELECT COALESCE(MAX(rev), 0) + 1 FROM sync_log WHERE dataset = 'todos' AND record_id = NEW.id),
+                        json_object('text', NEW.text, 'due', NEW.due, 'done', NEW.done, 'done_at', NEW.done_at,
+                                    'minutes', NEW.minutes),
+                        strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+            END
+            """,
+            """
+            CREATE TRIGGER sync_todos_delete AFTER DELETE ON todos BEGIN
+                INSERT INTO sync_log (dataset, record_id, op, rev, payload, ts)
+                VALUES ('todos', OLD.id, 'delete',
+                        (SELECT COALESCE(MAX(rev), 0) + 1 FROM sync_log WHERE dataset = 'todos' AND record_id = OLD.id),
+                        '{}', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+            END
+            """,
+        ),
+    ),    Migration(
+        31,
+        "push_tokens",
+        (
+            # the Firebase Cloud Messaging token a paired phone registered (a push address, not a login) and how far the
+            # push dispatcher has read the events table for it
+            """
+            CREATE TABLE push_tokens (
+                device_id     TEXT PRIMARY KEY,
+                token         TEXT NOT NULL CHECK (length(token) BETWEEN 20 AND 4096),
+                registered_at TEXT NOT NULL,
+                last_event_id INTEGER NOT NULL DEFAULT 0,
+                last_push_at  TEXT,
+                last_error    TEXT NOT NULL DEFAULT ''
+            )
+            """,
+        ),
+    ),    Migration(
+        32,
+        "clipboard_items",
+        (
+            # opt-in clipboard memory (CLIPBOARD_HISTORY=true): text only, secrets and card numbers are never stored
+            """
+            CREATE TABLE clipboard_items (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts     TEXT NOT NULL,
+                text   TEXT NOT NULL CHECK (length(text) BETWEEN 1 AND 4000),
+                sha    TEXT NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            "CREATE INDEX idx_clipboard_ts ON clipboard_items (ts)",
+            "CREATE INDEX idx_clipboard_sha ON clipboard_items (sha)",
+        ),
+    ),
+    Migration(
+        33,
+        "expenses",
+        (
+            # manual, local expense records and monthly budgets (no bank connection, nothing leaves the PC)
+            """
+            CREATE TABLE expenses (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts       TEXT NOT NULL,
+                amount   REAL NOT NULL CHECK (amount > 0 AND amount < 1e12),
+                currency TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT 'other' CHECK (length(category) BETWEEN 1 AND 40),
+                note     TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200)
+            )
+            """,
+            "CREATE INDEX idx_expenses_ts ON expenses (ts)",
+            """
+            CREATE TABLE budgets (
+                category TEXT PRIMARY KEY CHECK (length(category) BETWEEN 1 AND 40),
+                monthly  REAL NOT NULL CHECK (monthly > 0 AND monthly < 1e12)
+            )
+            """,
+        ),
+    ),
+    Migration(
+        34,
+        "phone_link",
+        (
+            # PC -> phone actions (the phone collects them when it checks in) and the phone's last reported state
+            """
+            CREATE TABLE phone_commands (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id  TEXT NOT NULL,
+                action     TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 30),
+                args       TEXT NOT NULL DEFAULT '{}',
+                created    TEXT NOT NULL,
+                expires    TEXT NOT NULL,
+                status     TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'sent', 'done', 'failed', 'expired')),
+                result     TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            "CREATE INDEX idx_phone_commands_device ON phone_commands (device_id, status)",
+            """
+            CREATE TABLE phone_state (
+                device_id TEXT PRIMARY KEY,
+                seen      TEXT NOT NULL,
+                state     TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            # journal entries (typed or spoken), searchable; separate from memories and project notes
+            """
+            CREATE TABLE journal (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts     TEXT NOT NULL,
+                text   TEXT NOT NULL CHECK (length(text) BETWEEN 1 AND 8000),
+                mood   TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'text' CHECK (source IN ('text', 'voice'))
+            )
+            """,
+            "CREATE INDEX idx_journal_ts ON journal (ts)",
+            # personal habits you tick off ("drink water", "exercise"); separate from the app-usage habits of v4
+            """
+            CREATE TABLE habit_defs (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                name     TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK (length(name) BETWEEN 1 AND 60),
+                created  TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            """
+            CREATE TABLE habit_checks (
+                habit_id INTEGER NOT NULL REFERENCES habit_defs (id) ON DELETE CASCADE,
+                day      TEXT NOT NULL,
+                PRIMARY KEY (habit_id, day)
+            )
+            """,
+        ),
+    ),
+    Migration(
+        35,
+        "learning_loop",
+        (
+            # every request and how it turned out (decided by what happened next) - app/agent/growth.py
+            """
+            CREATE TABLE learning_turns (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts       TEXT NOT NULL,
+                request  TEXT NOT NULL,
+                tools    TEXT NOT NULL DEFAULT '[]',
+                model    TEXT NOT NULL DEFAULT '',
+                used     TEXT NOT NULL DEFAULT '[]',
+                outcome  TEXT NOT NULL DEFAULT 'pending' CHECK (outcome IN ('pending', 'good', 'bad')),
+                reason   TEXT NOT NULL DEFAULT '',
+                corrects INTEGER
+            )
+            """,
+            "CREATE INDEX idx_learning_turns_ts ON learning_turns (ts)",
+            # what was learned: skills (request -> tools that worked) and lessons (a mistake and what fixed it)
+            """
+            CREATE TABLE growth_items (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind    TEXT NOT NULL CHECK (kind IN ('skill', 'lesson')),
+                request TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tool    TEXT NOT NULL DEFAULT '',
+                created TEXT NOT NULL,
+                uses    INTEGER NOT NULL DEFAULT 0,
+                good    INTEGER NOT NULL DEFAULT 0,
+                bad     INTEGER NOT NULL DEFAULT 0,
+                retired INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            "CREATE UNIQUE INDEX idx_growth_items_key ON growth_items (kind, request, tool)",
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

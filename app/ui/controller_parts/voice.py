@@ -43,6 +43,9 @@ class VoiceMixin:
             return
         if self._busy or self._listening:
             return
+        if getattr(self, "mic_muted", False):
+            self.notice.emit("The microphone is muted. Unmute it first (Ctrl+M, or Menu -> Mute microphone).")
+            return
         if not self.ctx.settings.microphone_enabled:
             self.notice.emit("The microphone is turned off in settings (MICROPHONE_ENABLED=false).")
             return
@@ -116,12 +119,56 @@ class VoiceMixin:
     def _spoken_text(self) -> str:
         return self.tts.current_text if self.tts.is_speaking else ""
 
+    def _other_audio(self):
+        """Watches other apps' sound (a video, music) so the screen's voices aren't taken for yours."""
+        if getattr(self, "_other_audio_watch", None) is None:
+            from app.voice.other_audio import OtherAudio
+
+            self._other_audio_watch = OtherAudio()
+            self._other_audio_watch.start()
+        return self._other_audio_watch
+
+    def _voiceprint_tip(self) -> None:
+        """The strongest protection against other voices is your voice print; say so once if it's missing."""
+        s = self.ctx.settings
+        try:
+            verifier = self.create_speaker_verifier() if s.speaker_verification else None
+            enrolled = bool(verifier is not None and verifier.enrolled)
+        except Exception:
+            enrolled = False
+        if not enrolled and not getattr(self, "_voiceprint_tip_shown", False):
+            self._voiceprint_tip_shown = True
+            self.notice.emit("Tip: Menu > Enroll my voice (30 seconds). Then I only listen to YOU - not to videos, "
+                             "the TV or my own voice from the speakers.")
+
+    def _usual_phrases(self) -> list[str]:
+        """Short replies said again and again: made ahead of time so they start instantly."""
+        from app.voice.hands_free import dismissal_reply, wake_greeting
+
+        s = self.ctx.settings
+        address = s.user_address.strip()
+        return [wake_greeting(s), dismissal_reply(s), "Done.", "Okay.", f"Yes, {address}." if address else "Yes.",
+                "One moment.", "Sorry, I didn't catch that."]
+
+    def _hold_speech(self) -> bool:
+        """Hands-free thread: you started talking while Jarvis speaks - stop the sound now, keep the rest."""
+        if self._pending_confirmation is not None:
+            return False
+        return self.tts.hold()
+
+    def _release_speech(self, resume: bool) -> None:
+        if resume:
+            self.tts.resume_held()
+        else:
+            self.tts.discard_held()
+
     def _recent_speech(self) -> str:
         """The answer being spoken (all of it, not just the current sentence), and the last one for a few seconds
         after it ended: to recognise its own voice coming back through the microphone."""
         import time as _time
 
-        parts = [self.tts.current_text if self.tts.is_speaking else "", getattr(self, "_reply_so_far", "")]
+        parts = [self.tts.current_text if self.tts.is_speaking else "", getattr(self, "_reply_so_far", ""),
+                 getattr(self.tts, "held_text", "")]
         last, at = getattr(self, "_last_reply", ("", 0.0))
         if self.tts.is_speaking or _time.monotonic() - at < self.ECHO_SECONDS:
             parts.append(last)
@@ -254,6 +301,26 @@ class VoiceMixin:
             "Jarvis start Ollama itself (quit Ollama from its tray icon: Jarvis then starts it with the "
             "memory-saving settings), or to use a smaller model.")
 
+    def _mic_changed(self, on: bool) -> None:
+        if on and not self._mic_on:
+            self.voice_levels.clear()       # a new utterance starts
+        self._mic_on = on
+
+    def _collect_level(self, dbfs: float) -> None:
+        if self._mic_on:
+            self.voice_levels.append(max(0.0, min(1.0, (dbfs + 60.0) / 50.0)))
+
+    def spoken_wave(self) -> list[float] | None:
+        """The microphone levels of the message just sent, if it was spoken (leading/trailing quiet trimmed)."""
+        if not self.last_message_spoken:
+            return None
+        levels = list(self.voice_levels)
+        while levels and levels[0] < 0.08:
+            levels.pop(0)
+        while levels and levels[-1] < 0.08:
+            levels.pop()
+        return levels or None
+
     def warm_up_model(self) -> None:
         """Load the AI model in the background, so the next answer starts without the load delay."""
         import time as _time
@@ -292,6 +359,8 @@ class VoiceMixin:
             return False  # the notes have the microphone; hands-free comes back when they end
         if not s.hands_free or self.hands_free is not None:
             return self.hands_free is not None
+        if getattr(self, "mic_muted", False):
+            return False                                   # muted: nothing listens until you unmute
         if not s.microphone_enabled:
             self.notice.emit("Hands-free listening needs the microphone (MICROPHONE_ENABLED=true).")
             return False
@@ -313,13 +382,39 @@ class VoiceMixin:
             spoken_text=self._spoken_text, can_duplex=self._can_duplex, on_partial=self.partial_transcript.emit,
             recent_speech=self._recent_speech,
             wake_check=self._wake_check(),
+            playback_level=self.tts.playback_db, on_hold=self._hold_speech, on_release=self._release_speech,
+            other_audio=self._other_audio(),
+            on_transcribing=self.transcribing.emit,
         )
         self.hands_free.start()
+        self._voiceprint_tip()
         wake = s.wake_word.title()
         self.notice.emit(f"Hands-free is on: say \"{wake}\" any time." + (
             "" if engine == "openwakeword" else " (Using speech recognition to spot the wake phrase: more CPU.)"))
         log_event(_log, "hands_free_started", engine=engine)
         return True
+
+    mic_muted = False
+
+    def set_mic_muted(self, muted: bool) -> str:
+        """The microphone mute: when on, NOTHING listens - no wake word, no push-to-talk, no hands-free. The
+        microphone stream is closed (not just ignored), so the system's own mic indicator goes off too."""
+        muted = bool(muted)
+        if muted == self.mic_muted:
+            return "The microphone is already " + ("muted." if muted else "on.")
+        self.mic_muted = muted
+        if muted:
+            self.stop_listening()
+            self.stop_hands_free()
+            self.microphone_active.emit(False)
+            message = "Microphone muted: I can't hear anything until you unmute it (Ctrl+M or Menu)."
+        else:
+            running = self.start_hands_free()
+            message = "Microphone on." + (" Hands-free is listening again." if running else " Press Talk to speak.")
+        self.mic_muted_changed.emit(muted)
+        self.notice.emit(message)
+        log_event(_log, "microphone_muted" if muted else "microphone_unmuted")
+        return message
 
     def stop_hands_free(self) -> None:
         listener, self.hands_free = self.hands_free, None
@@ -347,10 +442,26 @@ class VoiceMixin:
         else:
             self.notice.emit("Hands-free is off. Press Talk (or the hotkey) to speak.")
 
+    def _record_voice(self, result: ListenResult) -> int | None:
+        """One small measurement row per thing heard (no audio, no words). Never allowed to disturb listening."""
+        try:
+            if self.ctx.database is None:
+                return None
+            from app.core.voice_stats import VoiceStats
+
+            t = result.transcript
+            return VoiceStats(self.ctx.database).record(
+                result.status, language=getattr(t, "language", None), confidence=getattr(t, "confidence", None),
+                stt_ms=getattr(t, "elapsed_ms", None))
+        except Exception:
+            _log.warning("could not record the voice measurement", exc_info=True)
+            return None
+
     @Slot(object)
     def _on_hands_free_result(self, result: ListenResult) -> None:
         listener = self.hands_free
         self._timing = {"heard": result.transcript.elapsed_ms / 1000 if result.transcript else None}
+        self._timing["voice_event"] = self._record_voice(result)
         heard = result.transcript.text if result.transcript else ""
         self._last_heard = heard or None
         if result.status in ("wake_only", "dismissed"):

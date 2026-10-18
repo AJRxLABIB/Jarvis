@@ -53,6 +53,9 @@ _TEXT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"), REDACTED),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), REDACTED),
     (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), REDACTED),
+    (re.compile(r"\bya29\.[A-Za-z0-9_\-]{20,}"), REDACTED),                    # Google access token
+    (re.compile(r"(?<![A-Za-z0-9])1//[A-Za-z0-9_\-]{30,}"), REDACTED),           # Google refresh token
+    (re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{20,}"), REDACTED),                   # Google OAuth client secret
     (re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"), REDACTED),  # JWT
 )
 

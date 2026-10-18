@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from app.config.env_writer import overridden_by_environment, update_env_file
@@ -30,9 +30,14 @@ LIVE_FIELDS = frozenset({"web_browser", "chrome_profile", "edge_profile", "tts_s
                          "conversation_memory", "document_folders", "embedding_model", "update_manifest_url",
                          "speaker_verification", "speaker_threshold", "presence_detection", "presence_lock",
                          "presence_away_minutes", "proactive_suggestions", "idle_unload_minutes",
-                         "home_assistant_url", "home_assistant_token", "custom_vocabulary", "stt_second_pass",
+                         "home_assistant_url", "home_assistant_token", "github_token", "google_client_id", "google_client_secret", "custom_vocabulary", "stt_second_pass",
                          "ai_smart_model", "ai_coding_model", "auto_sort_downloads", "early_transcription",
                          "memory_suggestions", "tone_aware"})
+# also applied without a restart (app/ui/controller.py apply_settings)
+from app.config.live_fields import POLICY_FIELDS, REMOTE_FIELDS, STARTUP_ONLY_FIELDS  # noqa: E402
+
+LIVE_FIELDS = LIVE_FIELDS | REMOTE_FIELDS | STARTUP_ONLY_FIELDS | POLICY_FIELDS | {
+    "visual_quality", "core_speed", "glow_intensity", "reduced_motion", "core_hud_rings", "auto_sort_downloads", "weekly_health_check"}
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,7 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
     ("General", (
         FieldSpec("assistant_name", "Assistant name", "text"),
         FieldSpec("user_address", "Call me", "text", tip="Empty = no honorific. Examples: sir, Labib"),
+        FieldSpec("user_name", "My name (start screen)", "text", tip="Shown on the start screen instead of THIS PC"),
         FieldSpec("home_location", "Home city", "text", tip="For the weather and the briefing, e.g. Dhaka or Dhaka, Bangladesh"),
         FieldSpec("temperature_unit", "Temperature", "choice", options=("celsius", "fahrenheit")),
         FieldSpec("proactive_alerts", "Speak up on its own (low battery, charger)", "bool"),
@@ -68,8 +74,19 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         FieldSpec("start_minimized", "Start in the tray", "bool"),
         FieldSpec("start_with_windows", "Start with Windows", "bool", tip="Needed for scheduled tasks while you work"),
         FieldSpec("speak_typed_replies", "Speak answers to typed messages", "bool"),
+        FieldSpec("show_sources", "Show where an answer's facts came from (tools, memories)", "bool"),
+        FieldSpec("learn_from_use", "Learn from every request (what worked, what you corrected)", "bool",
+                  tip="Stays on this PC. Never in private mode. 'what have you learned' shows it; you can erase it."),
         FieldSpec("direct_commands", "Run 'open X' / 'close X' directly (no AI)", "bool"),
         FieldSpec("monitor_interval", "System stats refresh (seconds)", "float", low=1, high=60, step=1),
+        FieldSpec("core_renderer", "3D core", "choice", options=("auto", "gl", "painter"),
+                  tip="auto = real-time OpenGL 3D when the graphics card allows it, else the flat drawing; restart to switch"),
+        FieldSpec("visual_quality", "3D quality", "choice", options=("auto", "low", "balanced", "high"),
+                  tip="auto lowers the quality by itself if the animation can't keep up"),
+        FieldSpec("core_speed", "Core animation speed", "float", low=0.3, high=2.0, step=0.1),
+        FieldSpec("glow_intensity", "Glow intensity", "float", low=0.3, high=2.0, step=0.1),
+        FieldSpec("reduced_motion", "Reduced motion (calmer core, no sway)", "bool"),
+        FieldSpec("core_hud_rings", "Rings and gauges around the core (gold segments, ticks, CPU/battery arcs)", "bool"),
     )),
     ("AI", (
         FieldSpec("ai_model", "Model", "choice", tip="Empty = pick automatically from installed models"),
@@ -83,12 +100,15 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
                   tip="e.g. qwen2.5-coder:7b: code, errors, tests, builds; without it the bigger model is used"),
         FieldSpec("embedding_model", "Embedding model (search by meaning)", "text", tip="ollama pull nomic-embed-text"),
         FieldSpec("conversation_memory", "Remember our conversations (on this PC)", "bool"),
+        FieldSpec("clipboard_history", "Remember what I copy so I can search it later (text only; never passwords or card numbers)", "bool"),
         FieldSpec("memory_suggestions", "Suggest facts to remember (I accept each one)", "bool"),
         FieldSpec("tone_aware", "Notice when I sound rushed or tired (shorter answers)", "bool"),
         FieldSpec("document_folders", "Document folders (ask my documents)", "text", tip="Separate folders with ;"),
         FieldSpec("idle_unload_minutes", "Free the AI model's memory after idle (minutes, 0 = never)", "float",
                   low=0, high=720, step=5),
         FieldSpec("gpu_memory_saver", "Small GPU: keep the AI and speech both on the GPU", "bool"),
+        FieldSpec("taint_lockdown", "After reading web pages, email or documents, don't even offer sending/saving tools", "bool"),
+        FieldSpec("ai_auto_switch", "Switch models automatically when my benchmark results say it's safer", "bool"),
         FieldSpec("ai_think", "Let reasoning models think first (slower)", "bool"),
         FieldSpec("ollama_keep_alive", "Keep model loaded for", "text", tip="e.g. 10m, 1h, 0 (unload), -1 (always)"),
         FieldSpec("ai_request_timeout", "Request timeout (seconds)", "float", low=10, high=3600, step=10),
@@ -144,6 +164,8 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         FieldSpec("tts_engine", "Voice", "choice", options=("jarvis",),
                   tip="The JARVIS voice: British male, calm, with a subtle AI finish (Bangla uses the Bangla voice)"),
         FieldSpec("tts_neural_voice_bn", "Neural voice (Bangla)", "text", tip="bn-BD-PradeepNeural or bn-BD-NabanitaNeural"),
+        FieldSpec("tts_style", "Voice finish", "choice", options=("natural", "classic"),
+                  tip="natural = sounds like a person; classic = the older synthetic 'AI' edge (restart to switch)"),
         FieldSpec("tts_speed", "Speed", "float", low=0.5, high=2, step=0.1),
         FieldSpec("tts_volume", "Volume", "float", low=0, high=1, step=0.05),
         FieldSpec("output_device", "Speakers", "choice", tip="Empty = Windows default"),
@@ -172,6 +194,21 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
     )),
     ("Privacy", (
         FieldSpec("microphone_enabled", "Allow the microphone", "bool"),
+        FieldSpec("full_power", "FULL POWER: nothing is off-limits - critical actions ask me on screen", "bool",
+                  tip="Formatting disks, system folders, protected processes, system tools (PowerShell, reg...), "
+                      "Jarvis's own security code: instead of being refused, they ask you in a CRITICAL dialog - "
+                      "never by voice, never from a phone, never pre-approved, never in automations."),
+        FieldSpec("autonomy", "How much Jarvis may do by itself", "choice",
+                  options=("routine", "observe", "suggest", "approval"),
+                  tip="observe = only reads and answers; suggest = plans the steps but doesn't do them; "
+                      "routine = low-risk actions run, risky ones ask; approval = everything that changes something asks"),
+        FieldSpec("autonomy_remote", "... for requests from my phone", "choice",
+                  options=("routine", "observe", "suggest", "approval"),
+                  tip="The stricter of this and the level above applies to phone requests"),
+        FieldSpec("autonomy_ask_categories", "Always ask for these kinds of actions", "text",
+                  tip="Comma-separated tool categories, e.g. files, phone, home (smart home), apps, dev, office, system, windows, browser"),
+        FieldSpec("autonomy_block_categories", "Never do these kinds of actions", "text",
+                  tip="Comma-separated tool categories that are switched off (reading still works)"),
         FieldSpec("confirm_power_actions", "Ask before a restart / shutdown I request myself", "bool",
                   tip="Off: 'restart my PC' runs after a 10 s countdown (say 'cancel' or press Esc). "
                       "When the AI decides on its own, it always asks."),
@@ -208,7 +245,14 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         FieldSpec("home_assistant_token", "Access token", "secret",
                   tip="Home Assistant -> your profile -> Security -> Long-lived access tokens. Stays on this PC"),
     )),
+    ("Google (Calendar, Drive)", (
+        FieldSpec("google_client_id", "OAuth client ID", "text",
+                  tip="Google Cloud Console -> APIs & Services -> Credentials -> OAuth client ID -> Desktop app. Then say 'connect Google'"),
+        FieldSpec("google_client_secret", "OAuth client secret", "secret", tip="From the same client. Stays on this PC"),
+    )),
     ("Developer", (
+        FieldSpec("github_token", "GitHub token (read-only)", "secret",
+                  tip="GitHub -> Settings -> Developer settings -> fine-grained token, read-only. Stays on this PC"),
         FieldSpec("dev_project_dir", "Default project folder", "folder"),
         FieldSpec("dev_command_timeout", "Command timeout (seconds)", "float", low=5, high=3600, step=5),
     )),
@@ -262,6 +306,7 @@ class SettingsDialog(QDialog):
         microphones: list[str] | None = None,
         speakers: list[str] | None = None,
         on_saved: Callable[[Settings, set[str]], None] | None = None,
+        on_restart: Callable[[list[str]], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -271,6 +316,8 @@ class SettingsDialog(QDialog):
         self.settings = settings
         self.env_file = env_file
         self.on_saved = on_saved
+        self.on_restart = on_restart  # called with the names that only apply after a restart (Jarvis does it itself)
+        self.needs_restart: list[str] = []
         self.saved: Settings | None = None
         self.widgets: dict[str, QWidget] = {}
         self._rows: list[tuple[int, QFormLayout, int, FieldSpec]] = []  # section, form, row, spec
@@ -282,6 +329,9 @@ class SettingsDialog(QDialog):
         self.search.setObjectName("search")
         self.search.setPlaceholderText("Search settings  (e.g. voice, bangla, token, gpu)")
         self.search.setClearButtonEnabled(True)
+        self.search.setAccessibleName("Search settings")
+        for clear in self.search.findChildren(QToolButton):
+            clear.setAccessibleName("Clear search")
         self.search.textChanged.connect(self.filter)
         header = QHBoxLayout()
         header.addWidget(title)
@@ -290,6 +340,7 @@ class SettingsDialog(QDialog):
 
         self.sections = QListWidget()
         self.sections.setObjectName("sections")
+        self.sections.setAccessibleName("Settings sections")
         self.sections.setFixedWidth(190)
         self.pages = QStackedWidget()
         for index, (name, specs) in enumerate(TABS):
@@ -311,6 +362,11 @@ class SettingsDialog(QDialog):
                 if spec.tip:
                     label.setToolTip(spec.tip)
                     widget.setToolTip(spec.tip)
+                field = self.widgets[spec.name]               # the control a screen reader lands on
+                field.setAccessibleName(spec.label)
+                if spec.tip:
+                    field.setAccessibleDescription(spec.tip)
+                label.setBuddy(field)                         # and Alt+<letter> / clicking the label reaches it
                 form.addRow(label, widget)
                 self._rows.append((index, form, form.rowCount() - 1, spec))
             column.addLayout(form)
@@ -343,6 +399,9 @@ class SettingsDialog(QDialog):
         overridden = overridden_by_environment([ENV_NAMES[n] for _, specs in TABS for n in (s.name for s in specs)])
         if overridden:
             self.note.setText("Set by environment variables (they override .env): " + ", ".join(overridden))
+        self.note.setVisible(False)        # hidden at your request (the list is still in the tooltip of Save)
+        if overridden:
+            buttons.setToolTip(self.note.text())
 
     # ---------------------------------------------------------------- search
 
@@ -460,8 +519,7 @@ class SettingsDialog(QDialog):
         changed_fields = {name for name, env in ENV_NAMES.items() if env in changes}
         if self.on_saved is not None:
             self.on_saved(self.saved, changed_fields)
-        needs_restart = sorted(changed_fields - LIVE_FIELDS)
-        if needs_restart:
-            QMessageBox.information(self, "Saved", "Saved. Restart the assistant to apply: "
-                                    + ", ".join(ENV_NAMES[n] for n in needs_restart))
+        self.needs_restart = sorted(changed_fields - LIVE_FIELDS)
         self.accept()
+        if self.needs_restart and self.on_restart is not None:   # applied for you: Jarvis restarts itself
+            self.on_restart([ENV_NAMES[n] for n in self.needs_restart])

@@ -284,7 +284,39 @@ class BackgroundMixin:
         it is spoken (urgent ones speak in every mode but presentation)."""
         self.speak_up(message, "urgent" if urgent else data.pop("priority", "high"), event_name, **data)
 
-    def _focus_control(self, action: str, minutes: int, close_distractions: bool) -> str:
+    def _start_clipboard_memory(self) -> None:
+        """CLIPBOARD_HISTORY: Qt tells us when the clipboard changes (no polling); app/core/clipboard_memory.py decides
+        what may be kept. Switching the setting on or off takes effect at once (the watcher reads it on every change)."""
+        if self.ctx.database is None:
+            return
+        try:
+            from PySide6.QtGui import QGuiApplication
+
+            from app.core import modes
+            from app.core.clipboard_memory import ClipboardStore, ClipboardWatcher
+
+            board = QGuiApplication.clipboard()
+            if board is None:
+                return
+            store = ClipboardStore(self.ctx.database, int(getattr(self.ctx.settings, "clipboard_retention_days", 7)))
+            self._clipboard_watcher = ClipboardWatcher(store, enabled=lambda: bool(getattr(self.ctx.settings, "clipboard_history", False)),
+                                                       remember=lambda: modes.STATE.current.remember)
+            board.dataChanged.connect(lambda: self._clipboard_changed(board))
+        except Exception:
+            _log.warning("clipboard memory could not start", exc_info=True)
+
+    def _clipboard_changed(self, board) -> None:
+        watcher = getattr(self, "_clipboard_watcher", None)
+        if watcher is None or not watcher.enabled():
+            return
+        try:
+            mime = board.mimeData()
+            text = board.text() if mime is not None and mime.hasText() else ""
+            watcher.changed(text)
+        except Exception:
+            _log.debug("clipboard change ignored", exc_info=True)
+
+    def _focus_control(self, action: str, minutes: int, close_distractions: bool, keep_closed: bool = False) -> str:
         """focus_mode tool (assistant thread)."""
         import threading as _threading
 
@@ -308,8 +340,42 @@ class BackgroundMixin:
         log_event(_log, "focus_started", minutes=minutes, close=close_distractions)
         closed = self._close_distractions(app_list(self.ctx.settings.focus_apps)) if close_distractions else []
         self._focus.closed = closed
+        if keep_closed:
+            self._focus.keep_closed = True
+            self._focus.blocked = app_list(self.ctx.settings.focus_apps)
+            self._schedule_focus_guard()
         extra = f" I closed {', '.join(closed)}." if closed else ""
+        extra += " I'll keep them closed." if keep_closed else ""
         return f"Focus mode for {minutes} minutes. I'll keep quiet until then.{extra}"
+
+    def _schedule_focus_guard(self) -> None:
+        import threading as _threading
+
+        timer = _threading.Timer(30.0, self._focus_guard_tick)
+        timer.daemon = True
+        self._focus_guard_timer = timer
+        timer.start()
+
+    def _focus_guard_tick(self) -> list[str]:
+        """Every 30 s during a keep-closed focus: close blocked apps that came back (see app/agent/focus.py)."""
+        session = self._focus
+        if session is None or not session.keep_closed or session.over():
+            return []
+        closed: list[str] = []
+        try:
+            import psutil
+
+            names = [p.info["name"] or "" for p in psutil.process_iter(["name"])]
+            for app in session.guard_candidates(names):
+                session.note_reclosed(app)               # counted even if closing fails: no endless retries
+                closed += self._close_distractions([app])
+            if closed:
+                log_event(_log, "focus_guard_closed", apps=len(closed))
+        except Exception:
+            _log.warning("focus guard check failed", exc_info=True)
+        if self._focus is session:
+            self._schedule_focus_guard()
+        return closed
 
     def _close_distractions(self, names: list[str]) -> list[str]:
         """Close the apps in FOCUS_APPS that are open (you agreed when starting focus with that option)."""
@@ -331,6 +397,9 @@ class BackgroundMixin:
 
     def _end_focus(self, stopped: bool = False) -> str:
         session, self._focus = self._focus, None
+        guard = getattr(self, "_focus_guard_timer", None)
+        if guard is not None:
+            guard.cancel()
         if self._focus_timer is not None and stopped:
             self._focus_timer.cancel()
         self._focus_timer = None

@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-STATUSES = ("QUEUED", "RUNNING", "WAITING_FOR_APPROVAL", "PAUSED", "COMPLETED", "FAILED", "CANCELLED",
-            "ROLLED_BACK")
-ACTIVE = frozenset({"QUEUED", "RUNNING", "WAITING_FOR_APPROVAL", "PAUSED"})
+STATUSES = ("QUEUED", "RUNNING", "WAITING_FOR_APPROVAL", "PAUSED", "RECOVERY_REQUIRED", "COMPLETED", "FAILED",
+            "CANCELLED", "ROLLED_BACK")
+ACTIVE = frozenset({"QUEUED", "RUNNING", "WAITING_FOR_APPROVAL", "PAUSED", "RECOVERY_REQUIRED"})
 
 _MISSION = {"planned": "QUEUED", "running": "RUNNING", "verifying": "RUNNING", "paused": "PAUSED", "waiting": "WAITING_FOR_APPROVAL",
             "completed": "COMPLETED", "failed": "FAILED", "cancelled": "CANCELLED", "rolled_back": "ROLLED_BACK"}
@@ -42,6 +42,9 @@ class Task:
 def mission_status(mission) -> str:
     if mission.state == "paused" and any(s.state == "waiting" for s in mission.steps):
         return "WAITING_FOR_APPROVAL"
+    if mission.state == "paused" and any(s.state == "failed" and (s.result or "").startswith("interrupted")
+                                         for s in mission.steps):
+        return "RECOVERY_REQUIRED"  # a step was cut off and may already have happened: a person must decide
     return _MISSION.get(mission.state, "PAUSED")
 
 
@@ -52,7 +55,7 @@ def _missions(database, limit: int) -> list[Task]:
     for m in MissionStore(database).recent(limit):
         status = mission_status(m)
         commands: tuple[str, ...] = ()
-        if status in ("PAUSED", "WAITING_FOR_APPROVAL", "QUEUED"):
+        if status in ("PAUSED", "WAITING_FOR_APPROVAL", "QUEUED", "RECOVERY_REQUIRED"):
             commands = ("continue my mission", "cancel the mission")
         if any(s.state == "done" for s in m.steps) and status not in ("RUNNING", "ROLLED_BACK"):
             commands += ("roll back the mission",)

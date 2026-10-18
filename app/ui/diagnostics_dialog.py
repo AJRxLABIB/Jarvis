@@ -12,8 +12,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import diagnostics
+from app.ui.styles.tokens import COLOR
 
-_COLOR = {"ok": "#34d399", "warn": "#f5b642", "fail": "#f87171"}
+_COLOR = {"ok": COLOR["ok"], "warn": COLOR["gold"], "fail": COLOR["danger"]}
 
 
 def _source_root() -> Path | None:

@@ -111,8 +111,26 @@ class ProactiveMixin:
     # -------------------------------------------------------------- emergency
 
     def emergency_stop(self) -> str:
-        """Stop everything now (hotkey Ctrl+Shift+F12, Menu, or by voice)."""
-        stopped = []
+        """Stop everything now (hotkey Ctrl+Shift+F12, Menu, or by voice). The message lists what was stopped AND
+        what could not be interrupted - it never claims to undo something that already happened."""
+        stopped: list[str] = []
+        not_stoppable: list[str] = []
+        # what is happening right now (read before cancel() clears it)
+        try:
+            if self.tts.is_speaking():
+                stopped.append("speaking")
+        except Exception:
+            pass
+        if getattr(self, "_listening", False):
+            stopped.append("listening")
+        pending = getattr(self, "_pending_confirmation", None)
+        if pending is not None and not pending.future.done():
+            stopped.append(f"the pending approval ({getattr(pending.request, 'summary', 'an action')}: denied)")
+        if getattr(self, "_busy", False):
+            stopped.append("the running request")
+            if getattr(self, "_state", "") == "EXECUTING":
+                not_stoppable.append("an action that had already started finishes its current step (its result "
+                                     "is discarded); anything it already did is not undone")
         try:
             from app.tools.youtube import PLAYER
 
@@ -131,11 +149,30 @@ class ProactiveMixin:
             pass
         self.cancel()  # speech, listening, the running request (a mission pauses), power countdowns
         emergency.STATE.set("automation_disabled", True, by_voice=True)
-        log_event(_log, "emergency_stop")
-        message = "Emergency stop: everything cancelled and automations switched off" + (
-            f" ({', '.join(stopped)} cleared)" if stopped else "") + ". Turn them back on in Menu -> Emergency controls."
+        revoked = self._revoke_standing_approvals()
+        if revoked:
+            stopped.append(f"{revoked} standing approval(s) revoked")
+        log_event(_log, "emergency_stop", stopped=stopped, not_stoppable=not_stoppable)
+        message = "Emergency stop: automations switched off" + (f"; stopped: {', '.join(stopped)}" if stopped else
+                                                                "; nothing else was running") + "."
+        if not_stoppable:
+            message += " Could not interrupt: " + "; ".join(not_stoppable) + "."
+        message += " Turn automations back on in Menu -> Emergency controls."
         self.notice.emit(message)
         return message
+
+    def _revoke_standing_approvals(self) -> int:
+        """At once, not lazily: every "don't ask me again" approval ends with the emergency stop."""
+        database = getattr(self.ctx, "database", None)
+        if database is None:
+            return 0
+        try:
+            from app.security.grants import GrantStore
+
+            return GrantStore(database).revoke_all()
+        except Exception:
+            _log.warning("could not revoke standing approvals", exc_info=True)
+            return 0
 
     def _emergency_control(self, action: str) -> str:
         """emergency_control tool (assistant thread): voice can switch OFF, never back ON."""

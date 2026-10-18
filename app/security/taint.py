@@ -42,6 +42,10 @@ EGRESS_TOOLS = frozenset({
     "play_music", "youtube_control", "send_email", "whatsapp_message", "text_contact", "call_contact", "get_news",
     "home_control", "wake_device",
 })
+# tools that send things to people or devices: withheld from the model entirely when TAINT_LOCKDOWN is on and untrusted
+# text is in the conversation (searching and opening pages stay available so research still works)
+LOCKDOWN_TOOLS = frozenset({"send_email", "whatsapp_message", "text_contact", "call_contact", "home_control", "wake_device",
+                            "browser_type"})
 # words that are part of how addresses and searches are written, not data
 _STRUCTURAL = frozenset({
     "http", "https", "www", "com", "org", "net", "html", "htm", "php", "search", "results", "query", "watch",

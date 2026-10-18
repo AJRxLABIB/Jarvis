@@ -56,6 +56,32 @@ BARE_NAME_NEAR_MISS = 0.08
 NEAR_MISS_MAX_SECONDS = 5.0  # only short utterances ("Jarvis, are you there?") are double-checked
 SHORT_UTTERANCE_SECONDS = 3.5  # WAKE_ON_NAME: utterances this short are checked for the name ("Jarvis?")
 WHISPER_MAX_UTTERANCE = 8.0  # whisper engine: longer utterances can't be a wake phrase + short command
+# With a GPU recognizer (about 0.5-0.9 s per sentence in practice) a longer sentence that STARTS with the name is worth
+# checking too: measured on a real log, 10 of 24 wake-ups came from the name check with a neural score of 0.0, and a
+# sentence over 3.5 s starting that way was never even looked at.
+GPU_SHORT_UTTERANCE_SECONDS = 6.5
+GPU_NEAR_MISS_MAX_SECONDS = 8.0
+# A sentence that ends on one of these is unfinished ("open the ...", "and ..."): wait a little longer before cutting in.
+_HANGING = frozenset({
+    "and", "or", "but", "then", "so", "to", "the", "a", "an", "of", "in", "on", "at", "for", "with", "from", "into", "my",
+    "your", "our", "his", "her", "their", "this", "that", "these", "those", "if", "because", "as", "than", "also", "plus",
+    "um", "uh", "umm", "uhh", "er", "like", "by", "about", "after", "before", "is", "are", "was", "can", "will", "please",
+    "এবং", "আর", "কিন্তু", "তারপর", "যে", "এই", "ওই", "আমার", "তোমার", "জন্য", "সাথে", "থেকে", "যদি", "বা"})
+GRACE_SECONDS = 0.8
+MAX_GRACE_GRANTS = 2
+
+
+def ends_unfinished(text: str) -> bool:
+    """True when the sentence trails off mid-thought (a dangling "and", "the", "to", a comma, "...")."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    if text.endswith((",", "...", "…", "-", "–", ":", ";")):
+        return True
+    words = re.findall(r"[\w'ঀ-৿]+", text.lower())
+    if not words or len(words) < 2:
+        return False                                       # a single word ("Jarvis") is complete
+    return words[-1] in _HANGING and not text.endswith((".", "?", "!", "।"))
 NO_AUDIO_SECONDS = 5.0
 RETRY_MAX_SECONDS = 30.0
 
@@ -81,12 +107,16 @@ class UtteranceCollector:
     PREROLL = 3  # frames kept from before speech started (~240 ms)
 
     def __init__(self, vad, *, start_timeout: float, silence_timeout: float, max_seconds: float,
-                 preroll: bool = True, min_speech: float = 0.15) -> None:
+                 preroll: bool = True, min_speech: float = 0.15, hold: Callable[[], bool] | None = None,
+                 grace: float = GRACE_SECONDS, max_grants: int = MAX_GRACE_GRANTS) -> None:
         self.vad = vad
         self.start_timeout = start_timeout
         self.silence_timeout = silence_timeout
         self.max_seconds = max_seconds
         self.min_speech = min_speech
+        # ``hold()`` is asked when the normal pause is reached: True = the sentence is unfinished, wait ``grace`` longer
+        # (at most ``max_grants`` times), so a breath in the middle of "open the ... downloads folder" doesn't cut you off.
+        self.hold, self.grace, self.max_grants = hold, grace, max_grants
         self._preroll: deque[np.ndarray] = deque(maxlen=self.PREROLL if preroll else 0)
         self.reset()
 
@@ -101,6 +131,7 @@ class UtteranceCollector:
         self._started = False
         self._speech_frames = 0
         self._last_speech = 0.0
+        self._grants = 0
 
     def audio_so_far(self) -> np.ndarray:
         return np.concatenate(self._frames).astype(np.float32) if self._frames else np.zeros(0, np.float32)
@@ -130,11 +161,21 @@ class UtteranceCollector:
             self._speech_frames += 1
         if self._started:
             self._frames.append(frame)
-            ended = self._elapsed - self._last_speech >= self.silence_timeout
+            quiet = self._elapsed - self._last_speech
+            if (self.hold is not None and self._grants < self.max_grants and not speech
+                    and quiet >= self.silence_timeout + self._grants * self.grace
+                    and self._speech_frames * FRAME_SECONDS >= self.min_speech):
+                try:
+                    if self.hold():
+                        self._grants += 1                    # the sentence is unfinished: give it more time
+                except Exception:
+                    pass
+            patience = self.silence_timeout + self._grants * self.grace
+            ended = quiet >= patience
             if ended and self._speech_frames * FRAME_SECONDS < self.min_speech:
                 self._restart()  # too short to be a command
             elif ended or len(self._frames) * FRAME_SECONDS >= self.max_seconds:
-                keep = max(1, len(self._frames) - int(max(self.silence_timeout - 0.25, 0) / FRAME_SECONDS))
+                keep = max(1, len(self._frames) - int(max(patience - 0.25, 0) / FRAME_SECONDS))
                 audio = np.concatenate(self._frames[:keep]).astype(np.float32)
                 self.reset()
                 return Utterance(audio, True)
@@ -255,6 +296,30 @@ def prepare_detector(settings: "Settings", model_dir: Path, *, allow_download: b
 # ------------------------------------------------------------------- listener
 
 
+class MicWatch:
+    """Notices a microphone that is connected but (almost) silent - the usual reason "Jarvis never hears me".
+    Returns True once when every frame in ``seconds`` of audio was quieter than ``floor_db``; any louder frame resets it."""
+
+    def __init__(self, seconds: float = 90.0, floor_db: float = -65.0) -> None:
+        self.seconds, self.floor_db = seconds, floor_db
+        self._quiet = 0.0
+        self._warned = False
+
+    def feed(self, level_db: float, frame_seconds: float) -> bool:
+        if level_db > self.floor_db:
+            self._quiet = 0.0
+            return False
+        self._quiet += frame_seconds
+        if self._quiet >= self.seconds and not self._warned:
+            self._warned = True
+            return True
+        return False
+
+
+MIC_SILENT_NOTICE = ("I haven't heard any sound from the microphone for a while. Check Windows > Privacy > Microphone, "
+                     "the input volume and which input is selected, or run `python run.py --voice-doctor`.")
+
+
 class HandsFreeListener:
     """Background thread. All callbacks are called from that thread."""
 
@@ -280,6 +345,11 @@ class HandsFreeListener:
         can_duplex: Callable[[], bool] = lambda: False,
         on_partial: Callable[[str], None] | None = None,
         wake_check=None,  # app.voice.wake_templates.WakeTemplates: your recordings confirm each wake-up
+        playback_level: Callable[[], float] | None = None,  # how loud Jarvis is playing now (dBFS): talk-over
+        on_hold: Callable[[], bool] | None = None,          # you started talking: stop the sound, keep the rest
+        on_release: Callable[[bool], None] | None = None,   # True = it wasn't you, carry on; False = drop the rest
+        other_audio=None,       # app.voice.other_audio.OtherAudio: another app (a video) is making sound right now
+        on_transcribing: Callable[[bool], None] | None = None,   # a COMMAND is being turned into text right now
     ) -> None:
         self.settings = settings
         self.microphone = microphone
@@ -327,6 +397,15 @@ class HandsFreeListener:
         self._greet = False  # after the wake phrase: greet if nothing follows
         self._near_miss = 0.0  # highest wake score during the current utterance
         self._barging = False  # the detector is listening for a barge-in (while the assistant speaks)
+        self._mic_watch = MicWatch()
+        self.playback_level, self.on_hold, self.on_release = playback_level, on_hold, on_release
+        self.other_audio = other_audio
+        self.on_transcribing = on_transcribing
+        from app.voice.echo_gate import EchoGate
+
+        self._gate = EchoGate()
+        self._interrupt: UtteranceCollector | None = None    # collecting what you say over Jarvis
+        self._interrupt_pre: deque[np.ndarray] = deque(maxlen=4)
 
     # ------------------------------------------------------------- control
 
@@ -393,7 +472,7 @@ class HandsFreeListener:
         s = self.settings
         self._collector = UtteranceCollector(
             self._vad, start_timeout=float("inf") if follow_up else COMMAND_START_TIMEOUT,
-            silence_timeout=s.silence_timeout, max_seconds=s.max_record_seconds, preroll=follow_up)
+            silence_timeout=s.silence_timeout, max_seconds=s.max_record_seconds, preroll=follow_up, hold=self._unfinished)
         if follow_up and not keep_deadline:
             self._deadline = self._clock + s.follow_up_seconds
         self._command_started = self._clock
@@ -401,11 +480,22 @@ class HandsFreeListener:
         self._early = None
         self._set_state("follow_up" if follow_up else "command")
 
+    def _fast_recognizer(self) -> bool:
+        return getattr(self.stt, "device", "cpu") == "cuda"
+
+    def _unfinished(self) -> bool:
+        """The words recognized so far (at the pause) end mid-thought: the collector should wait a little longer."""
+        early, collector = self._early, self._collector
+        if early is None or collector is None or early[1] is None or early[0] != collector.speech_frames:
+            return False
+        return ends_unfinished(getattr(early[1], "text", ""))
+
     def _wait(self) -> None:
         s = self.settings
         # While waiting, utterances are collected too: the whisper engine transcribes them all; the
         # wake-word engine only double-checks short ones that almost triggered it.
-        max_seconds = WHISPER_MAX_UTTERANCE if self.engine == "whisper" or self._bare_name else NEAR_MISS_MAX_SECONDS
+        near_miss_max = GPU_NEAR_MISS_MAX_SECONDS if self._fast_recognizer() and self.settings.wake_on_name else NEAR_MISS_MAX_SECONDS
+        max_seconds = WHISPER_MAX_UTTERANCE if self.engine == "whisper" or self._bare_name else near_miss_max
         self._collector = UtteranceCollector(self._vad, start_timeout=float("inf"),
                                              silence_timeout=s.silence_timeout, max_seconds=max_seconds)
         self._near_miss = 0.0
@@ -420,11 +510,17 @@ class HandsFreeListener:
         self.on_result(result)  # the host calls resume() when it is done
 
     def _transcribe(self, audio: np.ndarray):
+        command = self.state in ("command", "follow_up") and self.on_transcribing is not None
+        if command:
+            self.on_transcribing(True)               # the UI shows TRANSCRIBING (honest: what you said is being read)
         try:
             return self.stt.transcribe(audio, self.settings.voice_language)
         except STTError as exc:
             self._notice(str(exc))
             return None
+        finally:
+            if command:
+                self.on_transcribing(False)
 
     EARLY_PAUSE = 0.3  # seconds of quiet before the sentence is transcribed "early" (while the pause is confirmed)
 
@@ -475,7 +571,11 @@ class HandsFreeListener:
         if transcript is None or transcript.is_empty:
             self._wait()
             return
-        text, _ = strip_wake_phrase(transcript.text, self.settings.wake_word)
+        text, had_wake = strip_wake_phrase(transcript.text, self.settings.wake_word)
+        if was_follow_up and not had_wake and self._screen_playing():
+            log_event(_log, "screen_audio_ignored")   # a video is playing: in the follow-up only "Jarvis, ..." counts
+            self._start_command(True, keep_deadline=True)
+            return
         if is_presence_check(text, self.settings):  # "Jarvis?", "are you there?"
             self._emit(ListenResult("wake_only", message=wake_greeting(self.settings, transcript.text), transcript=transcript))
             return
@@ -559,10 +659,15 @@ class HandsFreeListener:
                 if time.monotonic() - stream.last_audio > NO_AUDIO_SECONDS:
                     raise AudioError("The microphone stopped sending audio.")
                 continue
+            if self._mic_watch.feed(rms_dbfs(frame), frame.size / SAMPLE_RATE):
+                self._notice(MIC_SILENT_NOTICE)
             if self.on_level is not None and self.state in ("command", "follow_up"):
                 self.on_level(rms_dbfs(frame))
 
             speech = self._vad.is_speech(frame)  # once per frame: the neural detector keeps state
+            if self._interrupt is not None:      # you're talking over Jarvis: hear you out before anything else
+                self._interrupt_frame(frame, speech)
+                continue
             if self._answer is not None:
                 if self._answer_frame(frame, speech):
                     continue
@@ -632,7 +737,8 @@ class HandsFreeListener:
                     self._near_miss = 0.0  # the rest of a wake-up the personal check rejected
                 elif utterance is not None:
                     near, self._near_miss = self._near_miss, 0.0
-                    short = utterance.audio.size <= SHORT_UTTERANCE_SECONDS * SAMPLE_RATE
+                    short_limit = GPU_SHORT_UTTERANCE_SECONDS if self._fast_recognizer() else SHORT_UTTERANCE_SECONDS
+                    short = utterance.audio.size <= short_limit * SAMPLE_RATE
                     near_miss = BARE_NAME_NEAR_MISS if self._bare_name else NEAR_MISS_SCORE
                     if (self._detector is None or near >= near_miss
                             or (short and self.settings.wake_on_name)):
@@ -712,10 +818,114 @@ class HandsFreeListener:
 
     DUPLEX_MAX_SECONDS = 6.0
 
+    # ------------------------------------------------------------------ talk over Jarvis (instant)
+    INTERRUPT_MAX_SECONDS = 12.0
+
+    def _talk_over_onset(self, frame: np.ndarray, speech: bool) -> bool:
+        """While Jarvis speaks: the moment YOUR voice is clearly there (louder than its own echo can explain), it
+        goes quiet and listens. Returns True when it just stopped for you."""
+        self._interrupt_pre.append(frame)
+        if self._screen_playing():
+            self._gate.reset()                      # a video is playing: only "Jarvis, ..." interrupts (the wake path)
+            return False
+        try:
+            allowed = self.on_hold is not None and self.can_duplex()
+        except Exception:
+            allowed = False
+        if not allowed:
+            self._gate.reset()
+            return False
+        try:
+            playing = float(self.playback_level())
+        except Exception:
+            playing = -100.0
+        if not self._gate.feed(rms_dbfs(frame), playing, speech):
+            return False
+        try:
+            held = bool(self.on_hold())
+        except Exception:
+            _log.warning("could not pause the speech", exc_info=True)
+            held = False
+        self._gate.reset()
+        if not held:
+            return False
+        log_event(_log, "talk_over_started", coupling=round(self._gate.coupling, 1))
+        self._interrupt = UtteranceCollector(self._vad, start_timeout=2.5, silence_timeout=0.7,
+                                             max_seconds=self.INTERRUPT_MAX_SECONDS, min_speech=0.2)
+        for earlier in list(self._interrupt_pre):     # the first syllables, from just before it noticed you
+            self._interrupt.feed(earlier, True)
+        self._interrupt_pre.clear()
+        return True
+
+    def _screen_playing(self) -> bool:
+        try:
+            return bool(self.other_audio is not None and self.other_audio.playing)
+        except Exception:
+            return False
+
+    def _not_you(self, why: str) -> None:
+        log_event(_log, why)
+        self._gate.false_alarm()                    # harder to trigger for a while
+        self._release(True)
+
+    def _release(self, resume: bool) -> None:
+        if self.on_release is not None:
+            try:
+                self.on_release(resume)
+            except Exception:
+                _log.warning("could not resume / drop the held speech", exc_info=True)
+
+    def _interrupt_frame(self, frame: np.ndarray, speech: bool) -> None:
+        utterance = self._interrupt.feed(frame, speech) if self._interrupt is not None else None
+        if utterance is None:
+            return
+        self._interrupt = None
+        if not utterance.speech or utterance.audio.size < SAMPLE_RATE * 0.3:
+            self._not_you("talk_over_too_short")         # nothing came of it: carry on speaking
+            return
+        if self.speaker is not None and getattr(self.speaker, "enrolled", False) and not self._is_owner(utterance.audio):
+            self._not_you("talk_over_not_owner")
+            return
+        transcript = self._transcribe(utterance.audio)
+        if transcript is None or transcript.is_empty:
+            self._not_you("talk_over_empty")
+            return
+        from app.agent.language import is_echo, is_stop_request
+
+        text, had_wake = strip_wake_phrase(transcript.text, self.settings.wake_word)
+        if is_echo(transcript.text, self.recent_speech()) or is_filler(text) or is_background_noise(text):
+            self._not_you("talk_over_was_echo")
+            return
+        stop = is_stop_request(text)
+        if not stop and not had_wake and (len(text.split()) < 2 or transcript.confidence < max(
+                0.6, min_confidence(self.settings, transcript))):
+            self._not_you("talk_over_unclear")            # one unclear word over its own voice is usually its own voice
+            return
+        if not stop and not had_wake and self._screen_playing():
+            self._not_you("talk_over_screen_audio")
+            return
+        try:
+            if self.on_barge_in is not None:
+                self.on_barge_in()                        # cancels what it was doing
+        except Exception:
+            pass
+        self._release(False)                              # the rest of the old answer is dropped
+        log_event(_log, "interrupted_by_voice", stop=stop)
+        with self._lock:
+            self._resume = None
+        self._vad.reset()
+        if stop or not text:
+            self._start_command(follow_up=True)           # "stop" / "wait": quiet, and listening
+        else:
+            self._emit(ListenResult("ok", text=text, transcript=transcript))
+
     def _duplex_frame(self, frame: np.ndarray, speech: bool) -> bool:
         """While the assistant speaks: you can talk over it. Its own voice (echo) is recognised by what
         it says (and by the voice print, if enrolled) and ignored; "stop" stops it; anything else is taken
         as a new command. Returns True if it interrupted."""
+        if self.playback_level is not None and self.on_hold is not None:
+            self._talk_over_onset(frame, speech)      # the instant path: stops for you, then hears you out
+            return False
         try:
             allowed = self.on_barge_in is not None and self.can_duplex()
         except Exception:

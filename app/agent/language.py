@@ -171,7 +171,7 @@ _REPLIES: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(p), bn) fo
     (r"^Minimized (.+?)\.$", r"\1 মিনিমাইজ করেছি।"),
     (r"^Maximized (.+?)\.$", r"\1 বড় করে দিয়েছি।"),
     (r"^Switched to (.+?)\.$", r"\1-এ চলে গেছি।"),
-    (r"^It is (\d{1,2}:\d{2}) on (\w+), (.+)\.$", r"এখন সময় \1।"),
+    (r"^It is (\d{1,2}:\d{2}(?: [AP]M)?) on (\w+), (.+)\.$", r"এখন সময় \1।"),
     (r"^The battery is at (\d+)%, charging\.$", r"ব্যাটারি \1%, চার্জ হচ্ছে।"),
     (r"^The battery is at (\d+)%, on battery power\.$", r"ব্যাটারি \1% আছে, চার্জার লাগানো নেই।"),
     (r"^Volume set to (\d+)%\.$", r"ভলিউম \1% করে দিয়েছি।"),
@@ -266,12 +266,29 @@ def _norm(text: str) -> list[str]:
     return re.findall(r"[\w\u0980-\u09FF]+", (text or "").lower())
 
 
+def _sounds_like(word: str, spoken: set[str]) -> bool:
+    """A word the recognizer may have mangled from one Jarvis said: "cat" from "catch", "stopped" from "stop"."""
+    if word in spoken:
+        return True
+    if len(word) < 3:
+        return False
+    from difflib import SequenceMatcher
+
+    for other in spoken:
+        if len(other) >= 3 and (other.startswith(word) or word.startswith(other)) and abs(len(other) - len(word)) <= 3:
+            return True
+        if len(other) >= 4 and SequenceMatcher(None, word, other).ratio() >= 0.8:
+            return True
+    return False
+
+
 def is_echo(heard: str, speaking: str) -> bool:
-    """True if what the microphone heard is (part of) what the assistant is saying right now."""
+    """True if what the microphone heard is (part of) what the assistant is saying (or just said): its own voice back
+    from the speakers. Words are matched loosely, because the recognizer garbles a voice coming out of speakers."""
     heard_words, spoken = _norm(heard), set(_norm(speaking))
     if not heard_words or not spoken:
         return False
-    overlap = sum(1 for w in heard_words if w in spoken) / len(heard_words)
+    overlap = sum(1 for w in heard_words if _sounds_like(w, spoken)) / len(heard_words)
     return overlap >= 0.6
 
 

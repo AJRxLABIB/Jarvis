@@ -15,7 +15,8 @@ public final class Protocol {
 
     public static final java.util.Set<String> STEP_UP = new java.util.HashSet<String>(java.util.Arrays.asList(
             "lock", "sleep", "hibernate", "restart", "shutdown", "wake_device", "volume", "media", "open_app",
-            "close_app", "window", "brightness", "open_website", "browser", "put_file", "get_file", "mouse", "key"));
+            "close_app", "window", "brightness", "open_website", "browser", "put_file", "get_file", "mouse", "key",
+            "sync_push", "approve"));
 
     public static boolean needsAuth(String command) {
         return STEP_UP.contains(command);

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.utils.timefmt import time12
+
 import os
 import platform
 import socket
@@ -10,10 +12,10 @@ import time
 from datetime import datetime
 
 import psutil
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QPushButton, QScrollArea, QStackedWidget, QStatusBar,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QPushButton, QScrollArea, QStackedWidget, QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -25,11 +27,11 @@ from app.ui.confirm_dialog import ConfirmDialog
 from app.ui.controller import AssistantController, PendingConfirmation
 from app.ui.dashboard import (
     BLUE, CYAN, DIM as DASH_DIM, GREEN, ORANGE, PURPLE, CoreGauge, DashPanel, EventLog, LevelBars,
-    LogoRing, ModuleRow, ShineTitle, StatusCard, StatusRow, TabButton, ThinBar,
+    DonutGauge, FrequencyCard, LogoRing, ModuleRow, ShineTitle, SpectrumStrip, VerticalMeters, StatusCard, StatusRow, TabButton, ThinBar,
 )
 from app.ui.hud import HexBackground, HudPanel, MiniBar, SegmentBar, Sparkline, StatRow as HudStatRow
 from app.ui.styles.theme import GOLD, STATE_COLORS, STATE_LABELS
-from app.ui.visualizer import OrbWidget
+from app.ui.styles.tokens import COLOR
 
 
 def _panel() -> QFrame:
@@ -83,19 +85,30 @@ class MainWindow(QMainWindow):
 
         # ================================================================ header
         self.logo = LogoRing()
-        title = ShineTitle(" ".join(name.upper()))  # a light sweeps across the name now and then
+        title = ShineTitle(" ".join(name.upper()), suffix="")  # a light sweeps across the name now and then
         subtitle = QLabel(f"UNIFIED COMMAND CENTER  ·  v{__version__}")
         subtitle.setObjectName("dashSub")
         brand = QVBoxLayout()
         brand.setSpacing(0)
         brand.addWidget(title)
         brand.addWidget(subtitle)
-        self.nav_label = QLabel(
-            f"<span style='color:{CYAN}'>LIVE HUD</span> &nbsp;&nbsp; <span style='color:{BLUE}'>LOCAL AI</span>"
-            f" &nbsp;&nbsp; <span style='color:{ORANGE}'>VOICE LINK</span> &nbsp;&nbsp; "
-            f"<span style='color:{DASH_DIM}'>ALL ON THIS PC</span>")
-        self.nav_label.setObjectName("dashNav")
-        self.nav_label.setTextFormat(Qt.TextFormat.RichText)
+        # centre of the header: each item opens what it names (no decoration-only buttons)
+        self.nav_buttons: dict[str, QPushButton] = {}
+        nav = QHBoxLayout()
+        nav.setSpacing(4)
+        for key, text, color, tip in (("hud", "LIVE HUD", CYAN, "The live dashboard"),
+                                      ("ai", "LOCAL AI", BLUE, "AI settings (models run on this PC)"),
+                                      ("voice", "VOICE LINK", ORANGE, "Switch always-listening on / off"),
+                                      ("local", "ALL ON THIS PC", DASH_DIM, "Privacy dashboard: what stays on this PC")):
+            button = QPushButton(text)
+            button.setObjectName("navItem")
+            button.setToolTip(tip)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(f"QPushButton#navItem {{ color:{color}; }}")
+            self.nav_buttons[key] = button
+            nav.addWidget(button)
+        self.nav_buttons["hud"].setStyleSheet(f"QPushButton#navItem {{ color:{CYAN}; border:1px solid {COLOR['dash_edge']};"
+                                              f" background: rgba(34, 211, 238, 0.13); }}")
 
         self.status_pill = QLabel("● STARTING")
         self.status_pill.setObjectName("pill")
@@ -113,7 +126,7 @@ class MainWindow(QMainWindow):
         self.date.setAlignment(Qt.AlignmentFlag.AlignRight)
         when = QVBoxLayout()
         when.setSpacing(2)
-        when.addWidget(self.header_status)
+        self.header_status.setVisible(False)      # its information is in the overview and the bottom cards
         clock_row = QHBoxLayout()
         clock_row.addStretch()
         clock_row.addWidget(self.date)
@@ -128,15 +141,22 @@ class MainWindow(QMainWindow):
         self.hands_free_action.setCheckable(True)
         self.hands_free_action.setChecked(controller.ctx.settings.hands_free)
         self.hands_free_action.toggled.connect(self._toggle_hands_free)
+        self.mute_mic_action = self.menu.addAction("Mute microphone (Ctrl+M)")
+        self.mute_mic_action.setCheckable(True)
+        self.mute_mic_action.setToolTip("Nothing listens while this is on - not even the wake word")
+        self.mute_mic_action.toggled.connect(lambda on: self.controller.set_mic_muted(on))
         self.menu.addSeparator()
         self.menu.addAction("Settings...", self.open_settings)
-        self.menu.addAction("Memory...", self.open_memory)
+        self.memory_action = self.menu.addAction("Memory...", self.open_memory)
         self.menu.addAction("Privacy dashboard...", self.open_privacy)
         self.menu.addAction("Meeting / lecture notes (start / stop)", controller.toggle_notes)
         self.menu.addAction("Automations...", self.open_automations)
         self.menu.addAction("Mission Control (what Jarvis did)...", self.open_mission_control)
         self.menu.addAction("My day (to-dos, plan, history)...", self.open_my_day)
+        self.menu.addAction("My life log (journal, habits, expenses, schedule)...", self.open_life_log)
         self.menu.addAction("Background tasks...", self.open_task_center)
+        self.menu.addAction("Workflow studio...", self.open_workflow_studio)
+        self.menu.addAction("Security center...", self.open_security_center)
         self.menu.addAction("Diagnostics & recovery...", self.open_diagnostics)
         self.notifications_action = self.menu.addAction("Notifications...", self.open_notifications)
         self.menu.addAction("Evolution Center...", self.open_evolution_center)
@@ -144,6 +164,8 @@ class MainWindow(QMainWindow):
         self.menu.addAction("Mobile devices...", self.open_mobile_devices)
         self.menu.addAction("What Jarvis sees (context)...", self.open_context_panel)
         self.menu.addAction("Knowledge...", self.open_knowledge)
+        self.menu.addAction("AI and models...", self.open_models)
+        self.menu.addAction("Device manager...", self.open_device_manager)
         self.menu.addAction("Emergency controls...", self.open_emergency)
         controller.notifications_changed.connect(
             lambda n: self.notifications_action.setText(f"Notifications ({n} new)..." if n else "Notifications..."))
@@ -165,19 +187,26 @@ class MainWindow(QMainWindow):
 
         header_box = QFrame()
         header_box.setObjectName("dashHeader")
-        header = QHBoxLayout(header_box)
+        header = QGridLayout(header_box)
         header.setContentsMargins(12, 8, 12, 8)
-        header.addWidget(self.logo)
-        header.addSpacing(10)
-        header.addLayout(brand)
-        header.addStretch()
-        header.addWidget(self.nav_label)
-        header.addStretch()
-        header.addWidget(self.status_pill, 0, Qt.AlignmentFlag.AlignVCenter)
-        header.addSpacing(12)
-        header.addLayout(when)
-        header.addSpacing(12)
-        header.addWidget(self.menu_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        left, right = QHBoxLayout(), QHBoxLayout()
+        left.addWidget(self.logo)
+        left.addSpacing(10)
+        left.addLayout(brand)
+        left.addStretch()
+        right.addStretch()
+        right.addLayout(when)
+        right.addSpacing(12)
+        right.addWidget(self.menu_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        centre = QHBoxLayout()
+        centre.addLayout(nav)
+        centre.addSpacing(18)
+        centre.addWidget(self.status_pill, 0, Qt.AlignmentFlag.AlignVCenter)
+        header.addLayout(left, 0, 0)
+        header.addLayout(centre, 0, 1, Qt.AlignmentFlag.AlignCenter)
+        header.addLayout(right, 0, 2)
+        header.setColumnStretch(0, 1)
+        header.setColumnStretch(2, 1)
 
         # ============================================================ SYSTEM panel
         system = HudPanel("System")
@@ -191,9 +220,9 @@ class MainWindow(QMainWindow):
         system.body.addWidget(section("VITALS"))
         self.cpu_gauge = SegmentBar("CPU", STATE_COLORS["IDLE"])
         self.gpu_gauge = SegmentBar("GPU", GOLD)
-        self.ram_gauge = SegmentBar("Memory", "#a78bfa")
-        self.disk_gauge = SegmentBar("Disk", "#22d3ee")
-        self.battery_gauge = SegmentBar("Battery", "#34d399")
+        self.ram_gauge = SegmentBar("Memory", COLOR["violet"])
+        self.disk_gauge = SegmentBar("Disk", COLOR["cyan"])
+        self.battery_gauge = SegmentBar("Battery", COLOR["ok"])
         for gauge in (self.cpu_gauge, self.gpu_gauge, self.ram_gauge, self.disk_gauge, self.battery_gauge):
             system.body.addWidget(gauge)
         system.body.addSpacing(4)
@@ -201,7 +230,7 @@ class MainWindow(QMainWindow):
         self.cpu_history = Sparkline(60)
         system.body.addWidget(self.cpu_history)
         system.body.addWidget(section("NETWORK · ↓ CYAN  ↑ GOLD"))
-        self.net_history = Sparkline(60, "#38bdf8", second_color=GOLD, scale="auto", height=40)
+        self.net_history = Sparkline(60, COLOR["accent"], second_color=GOLD, scale="auto", height=40)
         system.body.addWidget(self.net_history)
         self.rows: dict[str, HudStatRow] = {}
         for key, label in (("down", "Download"), ("up", "Upload")):
@@ -255,28 +284,38 @@ class MainWindow(QMainWindow):
         system_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
 
         # ================================================================= core
-        self.orb = OrbWidget()
+        from app.ui.core3d.widget import create_core
+
+        # the 3D core (OpenGL) is the whole window background, with the dashboard on top of it; the core itself is drawn in
+        # `core_slot`. Without OpenGL the flat core sits in the slot's place and the painter backdrop is the background.
+        self.orb = create_core(controller.ctx.settings, backdrop=True)
+        self._gl_backdrop = getattr(self.orb, "backdrop_mode", False)
+        self.core_slot = QWidget() if self._gl_backdrop else self.orb
+        self.core_slot.setMinimumSize(300, 300)
         self.state_label = QLabel(STATE_LABELS["IDLE"].upper())
         self.state_label.setObjectName("state")
         self.hint_label = QLabel("PRESS TALK OR TYPE BELOW")
         self.hint_label.setObjectName("hint")
         self.hint_label.setWordWrap(True)
 
-        self.mic_indicator = Indicator("MICROPHONE ACTIVE", "#34d399")
+        self.mic_indicator = Indicator("MICROPHONE ACTIVE", COLOR["ok"])
         self.speaking_indicator = Indicator("SPEAKING", "#60a5fa")
-        self.browser_indicator = Indicator("BROWSER ACTIVE", "#fbbf24")
-        self.screen_indicator = Indicator("SCREEN CAPTURE ACTIVE", "#f87171")
-        self.hands_free_indicator = Indicator("HANDS-FREE", "#a78bfa")
+        self.browser_indicator = Indicator("BROWSER ACTIVE", COLOR["warn"])
+        self.screen_indicator = Indicator("SCREEN CAPTURE ACTIVE", COLOR["danger"])
+        self.hands_free_indicator = Indicator("HANDS-FREE", COLOR["violet"])
         self.offline_indicator = Indicator("NO INTERNET", "#94a3b8")
-        self.camera_indicator = Indicator("CAMERA ACTIVE", "#f87171")
-        self.notes_indicator = Indicator("TAKING NOTES", "#f5b642")
+        self.camera_indicator = Indicator("CAMERA ACTIVE", COLOR["danger"])
+        self.notes_indicator = Indicator("TAKING NOTES", COLOR["gold"])
+        self.muted_indicator = Indicator("MIC MUTED", COLOR["danger"])        # nothing listens (not even the wake word)
+        self.transcribing_indicator = Indicator("TRANSCRIBING", COLOR["cyan"])  # what you said is being turned into text
         self._screen_off_timer = QTimer(self)  # keep it up a few seconds so a quick capture is still noticed
         self._screen_off_timer.setSingleShot(True)
         self._screen_off_timer.timeout.connect(lambda: self.screen_indicator.setVisible(False))
         indicators = QHBoxLayout()
         indicators.setSpacing(6)
         indicators.addStretch()
-        for badge in (self.offline_indicator, self.hands_free_indicator, self.mic_indicator, self.speaking_indicator,
+        for badge in (self.offline_indicator, self.muted_indicator, self.hands_free_indicator, self.mic_indicator,
+                      self.transcribing_indicator, self.speaking_indicator,
                       self.browser_indicator, self.screen_indicator, self.camera_indicator, self.notes_indicator):
             indicators.addWidget(badge)
         indicators.addStretch()
@@ -306,18 +345,33 @@ class MainWindow(QMainWindow):
             chip.clicked.connect(lambda _=False, text=command: controller.send_text(text))
             self.quick_actions[command] = chip
             actions.addWidget(chip)
+        self.meters = VerticalMeters()
+        self.meters_caption = QLabel("")          # kept for older code; the frequency card shows the values
+        self.meters_caption.setVisible(False)
+        self.freq_card = FrequencyCard()
+        freq_panel = DashPanel("", accent=PURPLE, margins=(8, 6, 8, 6))
+        freq_panel.body.addWidget(self.freq_card)
         side = QVBoxLayout()
         side.setSpacing(8)
         side.addWidget(status_card)
-        side.addStretch()
+        side.addWidget(self.meters)
+        side.addSpacing(6)
         side.addLayout(actions)
+        side.addStretch()
         side_widget = QWidget()
         side_widget.setLayout(side)
-        side_widget.setFixedWidth(210)
+        side_widget.setFixedWidth(200)
 
         core_column = QVBoxLayout()
         core_column.setSpacing(4)
-        core_column.addWidget(self.orb, 1)
+        core_column.addWidget(self.core_slot, 1)
+        self.spectrum = SpectrumStrip()
+        core_column.addWidget(self.spectrum)
+        self.engine_line = QLabel("")
+        self.engine_line.setObjectName("engineLine")
+        self.engine_line.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.engine_line.setTextFormat(Qt.TextFormat.RichText)
+        core_column.addWidget(self.engine_line)
         core_column.addLayout(indicators)
         core_panel = DashPanel("", accent=CYAN, margins=(10, 10, 10, 10))
         core_row = QHBoxLayout()
@@ -340,10 +394,11 @@ class MainWindow(QMainWindow):
         for key, label in (("voice", "Voice / interact"), ("hands_free", "Hands-free"), ("screen", "Screen agent"),
                            ("browser", "Browser"), ("home", "Smart home"), ("mcp", "MCP servers"),
                            ("remote", "Phone remote"), ("notes", "Meeting notes")):
-            row = ModuleRow(label)
+            row = ModuleRow(label, switch=key == "hands_free")    # hands-free is a real switch; the rest show state
             self.modules[key] = row
             modules.body.addWidget(row)
-        events = DashPanel("Live event bus", accent=CYAN)
+        self.modules["hands_free"].toggled.connect(lambda: self._toggle_hands_free(self.controller.hands_free is None))
+        events = DashPanel("Live event log", accent=CYAN)
         self.events = EventLog()
         events.body.addWidget(self.events, 1)
         left = QVBoxLayout()
@@ -357,12 +412,17 @@ class MainWindow(QMainWindow):
 
         # ========================================================= right columns
         link = DashPanel("Link monitor", accent=CYAN)
+        self.donut_cpu, self.donut_ram = DonutGauge(f"{os.cpu_count() or '?'} cores", BLUE), DonutGauge("Memory", PURPLE)
+        donuts = QHBoxLayout()
+        donuts.addWidget(self.donut_cpu)
+        donuts.addWidget(self.donut_ram)
+        link.body.addLayout(donuts)
         self.link: dict[str, StatusRow] = {}
         for key, label in (("network", "Network"), ("down", "Download"), ("up", "Upload"), ("uptime", "Uptime"),
                            ("host", "Host")):
             row = StatusRow(label)
             self.link[key] = row
-            link.body.addWidget(row)
+            row.setVisible(False)            # the picture shows only the gauges; the values are on the SYSTEM page
         self.link["host"].set(socket.gethostname()[:18], "info")
         performance = DashPanel("System performance", accent=CYAN)
         self.perf = {"cpu": ThinBar("CPU", BLUE), "ram": ThinBar("Memory", PURPLE), "gpu": ThinBar("GPU", GOLD),
@@ -396,14 +456,46 @@ class MainWindow(QMainWindow):
         self.approval_label.setObjectName("dashMuted")
         self.approval_label.setWordWrap(True)
         approval.body.addWidget(self.approval_label)
-        comms = DashPanel("Comms // conversation", accent=CYAN)
+        comms = DashPanel("", accent=CYAN)
+        comms.frameless = True                  # no title, border or background: the chat floats on the backdrop
         self.chat = ChatView(name)
         comms.body.addWidget(self.chat, 1)
+        timing.setVisible(False)             # timing and approvals: the bottom live box / the confirmation dialog
+        approval.setVisible(False)
+        self._hidden_panels = (timing, approval)
+        address = controller.ctx.settings.user_address.strip()
+        self.comms_input = QLineEdit()
+        self.comms_input.setObjectName("dashInput")
+        self.comms_input.setAccessibleName("Message to Jarvis (conversation panel)")
+        self.comms_input.setPlaceholderText(f"How can I help you{', ' + address if address else ''}?")
+        self.comms_input.returnPressed.connect(self._send_comms)
+        comms_mic = QPushButton("🎙")
+        comms_mic.setObjectName("micSmall")
+        comms_mic.setAccessibleName("Talk")
+        comms_mic.setToolTip("Push to talk")
+        comms_mic.clicked.connect(controller.toggle_listening)
+        comms_send = QPushButton("SEND")
+        comms_send.setObjectName("primary")
+        comms_send.clicked.connect(self._send_comms)
+        comms_row = QHBoxLayout()
+        comms_row.setSpacing(6)
+        comms_row.addWidget(self.comms_input, 1)
+        comms_row.addWidget(comms_mic)
+        comms_row.addWidget(comms_send)
+        comms_stop = QPushButton("■  STOP")
+        comms_stop.setToolTip("Stop speaking / cancel (Esc)")
+        comms_stop.clicked.connect(controller.cancel)
+        self.live_box_side = QLabel("")
+        self.live_box_side.setObjectName("liveBox")
+        stop_row = QHBoxLayout()
+        stop_row.setSpacing(6)
+        stop_row.addWidget(comms_stop)
+        stop_row.addWidget(self.live_box_side, 1)
         right2 = QVBoxLayout()
-        right2.setSpacing(10)
-        right2.addWidget(timing)
-        right2.addWidget(approval)
+        right2.setSpacing(8)
         right2.addWidget(comms, 1)
+        right2.addLayout(comms_row)
+        right2.addLayout(stop_row)
         right2_widget = QWidget()
         right2_widget.setLayout(right2)
         right2_widget.setMinimumWidth(330)
@@ -413,7 +505,17 @@ class MainWindow(QMainWindow):
         grid = QHBoxLayout(dashboard)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
+        # left and right columns have the same width, so the core sits exactly in the middle of the window
+        side_column = QWidget()
+        side_layout = QVBoxLayout(side_column)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.addWidget(freq_panel)
+        side_layout.addStretch()
+        side_column.setFixedWidth(380)
+        right2_widget.setMinimumWidth(380)
+        right2_widget.setMaximumWidth(380)
         grid.addWidget(left_widget)
+        grid.addWidget(side_column)
         grid.addWidget(core_panel, 1)
         grid.addWidget(right1_widget)
         grid.addWidget(right2_widget)
@@ -451,7 +553,30 @@ class MainWindow(QMainWindow):
             tab = TabButton(text, accent)
             tab.clicked.connect(action)
             self.tabs.append(tab)
+        self.page_indicator = TabButton("Core live", ORANGE)
+        self.page_indicator.setToolTip("The page you are on")
+        self.page_indicator.clicked.connect(lambda: self.show_page(0))
+        self.page_indicator.set_current(True)
+        self.page_indicator.setFixedWidth(250)
+        tab_row.addWidget(self.page_indicator)
+        tab_row.addStretch(1)
+        for tab in self.tabs[:5]:
+            tab.setFixedWidth(150)
             tab_row.addWidget(tab)
+        tab_row.addStretch(2)
+        # the tab row and the quick-action buttons are hidden, so everything they did is in the MENU (same handlers)
+        more = QMenu(self)
+        for tab in self.tabs:                # Core live, System, Memory, Automations, Notes, Devices, Phone, Privacy, ...
+            more.addAction(tab.text().title(), tab.click)
+        first = self.menu.actions()[0]
+        self.menu.insertMenu(first, more).setText("Pages")
+        self.menu.insertAction(first, self.menu.addAction("Show all windows", lambda: self.open_overview("windows")))
+        self.menu.insertAction(first, self.menu.addAction("Show browser tabs", lambda: self.open_overview("tabs")))
+        quick = QMenu(self)
+        for chip in self.quick_actions.values():
+            quick.addAction(chip.text().split("  ", 1)[-1].title(), chip.click)
+        self.menu.insertMenu(first, quick).setText("Quick actions")
+        self.menu.insertSeparator(first)
         self.tabs[0].set_current(True)
 
         # ======================================================= bottom cards
@@ -473,8 +598,8 @@ class MainWindow(QMainWindow):
         address = controller.ctx.settings.user_address.strip()
         self.input = QLineEdit()
         self.input.setObjectName("dashInput")
-        self.input.setPlaceholderText(f"How can I help you{', ' + address if address else ''}?   "
-                                      f"(type, or just say \"{name}\")")
+        self.input.setAccessibleName("Message to Jarvis")
+        self.input.setPlaceholderText("")        # the hint text was removed at your request
         self.input.returnPressed.connect(self._send)
         self.send_button = QPushButton("SEND ➤")
         self.send_button.setObjectName("primary")
@@ -511,24 +636,64 @@ class MainWindow(QMainWindow):
         root.addWidget(self.pages, 1)
         root.addLayout(cards)
         root.addLayout(input_row)
-        central = HexBackground()
+        central = self.orb if self._gl_backdrop else HexBackground()
         central.setLayout(root)
         self.setCentralWidget(central)
         self.backdrop = central
+        if self._gl_backdrop:
+            self.orb.slot = self.core_slot
         central.start_motion()  # scan beam and hex pulses (ANIMATIONS=false turns it off)
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage(f"{__app_name__.upper()} {__version__}  ·  ALL PROCESSING ON THIS PC  ·  "
-                                     "LOCAL AI · LOCAL VOICE")
+        self.statusBar().setVisible(False)       # the footer line was removed at your request
+
+        self.nav_buttons["hud"].clicked.connect(lambda: self.show_page(0))
+        self.nav_buttons["ai"].clicked.connect(self.open_settings)
+        self.nav_buttons["voice"].clicked.connect(lambda: self._toggle_hands_free(self.controller.hands_free is None))
+        self.nav_buttons["local"].clicked.connect(self.open_privacy)
+
+        # removed from view at your request (the objects stay: other code still updates them, nothing breaks):
+        # header subtitle + centre items, the whole left column, the status card, the side STOP/live box,
+        # the bottom status cards and the bottom live box
+        for widget in (subtitle, *self.nav_buttons.values(), left_widget, self.page_indicator, status_card,
+                       comms_stop, self.live_box_side, *self.cards.values(), self.live_box,
+                       *self.tabs, side_widget, right1_widget, self.engine_line,
+                       self.comms_input, comms_mic, comms_send):
+            widget.setVisible(False)
+        self.orb.hidden_readouts = {"cpu", "gpu", "ram"}       # only the battery read-out stays around the core
+        core_panel.frameless = True                             # no border around the core
+        painter_core = getattr(self.orb, "model", self.orb)     # the object that owns the wave history
+        painter_core.external_holo = True
+        self.orb.external_holo = True
+
+        def holo():
+            if self._gl_backdrop:
+                return None                     # the GPU draws the waves itself
+            if not self.orb.isVisible() or self.pages.currentIndex() != 0:
+                return None
+            centre = self.orb.mapTo(central, self.orb.rect().center())
+            radius = min(self.orb.width(), self.orb.height()) * 0.41
+            tint = (QColor.fromRgbF(*self.orb.dyn.tint) if hasattr(self.orb, "dyn")
+                    else QColor(STATE_COLORS.get(self.orb.state, STATE_COLORS["IDLE"])))
+            return QPointF(centre), radius, tint, painter_core
+
+        central.holo_source = holo
+        if hasattr(self.orb, "frame_rendered") and not self._gl_backdrop:
+            self.orb.frame_rendered.connect(central.holo_frame)    # the waves move in step with the core
+        if hasattr(self.orb, "model"):
+            self.orb.model.hidden_readouts = self.orb.hidden_readouts
+        self._apply_hud_rings()
 
         # ---- window-local shortcuts (Esc never grabbed globally)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=controller.cancel)
         QShortcut(QKeySequence(Qt.Key.Key_F11), self, activated=self.toggle_full_screen)
+        QShortcut(QKeySequence("Ctrl+M"), self, activated=lambda: self.controller.set_mic_muted(
+            not self.controller.mic_muted))
 
         # ---- controller signals
         c = controller
         c.state_changed.connect(self._on_state)
         c.step_aside_requested.connect(self.step_aside)
-        c.user_message.connect(lambda text: self.chat.add_message("user", text))
+        c.user_message.connect(lambda text: self.chat.add_message("user", text, c.spoken_wave()))
         c.assistant_started.connect(self.chat.begin_stream)
         c.assistant_delta.connect(self.chat.append_stream)
         c.assistant_finished.connect(self._on_finished)
@@ -543,11 +708,14 @@ class MainWindow(QMainWindow):
         c.hands_free_state.connect(self._on_hands_free)
         c.reminder.connect(lambda title, message: self.chat.add_message("notice", f"⏰ {title}: {message}"))
         c.level_changed.connect(self.orb.set_level)
+        c.display_settings_changed.connect(self._apply_core_settings)
         c.voice_engine_changed.connect(self._on_voice_engine)
         c.timing.connect(self._on_timing)
         c.notes_line.connect(self._on_partial)
         c.camera_active.connect(self.camera_indicator.setVisible)
         c.notes_active.connect(self.notes_indicator.setVisible)
+        c.mic_muted_changed.connect(self._on_mic_muted)
+        c.transcribing.connect(self.transcribing_indicator.setVisible)
         c._update_found.connect(self._on_update_found)
         c.partial_transcript.connect(self._on_partial)
         c.confirmation_answered.connect(self._on_confirmation_answered)
@@ -556,7 +724,7 @@ class MainWindow(QMainWindow):
         c.notice.connect(lambda text: self.events.add("notice", text))
         c.reminder.connect(lambda title, message: self.events.add("reminder", f"{title}: {message}"))
         c.user_message.connect(lambda text: self.events.add("user", f"heard: {text}"))
-        c.level_changed.connect(lambda dbfs: self.level_bars.push(max(0.0, min(1.0, (dbfs + 60.0) / 50.0))))
+        c.level_changed.connect(lambda dbfs: self._on_level(max(0.0, min(1.0, (dbfs + 60.0) / 50.0))))
         c.notes_active.connect(lambda _on: self._refresh_dashboard())
         c.jarvis_action.connect(self._on_jarvis_action)
         c.mobile_pending.connect(self._mobile_pending)
@@ -575,6 +743,8 @@ class MainWindow(QMainWindow):
         self._ai_ok: bool | None = None
         self._last_problem: str | None = None
         self._net_last: tuple[float, int, int] | None = None
+        # full screen like its own OS (START_FULLSCREEN): also when Jarvis started in the tray and is opened later
+        self.wants_full_screen = bool(getattr(controller.ctx.settings, "start_fullscreen", True))
         self._clock_timer = QTimer(self)
         self._clock_timer.timeout.connect(self._tick_clock)
         self._stats_timer = QTimer(self)
@@ -782,6 +952,16 @@ class MainWindow(QMainWindow):
         self.live_voice_button.style().polish(self.live_voice_button)
         self._refresh_dashboard()
 
+    def _on_mic_muted(self, muted: bool) -> None:
+        self.muted_indicator.setVisible(muted)
+        self.mute_mic_action.blockSignals(True)
+        self.mute_mic_action.setChecked(muted)
+        self.mute_mic_action.blockSignals(False)
+        if muted:
+            self.transcribing_indicator.setVisible(False)
+            self.hint_label.setText("MICROPHONE MUTED · CTRL+M TO UNMUTE")
+        self.mic_button.setToolTip("The microphone is muted (Ctrl+M to unmute)" if muted else "Talk (push-to-talk)")
+
     def _on_mic(self, active: bool) -> None:
         self.mic_indicator.setVisible(active)
         self.mic_button.setProperty("active", "true" if active else "false")
@@ -827,7 +1007,7 @@ class MainWindow(QMainWindow):
 
     def _on_confirmation(self, pending: PendingConfirmation) -> None:
         if self.isHidden() or self.isMinimized():
-            self.showNormal()
+            self.showFullScreen() if self.wants_full_screen else self.showNormal()
         self.raise_()
         self.activateWindow()
         dialog = ConfirmDialog(pending.request, pending.heard, parent=self)
@@ -859,7 +1039,7 @@ class MainWindow(QMainWindow):
                 parts.append(f"{label}{value:.1f}")
         total = sum(v for v in (timing.get("heard"), timing.get("ai"), timing.get("voice")) if v is not None)
         self.timing_big.setText(f"{total:.1f} s")
-        self.timing_big.setStyleSheet(f"color:{GREEN if total < 2.5 else ORANGE if total < 5 else '#f87171'};")
+        self.timing_big.setStyleSheet(f"color:{GREEN if total < 2.5 else ORANGE if total < 5 else COLOR['danger']};")
         for key, row in self.timing_rows.items():
             value = timing.get(key)
             row.set("--" if value is None else f"{value:.1f} s", "off" if value is None else "info")
@@ -878,6 +1058,8 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         for i, tab in enumerate(self.tabs[:2]):
             tab.set_current(i == index)
+        if hasattr(self, "page_indicator"):
+            self.page_indicator.setText(("CORE LIVE", "SYSTEM")[index] if index < 2 else "CORE LIVE")
 
     def _on_tool_event(self, text: str) -> None:
         self.events.add("tool", text)
@@ -886,17 +1068,57 @@ class MainWindow(QMainWindow):
             self._last_action = name[:24]
             self._update_live_box()
 
+    def _send_comms(self) -> None:
+        """The conversation panel's own input: the same pipeline as the bottom bar (text, then Enter)."""
+        text = self.comms_input.text().strip()
+        if not text:
+            return
+        self.comms_input.clear()
+        self.controller.send_text(text)
+
+    def _apply_core_settings(self) -> None:
+        s = self.controller.ctx.settings
+        if hasattr(self.orb, "apply_settings"):
+            self.orb.apply_settings(s.visual_quality, s.core_speed, s.glow_intensity, s.reduced_motion)
+        self._apply_hud_rings()
+
+    def _apply_hud_rings(self) -> None:
+        """The flat rings, gauges and ticks around the core: off by default (Settings brings them back)."""
+        on = bool(getattr(self.controller.ctx.settings, "core_hud_rings", False))
+        model = getattr(self.orb, "model", self.orb)
+        if hasattr(model, "hud_rings"):
+            model.hud_rings = on
+
+    def _on_level(self, level: float) -> None:
+        self.level_bars.push(level)
+        self.spectrum.push(level)
+
     def _update_live_box(self) -> None:
         name = self.controller.ctx.settings.assistant_name.upper()
         state = STATE_LABELS.get(getattr(self, "_last_state", "IDLE") or "IDLE", "Ready").upper()
         voice = "ON" if self.controller.hands_free is not None else "OFF"
-        self.live_box.setText(f"{name} LIVE v{__version__}\nSTATE: {state}   LIVE VOICE: {voice}\n"
-                              f"LAST ACTION: {self._last_action}")
+        text = f"{name} LIVE v{__version__}\nSTATE: {state}   LIVE VOICE: {voice}\nLAST ACTION: {self._last_action}"
+        self.live_box.setText(text)
+        if hasattr(self, "live_box_side"):
+            self.live_box_side.setText(text)
 
     def _update_dashboard_stats(self) -> None:
         """The dashboard mirrors the SYSTEM page's meters (same measurements, no extra work)."""
         cpu, ram, disk = self.cpu_gauge.value, self.ram_gauge.value, self.disk_gauge.value
         self.perf["cpu"].set_value(cpu, self.cpu_gauge.caption)
+        self.donut_cpu.set_value(cpu)
+        self.donut_ram.set_value(ram)
+        battery_now = self.battery_gauge.value
+        self.meters.set_values([cpu, ram, self._gpu_util if self._gpu_available else None, disk,
+                                getattr(self, "_gpu_mem_percent", None) if self._gpu_available else None, battery_now])
+        self.freq_card.set_values(self.cpu_gauge.caption.split("·")[-1].strip() if self.cpu_gauge.caption else "--",
+                                  cpu, battery_now)
+        ai_state = self.overview["ai"].text() if hasattr(self, "overview") else "--"
+        secure = self.overview["actions"].text() if hasattr(self, "overview") else "--"
+        self.engine_line.setText(f"<span style='color:{CYAN}'>●</span> AI ENGINE: {ai_state} · CPU {cpu or 0:.0f}%"
+                                 f" &nbsp;&nbsp;<span style='color:{ORANGE}'>●</span> SECURITY: {secure}")
+        self.meters_caption.setText(f"{self.cpu_gauge.caption or 'FREQUENCY --'}   ·   BATTERY "
+                                    f"{'AC' if battery_now is None else f'{battery_now:.0f}%'}".upper())
         self.perf["ram"].set_value(ram, self.ram_gauge.caption)
         self.perf["disk"].set_value(disk, self.disk_gauge.caption)
         if self._gpu_available:
@@ -910,7 +1132,7 @@ class MainWindow(QMainWindow):
         if battery is None:
             self.power.set_value(100, "AC", "MAINS POWER", GREEN)
         else:
-            color = "#f87171" if battery <= 15 else GREEN
+            color = COLOR["danger"] if battery <= 15 else GREEN
             self.power.set_value(battery, f"{battery:.0f}%", self.battery_gauge.caption.upper()[:14], color)
         self._stats_refreshes = getattr(self, "_stats_refreshes", 0) + 1
         if self._stats_refreshes % 5 == 1:  # every few ticks: counts from the database, module states
@@ -925,6 +1147,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         if self._confirm_dialog is None:
+            self.memory_action.setText(f"Memory ({pending} to review)..." if pending else "Memory...")
             self.approval_label.setText(f"No actions waiting.  {pending} memory suggestion(s) to review (MEMORY tab)."
                                         if pending else "No actions waiting.")
 
@@ -994,10 +1217,10 @@ class MainWindow(QMainWindow):
 
     def _refresh_header(self) -> None:
         ai_ok = self._ai_ok
-        ai = ("ONLINE", "#34d399") if ai_ok else ("OFFLINE", "#f87171") if ai_ok is False else ("STARTING", ORANGE)
-        voice = ("ON", "#34d399") if self.controller.hands_free is not None else ("OFF", DASH_DIM)
+        ai = ("ONLINE", COLOR["ok"]) if ai_ok else ("OFFLINE", COLOR["danger"]) if ai_ok is False else ("STARTING", ORANGE)
+        voice = ("ON", COLOR["ok"]) if self.controller.hands_free is not None else ("OFF", DASH_DIM)
         offline = getattr(self, "_offline", False)
-        net = ("OFFLINE", ORANGE) if offline else ("ONLINE", "#34d399")
+        net = ("OFFLINE", ORANGE) if offline else ("ONLINE", COLOR["ok"])
         part = lambda k, v: f"{k}: <span style='color:{v[1]}'>{v[0]}</span>"  # noqa: E731
         self.header_status.setText(" &nbsp; ".join((part("AI CORE", ai), part("LIVE VOICE", voice),
                                                     part("NETWORK", net))))
@@ -1021,9 +1244,23 @@ class MainWindow(QMainWindow):
         ctx = self.controller.ctx
         dialog = SettingsDialog(
             ctx.settings, ctx.paths.env_file, models=self.controller.installed_models(),
-            microphones=microphones, speakers=speakers, on_saved=self.controller.apply_settings, parent=self,
+            microphones=microphones, speakers=speakers, on_saved=self.controller.apply_settings,
+            on_restart=self._restart_for_settings, parent=self,
         )
         dialog.exec()
+        wanted = bool(getattr(self.controller.ctx.settings, "start_fullscreen", True))
+        if wanted != self.wants_full_screen and self.isVisible():
+            self.set_full_screen(wanted)                       # "Start full screen" changed: apply it now
+
+    def _restart_for_settings(self, names: list[str]) -> None:
+        """A saved setting is only read at start-up (speech model, ports, devices...): Jarvis restarts itself to apply
+        it - nothing to click. The conversation and everything saved carry over."""
+        if getattr(self, "_settings_restart_pending", False):
+            return
+        self._settings_restart_pending = True
+        shown = ", ".join(n.lower().replace("_", " ") for n in names[:4]) + ("..." if len(names) > 4 else "")
+        self.chat.add_message("notice", f"Saved. Applying {shown} - Jarvis restarts in a moment.")
+        QTimer.singleShot(1500, self.restart_jarvis)
 
     def open_setup_wizard(self) -> None:
         from app.ui.setup_wizard import SetupWizard
@@ -1073,20 +1310,71 @@ class MainWindow(QMainWindow):
             "mission_control": self.open_mission_control, "open_notifications": self.open_notifications,
             "emergency_controls": self.open_emergency, "evolution_center": self.open_evolution_center,
             "task_center": self.open_task_center, "my_day": self.open_my_day,
+            "workflow_studio": self.open_workflow_studio, "security_center": self.open_security_center,
             "show_system": lambda: self.show_page(1), "show_dashboard": lambda: self.show_page(0),
             "enroll_voice": c.enroll_voice, "teach_wake_word": c.teach_wake_word, "train_voice": c.train_voice,
             "make_jarvis_model": self._make_jarvis_model_by_voice, "self_test": self.run_self_test,
             "speed_report": c.speed_report, "check_updates": self.check_updates, "phone_remote": self.show_phone_remote,
             "new_conversation": self.new_conversation, "hide_window": self.hide, "show_window": self.bring_back,
             "setup_wizard": self.open_setup_wizard, "hands_free_off": lambda: self._toggle_hands_free(False),
+            "mute_microphone": lambda: self.controller.set_mic_muted(True),
             "close_dialog": self._close_dialog, "health_report": c.health_report, "use_best_model": c.use_best_model,
             "full_screen": lambda: self.set_full_screen(True), "exit_full_screen": lambda: self.set_full_screen(False),
             "stay_on_top": lambda: self.set_always_on_top(True), "not_on_top": lambda: self.set_always_on_top(False),
-            "compare_models": c.compare_models,
+            "compare_models": c.compare_models, "restart_jarvis": self.restart_jarvis,
+            "window_overview": lambda: self.open_overview("windows"), "tab_overview": lambda: self.open_overview("tabs"),
         }
         handler = actions.get(action)
         if handler is not None:
             QTimer.singleShot(200, handler)  # after the reply started, so the dialog doesn't cover it
+
+    def open_overview(self, mode: str = "windows") -> None:
+        """'Show me my screen' / 'show my tabs': every open window (or browser tab) flies into a grid; pick one."""
+        from app.tools import winapi
+        from app.ui import dwm
+        from app.ui.window_overview import WindowOverview, activate, tab_items, window_items
+
+        if not winapi.is_windows():
+            self.chat.add_message("notice", "The window overview works on Windows.")
+            return
+        try:
+            items = tab_items() if mode == "tabs" else window_items()
+        except Exception as exc:
+            self.chat.add_message("error", f"I couldn't list the open {'tabs' if mode == 'tabs' else 'windows'}: {exc}")
+            return
+        if not items:
+            self.chat.add_message("notice", "No browser tabs are open." if mode == "tabs" else "No other windows are open.")
+            return
+        if getattr(self, "_overview", None) is not None:
+            self._overview.dismiss()
+        overview = WindowOverview(items, mode, thumbnail_factory=dwm.Thumbnail)
+        self._overview = overview
+
+        def chosen(item) -> None:
+            try:
+                activate(item)
+            except Exception as exc:
+                self.chat.add_message("error", f"I couldn't bring that window to the front: {exc}")
+
+        overview.chosen.connect(chosen)
+        overview.closed.connect(lambda: setattr(self, "_overview", None))
+        overview.open()
+
+    def restart_jarvis(self) -> None:
+        """Start a fresh Jarvis (it waits for this one to exit) and quit, so the latest code runs without a PC restart."""
+        import os
+
+        from PySide6.QtWidgets import QApplication
+
+        from app.core import relaunch
+
+        try:
+            relaunch.start_replacement(os.getpid(), minimized=not self.isVisible())
+        except OSError as exc:
+            self.chat.add_message("error", f"I couldn't restart myself: {exc}")
+            return
+        self.allow_close = True
+        QTimer.singleShot(2500, QApplication.quit)  # let the spoken reply finish first
 
     def _close_dialog(self) -> None:
         from PySide6.QtWidgets import QApplication, QDialog
@@ -1163,8 +1451,17 @@ class MainWindow(QMainWindow):
         try:
             installer = updates.download(info, Path(tempfile.gettempdir()) / "JarvisUpdate",
                                          require_signature=self.controller.ctx.settings.update_require_signature)
+            from app import __version__
+            from app.core import update_guard
+
+            try:   # a verified copy of the data first; if it cannot be made, the installer is NOT started
+                update_guard.begin(self.controller.ctx.paths, __version__, info.version, info.sha256)
+            except Exception as exc:
+                self.chat.add_message("error", f"The update was not started because the safety backup failed: {exc}")
+                return
             winapi.start_file(str(installer))
-            self.chat.add_message("notice", "The installer has started. Jarvis will close when it updates.")
+            self.chat.add_message("notice", "A safety backup of your data was made and the installer has started. "
+                                            "Jarvis will close when it updates and check itself when it starts again.")
         except Exception as exc:  # shown to the user
             self.chat.add_message("error", f"The update failed: {exc}")
 
@@ -1202,6 +1499,16 @@ class MainWindow(QMainWindow):
         from app.ui.notification_dialog import EmergencyDialog
 
         EmergencyDialog(self.controller.emergency_stop, self.controller.set_emergency_switch, parent=self).exec()
+
+    def open_models(self) -> None:
+        from app.ui.models_dialog import ModelsDialog
+
+        ModelsDialog(self.controller, parent=self).exec()
+
+    def open_device_manager(self) -> None:
+        from app.ui.device_manager import DeviceManagerDialog
+
+        DeviceManagerDialog(self.controller, parent=self).exec()
 
     def open_knowledge(self) -> None:
         from app.ui.knowledge_dialog import KnowledgeDialog
@@ -1262,12 +1569,35 @@ class MainWindow(QMainWindow):
         MissionControlDialog(self.controller.ctx.database,
                              on_undo=lambda: self.controller.send_text("undo your last action"), parent=self).exec()
 
+    def open_life_log(self) -> None:
+        from app.ui.personal_dialog import PersonalDialog
+
+        if self.controller.ctx.database is None:
+            return
+        PersonalDialog(self.controller.executor.context, parent=self).exec()
+
     def open_my_day(self) -> None:
         from app.ui.my_day import MyDayDialog
 
         if self.controller.ctx.database is None:
             return
         MyDayDialog(self.controller.executor.context, self.controller.send_text, parent=self).exec()
+
+    def open_security_center(self) -> None:
+        from app.ui.security_center import SecurityCenterDialog
+
+        c = self.controller
+        if c.ctx.database is None:
+            return
+        SecurityCenterDialog(c.ctx.database, c.ctx.settings, open_phones=self.open_mobile_devices,
+                             open_privacy=self.open_privacy, open_emergency=self.open_emergency, parent=self).exec()
+
+    def open_workflow_studio(self) -> None:
+        from app.ui.workflow_studio import WorkflowStudioDialog
+
+        if self.controller.ctx.database is None:
+            return
+        WorkflowStudioDialog(self.controller.executor.context, self.controller.send_text, parent=self).exec()
 
     def open_task_center(self) -> None:
         from app.ui.task_center import TaskCenterDialog
@@ -1306,8 +1636,20 @@ class MainWindow(QMainWindow):
 
     def _tick_clock(self) -> None:
         now = datetime.now()
-        self.clock.setText(now.strftime("%H:%M:%S"))
+        self.clock.setText(time12(now, True))
         self.date.setText(now.strftime("%A · %d %B %Y").upper())
+        if now.second % 2 == 0:                       # `python run.py --restart` from a terminal asks here
+            self._check_restart_request()
+
+    def _check_restart_request(self) -> None:
+        try:
+            from app.core import relaunch
+
+            wanted = relaunch.take_request(self.controller.ctx.paths.data_dir)
+        except Exception:
+            return
+        if wanted:
+            self.restart_jarvis()
 
     def _update_network(self) -> None:
         from app.utils import network
@@ -1326,15 +1668,15 @@ class MainWindow(QMainWindow):
         offline = getattr(self, "_offline", False)
         forced = self.controller.ctx.settings.forced_offline
         if self._ai_ok is False:
-            text, color = "● AI OFFLINE", "#f87171"
+            text, color = "● AI OFFLINE", COLOR["danger"]
         elif forced:
             text, color = "● OFFLINE MODE", "#94a3b8"
         elif offline:
-            text, color = "● NO INTERNET", "#fbbf24"
+            text, color = "● NO INTERNET", COLOR["warn"]
         elif self._ai_ok is None:
-            text, color = "● STARTING", "#5f7f9c"
+            text, color = "● STARTING", COLOR["dim"]
         else:
-            text, color = "● ONLINE", "#34d399"
+            text, color = "● ONLINE", COLOR["ok"]
         self.status_pill.setText(text)
         if hasattr(self, "header_status"):
             self._refresh_header()
@@ -1356,9 +1698,15 @@ class MainWindow(QMainWindow):
 
         drive = _system_drive()
 
+        if getattr(self, "_stats_helper", None) is None:
+            from app.ui.stats_process import StatsHelper
+
+            self._stats_helper = StatsHelper()
+        helper = self._stats_helper
+
         def work() -> None:
             try:
-                sample = take(drive, with_processes)
+                sample = take(drive, with_processes, helper)
             except Exception:
                 return
             self.stats_ready.emit(sample)  # queued to the window's thread
@@ -1368,7 +1716,7 @@ class MainWindow(QMainWindow):
 
     def _apply_stats(self, s) -> None:
         cpu, cores = s.cpu, s.cores
-        self.cpu_gauge.set_value(cpu, color="#f87171" if cpu >= 90 else STATE_COLORS["IDLE"])
+        self.cpu_gauge.set_value(cpu, color=COLOR["danger"] if cpu >= 90 else STATE_COLORS["IDLE"])
         self.cpu_history.add(cpu)
         self.orb.set_telemetry("cpu", cpu)
         speed = f" · {s.freq_ghz:.1f} GHz" if s.freq_ghz else ""
@@ -1388,7 +1736,7 @@ class MainWindow(QMainWindow):
             self.orb.set_telemetry("battery", None, "AC POWER")
         else:
             charging = battery.power_plugged
-            colour = "#f87171" if battery.percent <= 15 and not charging else "#34d399"
+            colour = COLOR["danger"] if battery.percent <= 15 and not charging else COLOR["ok"]
             if charging:
                 detail = "charging" if battery.percent < 100 else "full"
             elif battery.secsleft and battery.secsleft > 0 and battery.secsleft != psutil.POWER_TIME_UNLIMITED:
@@ -1403,7 +1751,7 @@ class MainWindow(QMainWindow):
         if disk is not None:
             self.rows["disk"].set(f"{disk.used / 1024**3:.0f} / {disk.total / 1024**3:.0f} GB ({disk.percent:.0f}%)")
             self.disk_gauge.set_value(disk.percent, caption=f"{disk.free / 1024**3:.0f} GB free",
-                                      color="#f87171" if disk.percent >= 92 else "#22d3ee")
+                                      color=COLOR["danger"] if disk.percent >= 92 else COLOR["cyan"])
         else:
             self.rows["disk"].set("--")
         if s.net is not None:
@@ -1467,6 +1815,7 @@ class MainWindow(QMainWindow):
                 used, total = float(g["memory_used_mb"]) / 1024, float(g["memory_total_mb"]) / 1024
                 self._gpu_text = f"{g['utilization_percent']}% · {used:.1f}/{total:.0f} GB · {g['temperature_c']}°C"
                 self._gpu_util = float(g["utilization_percent"])
+                self._gpu_mem_percent = 100.0 * used / total if total else None
             except (KeyError, ValueError):
                 self._gpu_text, self._gpu_util = "--", None
 
@@ -1526,6 +1875,9 @@ class MainWindow(QMainWindow):
         if self.allow_close:
             if self.mini_orb is not None:
                 self.mini_orb.close()
+            helper = getattr(self, "_stats_helper", None)
+            if helper is not None:
+                helper.close()
             event.accept()
             return
         event.ignore()  # the X button hides to the tray; "Exit" in the tray quits

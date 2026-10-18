@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 import xml.etree.ElementTree as ET
@@ -282,6 +283,9 @@ class NewsArgs(ToolArgs):
 
 
 def parse_rss(xml_text: str, count: int) -> list[dict[str, str]]:
+    if re.search(r"<!\s*(?:DOCTYPE|ENTITY)", xml_text, re.I):
+        # the standard-library XML parser expands entities (a few lines can become gigabytes); a news feed never needs them
+        raise ToolError("The news feed used features I don't accept, so I ignored it.", "service_error")
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:

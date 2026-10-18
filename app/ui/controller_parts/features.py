@@ -15,6 +15,16 @@ _log = get_logger("ui.controller")
 
 
 class FeaturesMixin:
+    def _emit_sources(self, reply) -> None:
+        """Under an answer that used tools or saved memories: where its facts came from (SHOW_SOURCES)."""
+        if not getattr(reply, "sources", None) or not getattr(self.ctx.settings, "show_sources", True):
+            return
+        from app.agent.conversation import sources_line
+
+        line = sources_line(reply.sources)
+        if line:
+            self.notice.emit(line)
+
     def check_for_updates(self, manual: bool = False) -> None:
         """UPDATE_MANIFEST_URL: is a newer version published? (in the background; never installs by itself)"""
         url = self.ctx.settings.update_manifest_url.strip()
@@ -276,7 +286,7 @@ class FeaturesMixin:
                 "open_privacy": "Opening the privacy dashboard.", "open_logs": "Opening the logs.",
                 "open_automations": "Opening your automations.", "mission_control": "Opening Mission Control.",
                 "open_notifications": "Opening your notifications.", "emergency_controls": "Opening the emergency controls.",
-                "evolution_center": "Opening the Evolution Center.", "task_center": "Opening the task center.", "my_day": "Opening your day.", "show_system": "Showing the system page.",
+                "evolution_center": "Opening the Evolution Center.", "task_center": "Opening the task center.", "my_day": "Opening your day.", "workflow_studio": "Opening the workflow studio.", "security_center": "Opening the security center.", "show_system": "Showing the system page.",
                 "show_dashboard": "Showing the dashboard.", "enroll_voice": "Let's learn your voice.",
                 "teach_wake_word": "Let's learn your wake word.", "train_voice": "Training on your recordings.",
                 "make_jarvis_model": "Making the Jarvis model.", "self_test": "Running the self-test.",
@@ -284,10 +294,13 @@ class FeaturesMixin:
                 "phone_remote": "Starting the phone remote.", "new_conversation": "Starting a new conversation.",
                 "hide_window": "Going to the background. Say my name any time.", "show_window": "Here I am.",
                 "setup_wizard": "Opening the setup wizard.", "hands_free_off": "Hands-free is off.",
+                "mute_microphone": "Muting the microphone. Press Ctrl+M to turn it back on.",
                 "close_dialog": "Closed.", "use_best_model": "Switching to the best model.", "full_screen": "Full screen.", "stay_on_top": "I'll stay on top of other windows.",
                 "not_on_top": "Other windows can go over me again.",
                 "exit_full_screen": "Leaving full screen.", "health_report": "Making the health report.",
-                "compare_models": "Comparing your models on the Bangla questions."}.get(action, "Done.")
+                "compare_models": "Comparing your models on the Bangla questions.",
+                "restart_jarvis": "Restarting. I'll be back in a few seconds.",
+                "window_overview": "Here are your open windows.", "tab_overview": "Here are your open tabs."}.get(action, "Done.")
 
     def _apply_setting(self, field: str, value: str) -> None:
         """change_setting tool: saved to .env and applied (on the window's thread)."""

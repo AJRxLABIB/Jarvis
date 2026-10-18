@@ -44,9 +44,11 @@ def test_settings_save_writes_only_changes_and_calls_back(qapp, tmp_path: Path, 
     env = tmp_path / ".env"
     env.write_text("# my notes\nAI_MODEL=\nTTS_SPEED=1.0\n", encoding="utf-8")
     applied: list = []
+    restarts: list = []
     dialog = SettingsDialog(load_settings(env, environ={}), env, models=["llama3.2:3b", "qwen3:8b"],
                             microphones=["Microphone Array (Realtek(R) Audio)"],
-                            on_saved=lambda s, changed: applied.append((s, changed)))
+                            on_saved=lambda s, changed: applied.append((s, changed)),
+                            on_restart=lambda names: restarts.append(names))
     model = dialog.widgets["ai_model"]
     assert isinstance(model, QComboBox) and model.findText("qwen3:8b") >= 0
     model.setCurrentText("qwen3:8b")
@@ -62,7 +64,20 @@ def test_settings_save_writes_only_changes_and_calls_back(qapp, tmp_path: Path, 
     assert reloaded.microphone_device == "Microphone Array (Realtek(R) Audio)" and reloaded.speak_typed_replies
     settings, changed = applied[0]
     assert changed == {"ai_model", "tts_speed", "microphone_device", "speak_typed_replies"}
-    assert notices == ["Saved. Restart the assistant to apply: MICROPHONE_DEVICE"]  # the rest applies live
+    assert notices == []                                            # no "restart the assistant" box any more
+    assert restarts == [["MICROPHONE_DEVICE"]]                      # Jarvis restarts itself for that one; the rest is live
+
+
+def test_remote_and_startup_settings_need_no_restart(qapp, tmp_path: Path) -> None:
+    restarts: list = []
+    env = tmp_path / ".env"
+    env.write_text("REMOTE_ENABLED=false\nSTART_MINIMIZED=false\n", encoding="utf-8")
+    dialog = SettingsDialog(load_settings(env, environ={}), env, on_saved=lambda s, c: None,
+                            on_restart=lambda names: restarts.append(names))
+    dialog.widgets["remote_enabled"].setChecked(True)
+    dialog.widgets["start_minimized"].setChecked(True)
+    dialog.save()
+    assert restarts == [] and "REMOTE_ENABLED=true" in env.read_text()
 
 
 def test_invalid_settings_are_not_saved(qapp, tmp_path: Path, monkeypatch) -> None:

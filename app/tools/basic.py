@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.utils.timefmt import time12
+
 import ast
 import re
 import math
@@ -21,7 +23,7 @@ def get_datetime(_: NoArgs, ctx: ToolContext) -> ToolResult:
     offset = now.strftime("%z")
     utc_offset = f"UTC{offset[:3]}:{offset[3:]}" if offset else "local"
     return ToolResult.success(
-        f"It is {now:%H:%M} on {now:%A}, {now.day} {now:%B %Y}.",
+        f"It is {time12(now)} on {now:%A}, {now.day} {now:%B %Y}.",
         time_24h=now.strftime("%H:%M"),
         time_12h=now.strftime("%I:%M %p").lstrip("0"),
         date=now.strftime("%Y-%m-%d"),

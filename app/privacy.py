@@ -104,10 +104,15 @@ TABLES: dict[str, _Table] = {
                      "SELECT name || ': ' || COUNT(*) || ' times' FROM usage_events GROUP BY name "
                      "ORDER BY COUNT(*) DESC LIMIT ?",
                      ("DELETE FROM usage_events",)),
+    "programs": _Table("Program history", "Names of the busiest programs with CPU/memory numbers (only if PROCESS_HISTORY is on).",
+                       "SELECT COUNT(*) FROM process_samples",
+                       "SELECT name || ': ' || COUNT(*) || ' readings' FROM process_samples GROUP BY name "
+                       "ORDER BY COUNT(*) DESC LIMIT ?",
+                       ("DELETE FROM process_samples",)),
     "activity": _Table("Activity log", "Which tools ran and what was allowed or refused (arguments redacted).",
                        "SELECT COUNT(*) FROM audit_log",
                        "SELECT ts || '  ' || event || '  ' || COALESCE(tool, '') FROM audit_log ORDER BY id DESC LIMIT ?",
-                       ("DELETE FROM audit_log",)),
+                       ("DELETE FROM audit_log", "DELETE FROM audit_head")),
 }
 
 # key -> (title, description, relative path in the data folder, counter)

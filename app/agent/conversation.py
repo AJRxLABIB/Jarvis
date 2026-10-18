@@ -10,6 +10,8 @@ technical detail goes to the log.
 
 from __future__ import annotations
 
+from app.utils.timefmt import time12
+
 import asyncio
 import json
 import re
@@ -121,6 +123,38 @@ def step_checklist(executions: list[ToolExecution] | tuple[ToolExecution, ...]) 
     done = sum(e.result.ok for e in executions)
     return f"Steps ({done} of {len(executions)} worked):\n" + "\n".join(lines)
 
+def answer_sources(executions, memories_used=(), model: str | None = None) -> dict:
+    """Where an answer's facts came from - built from what really happened, never from the model's own words:
+    tools (each: worked or not, checked afterwards or not), saved memories that matched the request, and the model."""
+    tools = []
+    for execution in executions:
+        result = execution.result
+        data = getattr(result, "data", None) or {}
+        verified = data.get("verified") if isinstance(data, dict) else None
+        tools.append({"tool": execution.call.name, "ok": bool(result.ok),
+                      "verified": verified if isinstance(verified, bool) else None})
+    memories = [{"id": i, "content": c} for i, c, why in memories_used if why == "it matches words in your request"]
+    return {"tools": tools, "memories": memories, "model": model}
+
+
+def sources_line(sources: dict) -> str:
+    """'Sources: open_application (worked, checked) · get_weather (worked) · 1 saved memory · the rest is the AI'"""
+    parts = []
+    for t in sources.get("tools", [])[:6]:
+        state = "worked" if t["ok"] else "failed"
+        if t["ok"] and t["verified"] is True:
+            state += ", checked"
+        elif t["ok"] and t["verified"] is False:
+            state = "not confirmed"
+        parts.append(f"{t['tool']} ({state})")
+    count = len(sources.get("memories", []))
+    if count:
+        parts.append(f"{count} saved memor{'y' if count == 1 else 'ies'}")
+    if not parts:
+        return ""
+    return "Sources: " + " · ".join(parts) + " · everything else is the AI's own wording (not checked)"
+
+
 DeltaCallback = Callable[[str], None]
 ToolCallback = Callable[[ToolExecution], None]
 
@@ -136,6 +170,7 @@ class AssistantReply:
     elapsed_ms: int | None = None
     tools_used: tuple[ToolExecution, ...] = ()
     checklist: str = ""  # multi-step tasks: one line per step with its real result (shown, not spoken)
+    sources: dict | None = None  # where the facts came from (tools / memories / the model) - see answer_sources()
 
 
 _ASKED_FOR = {  # (tool, action) -> words the user's own message must contain
@@ -260,6 +295,8 @@ class ConversationManager:
         self.route_tools = True  # offer only the relevant tool groups per request
         self.direct_commands = settings.direct_commands  # "open X"/"close X" without the model
         self.tools = tools
+        if tools is not None and getattr(tools, "context", None) is not None:
+            tools.context.conversation = self
         self.on_tool = on_tool
         self.on_tool_start = on_tool_start
         self.settings = settings
@@ -299,7 +336,7 @@ class ConversationManager:
                     except Exception:
                         _log.warning("could not record app usage", exc_info=True)
         if call.name in _APP_TOOLS or call.name in ("power_control", "volume_control", "brightness_control", "run_workflow"):
-            stamp = self._clock().strftime("%H:%M")
+            stamp = time12(self._clock())
             self.recent_actions.append(f"{stamp} {result.message[:120]}" if result.message else f"{stamp} {call.name}")
 
     @property
@@ -316,12 +353,21 @@ class ConversationManager:
         self._conversation_id = None
         log_event(_log, "conversation_reset")
 
+    last_sources: dict | None = None
+
+    def _memories_used(self) -> list:
+        try:
+            manager = self.tools.context.get_memory() if self.tools is not None else None
+            return list(getattr(manager, "last_used", []) or [])
+        except Exception:
+            return []
+
     def _memories(self) -> str:
         if self.tools is None:
             return ""
         try:
             manager = self.tools.context.get_memory()
-            return manager.prompt_section() if manager is not None else ""
+            return manager.prompt_section(self._current_text or "") if manager is not None else ""
         except Exception:  # memory must never break a conversation
             _log.warning("could not load memories", exc_info=True)
             return ""
@@ -356,13 +402,17 @@ class ConversationManager:
         history = len(self.context.messages)
         total = tokens(system) + sum(tokens(m) for m in rest)
         dropped = 0
+        leaving: list[ChatMessage] = []
         while total > limit and dropped < history and len(rest) > 1:
+            leaving.append(rest[0])
             total -= tokens(rest.pop(0))
             dropped += 1
         while rest and rest[0].role == "tool":  # never start with a tool answer whose call was dropped
+            leaving.append(rest[0])
             total -= tokens(rest.pop(0))
             dropped += 1
         if dropped:
+            self.context.note_dropped(leaving)      # the model keeps a one-line digest of what it no longer sees
             log_event(_log, "context_trimmed", dropped=dropped, tokens=total, limit=limit)
         return [system, *rest]
 
@@ -384,6 +434,7 @@ class ConversationManager:
                 tone=self.tone_hint,
                 detail=answer_detail(self._current_text) or self._mode_detail(),
                 situation=self._situation(),
+                earlier=tuple(self.context.digest),
             )
         )
 
@@ -443,7 +494,33 @@ class ConversationManager:
         run = Run(source if source in ("voice", "text", "phone", "automation", "cli", "internal") else "text",  # type: ignore[arg-type]
                   user_text.strip()[:500], taint=self.taint, user_words=frozenset(self._user_words(user_text)))
         with running(run, self._run_store()):
-            return await self._send(user_text, on_delta)
+            reply = await self._send(user_text, on_delta)
+        self._learn_from(user_text, reply, run.source)
+        return reply
+
+    _learning_used: list[int] = []
+
+    def _learning_on(self, source: str = "text") -> bool:
+        from app.core import modes
+
+        settings = self.tools.context.settings if self.tools is not None else self.settings
+        return (bool(getattr(settings, "learn_from_use", True)) and source not in ("automation", "internal")
+                and modes.STATE.current.remember and self.tools is not None and self.tools.context.database is not None)
+
+    def _learn_from(self, user_text: str, reply: "AssistantReply", source: str) -> None:
+        """Every request is recorded with what really happened; its outcome is settled by what you do next
+        (app/agent/growth.py). Never in private mode, never for automations."""
+        try:
+            if not self._learning_on(source) or reply.error == "empty_input":
+                return
+            from app.agent.growth import Growth
+
+            Growth(self.tools.context.database).record(user_text, reply.tools_used, reply.model or "",
+                                                       list(self._learning_used))
+        except Exception:
+            _log.warning("could not record the request for learning", exc_info=True)
+        finally:
+            self._learning_used = []
 
     def _user_words(self, text: str) -> set[str]:
         """What the user said in this request and the last few: the only words egress may carry on its own."""
@@ -558,10 +635,13 @@ class ConversationManager:
             if getattr(self.settings, "memory_suggestions", False) and model != "direct" and \
                     modes.STATE.current.remember:
                 asyncio.get_running_loop().create_task(self._suggest_memories(text))
+            sources = answer_sources(executions, self._memories_used(), model)
+            self.last_sources = sources
             return AssistantReply(
                 reply_text, ok=True, model=model, stats=stats, elapsed_ms=elapsed,
                 tools_used=tuple(executions),
                 checklist=step_checklist(executions) if model != "direct" and is_task(text) else "",
+                sources=sources,
             )
 
     async def _session_turn(self, text: str) -> AssistantReply | None:
@@ -687,12 +767,23 @@ class ConversationManager:
         database = self.tools.context.database if self.tools is not None else None
         if database is None or not self._current_text:
             return ""
+        parts = []
         try:
             from app.agent.learning import examples_prompt, similar_examples
 
-            return examples_prompt(similar_examples(database, self._current_text))
+            parts.append(examples_prompt(similar_examples(database, self._current_text)))
         except Exception:
-            return ""
+            pass
+        try:
+            if self._learning_on():
+                from app.agent.growth import Growth
+
+                items = Growth(database).relevant(self._current_text)   # skills + lessons from your own use
+                self._learning_used = [i["id"] for i in items]
+                parts.append(Growth.prompt(items))
+        except Exception:
+            _log.warning("could not load what was learned", exc_info=True)
+        return "\n\n".join(p for p in parts if p)
 
     def _corrections(self):
         if self._corrections_store is None and self.tools is not None and self.tools.context.paths is not None:
@@ -995,6 +1086,9 @@ class ConversationManager:
                     results_by_key[key] = execution
                     executions.append(execution)
                     self.note_execution(execution)
+                    health = getattr(self.ai, "health", None)       # was the model's tool call well-formed?
+                    if health is not None and hasattr(health, "tool_call") and model:
+                        health.tool_call(model, execution.result.error not in ("unknown_tool", "invalid_arguments"))
                     if self.on_tool is not None:
                         try:
                             self.on_tool(execution)
@@ -1038,6 +1132,10 @@ class ConversationManager:
     async def _complete(
         self, messages: list[ChatMessage], tools: Sequence[ToolSpec], on_delta: DeltaCallback | None, known: set[str]
     ) -> tuple[str, str, tuple[ToolCall, ...], ChatStats | None]:
+        if getattr(self.settings, "taint_lockdown", False) and self.taint.active:
+            from app.security.taint import LOCKDOWN_TOOLS, PERSISTENT_TOOLS
+
+            tools = [t for t in tools if t.name not in LOCKDOWN_TOOLS and t.name not in PERSISTENT_TOOLS]
         choice = self._route()
         fast = bool(self.settings.ai_fast_model) and choice.kind == "fast"
         coding = choice.kind == "coding" and bool(getattr(self.settings, "ai_coding_model", ""))
@@ -1045,6 +1143,8 @@ class ConversationManager:
         extra = {"coding": True} if coding else {}
         if choice.sensitive:
             extra["sensitive"] = True
+        if getattr(self.settings, "ai_auto_switch", False) and self.taint.active:
+            extra["untrusted"] = True       # AI_AUTO_SWITCH may then pick a model with a clean safety record
         if smart or coding:
             log_event(_log, "smart_model_chosen" if smart else "coding_model_chosen", reason=choice.reason)
         if on_delta is None:

@@ -200,6 +200,7 @@ class RemoteMixin:
         hub.pc_capabilities = self.pc_capabilities
         hub.pc_wake_config = self.wake_app_config
         hub.emergency = self._mobile_emergency
+        hub.cancel = self._mobile_cancel
 
         async def run_tool(tool: str, arguments: dict) -> dict:
             # the phone's button press is your own command, exactly like saying it: same checks, same audit
@@ -208,6 +209,14 @@ class RemoteMixin:
             return {"ok": result.ok, "message": result.message, "error": result.error, "data": result.data}
 
         hub.run_tool = run_tool
+
+    def _mobile_cancel(self) -> str:
+        """The phone's Cancel: stops what Jarvis is doing right now (speaking, listening, the running request, a
+        pending question) - NOT the automations (that is the emergency stop). Nothing already done is undone."""
+        busy = bool(getattr(self, "_busy", False) or getattr(self, "_listening", False))
+        self._cancel_request.emit()
+        return ("Cancelled the current request (anything it already did is not undone)." if busy
+                else "Nothing was running.")
 
     def _mobile_emergency(self) -> str:
         sessions = self.mobile_sessions()
@@ -243,6 +252,19 @@ class RemoteMixin:
         elif key == "remote_key" and self.remote is not None:
             self.stop_remote()
             self.start_remote()
+
+    def apply_remote_settings(self, settings) -> None:
+        """Phone-remote settings changed: stop it and start it again with the new values (no Jarvis restart)."""
+        self.ctx.settings = settings
+        self.stop_remote()
+        if not settings.remote_enabled:
+            self.notice.emit("Phone remote is off.")
+            return
+        try:
+            self.start_remote()
+            self.notice.emit("Phone remote is on (Menu > Phone remote shows how to connect).")
+        except Exception as exc:
+            self.notice.emit(f"The phone remote could not start: {exc}")
 
     def stop_remote(self) -> None:
         if self.remote is not None:

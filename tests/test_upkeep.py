@@ -186,3 +186,19 @@ def test_a_quiet_hours_reminder_is_shown_but_not_spoken(monkeypatch) -> None:
     fake.ctx.settings = Settings(quiet_hours="")
     background.BackgroundMixin._notify(fake, "Reminder: stretch", "stretch")
     assert spoken == ["stretch"]
+
+
+def test_retention_runs_when_configured(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from app.core.upkeep import Upkeep
+    from app.memory.database import Database
+    from app.memory.manager import MemoryManager
+
+    db = Database(tmp_path / "r.db")
+    db.initialize()
+    MemoryManager(db).record_event("something happened")
+    settings = SimpleNamespace(metrics_history=False, auto_backup=False, memory_event_retention_days=30)
+    up = Upkeep(db, tmp_path / "r.db", tmp_path / "b", settings=settings, sampler=lambda: {})
+    assert up.run_once().get("retention") is True
+    assert "retention" not in up.run_once()  # at most once an hour

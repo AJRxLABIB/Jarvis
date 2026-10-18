@@ -22,7 +22,8 @@ MAX_STEPS = 10
 _NAME = re.compile(r"^[\w][\w .,:'&()\-]{0,59}$")
 # Automations can't create, change or run automations (no self-replicating schedules).
 FORBIDDEN_STEP_TOOLS = frozenset({"set_reminder", "schedule_task", "save_workflow", "run_workflow", "manage_automation",
-                                  "list_automations", "forget_everything"})
+                                  "list_automations", "forget_everything", "import_workflow",
+                                  "export_workflow", "background_mode", "simulate_workflow"})
 _TRIGGER = TypeAdapter(Trigger)
 
 
@@ -219,11 +220,18 @@ class AutomationStore:
             row = conn.execute("SELECT next_step FROM workflow_progress WHERE task_id = ?", (task_id,)).fetchone()
         return int(row[0]) if row else None
 
-    def set_progress(self, task_id: str, next_step: int) -> None:
+    def progress_outcome(self, task_id: str) -> str | None:
+        """'failed' when the checkpointed step is known to have done nothing; None when its outcome is unknown."""
+        with self._db.connect() as conn:
+            row = conn.execute("SELECT outcome FROM workflow_progress WHERE task_id = ?", (task_id,)).fetchone()
+        return row[0] if row else None
+
+    def set_progress(self, task_id: str, next_step: int, outcome: str | None = None) -> None:
         with self._db.transaction() as conn:
-            conn.execute("INSERT INTO workflow_progress (task_id, next_step, updated_at) VALUES (?, ?, ?) "
+            conn.execute("INSERT INTO workflow_progress (task_id, next_step, updated_at, outcome) VALUES (?, ?, ?, ?) "
                          "ON CONFLICT(task_id) DO UPDATE SET next_step = excluded.next_step, "
-                         "updated_at = excluded.updated_at", (task_id, next_step, utc_now_iso()))
+                         "updated_at = excluded.updated_at, outcome = excluded.outcome",
+                         (task_id, next_step, utc_now_iso(), outcome))
 
     def clear_progress(self, task_id: str) -> None:
         with self._db.transaction() as conn:

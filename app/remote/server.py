@@ -89,6 +89,7 @@ class RemoteHub:
         self.pc_capabilities = None  # callable() -> dict: what this PC can do + Windows sign-in options
         self.pc_wake_config = None  # callable() -> dict: this PC's Wake-on-LAN details for the app
         self.emergency: Callable[[], str] | None = None  # emergency stop (always allowed for a trusted phone)
+        self.cancel: Callable[[], str] | None = None     # cancel just the current request (phone permission "chat")
         self.run_tool = None  # async (tool, arguments) -> dict: through the executor (the safety kernel)
         self.send, self.answer, self.pending, self.status = send, answer, pending, status
         self.voice = voice  # audio from the phone -> the text it heard (then sent like a message)
@@ -221,6 +222,10 @@ class RemoteServer:
             if not isinstance(approved, bool) or not request_id:
                 raise MobileError(400, "malformed", "approve needs id and approved (true/false)")
             return {"ok": bool(hub.answer(approved, request_id))}
+        if command == "cancel":
+            if hub.cancel is None:
+                raise MobileError(503, "unavailable", "Cancel isn't connected.")
+            return {"ok": True, "message": hub.cancel()}
         if command == "emergency_stop":
             if hub.sessions is not None:
                 hub.sessions.end_device(device.id, "emergency stop")
@@ -231,6 +236,82 @@ class RemoteServer:
             if hub.run_tool is None:
                 raise MobileError(503, "unavailable", "unavailable")
             return await hub.run_tool("mission_status", {})
+
+        if command in ("phone_commands", "phone_result", "phone_notify", "phone_share"):
+            if hub.mobile is None:
+                raise MobileError(503, "unavailable", "unavailable")
+            from app.remote.phone_link import PhoneLink, redact_codes
+
+            link = PhoneLink(hub.mobile.database)
+
+            def _phone() -> dict:
+                if command == "phone_commands":
+                    return {"ok": True, "commands": link.collect(device.id, arguments.get("report") or {})}
+                if command == "phone_result":
+                    raw = arguments.get("id")
+                    if not isinstance(raw, int) or isinstance(raw, bool):
+                        raise MobileError(400, "bad_request", "id")
+                    return {"ok": link.report(device.id, raw, bool(arguments.get("ok")), str(arguments.get("message", "")))}
+                from app.core.notifications import NotificationCenter
+
+                center = NotificationCenter(hub.mobile.database)
+                if command == "phone_notify":
+                    app_name = redact_codes(str(arguments.get("app", "")))[:40] or "Phone"
+                    title = redact_codes(str(arguments.get("title", "")))[:150]
+                    text = redact_codes(str(arguments.get("text", "")))[:500]
+                    center.add(f"{app_name}: {title}" if title else app_name, text, source=f"phone:{device.name}"[:40],
+                               category="phone", priority="low")
+                    return {"ok": True}
+                text = redact_codes(str(arguments.get("text", "")))[:2000].strip()
+                if not text:
+                    raise MobileError(400, "bad_request", "text")
+                center.add("Shared from your phone", text, source=f"phone:{device.name}"[:40], category="phone")
+                return {"ok": True, "message": "Sent to your PC."}
+
+            return await asyncio.to_thread(_phone)
+
+        if command in ("sync_status", "sync_pull", "sync_push", "sync_forget", "notifications", "push_register"):
+            if hub.mobile is None:
+                raise MobileError(503, "unavailable", "unavailable")
+            from app.remote.sync import SyncError, SyncStore
+
+            store = SyncStore(hub.mobile.database)
+
+            def _int(name: str, default: int) -> int:
+                value = arguments.get(name, default)
+                return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+            def _sync() -> dict:
+                dataset = str(arguments.get("dataset", "todos"))[:20]
+                if command == "push_register":
+                    from app.remote.push import PushError, PushStore
+
+                    try:
+                        PushStore(hub.mobile.database).register(device.id, str(arguments.get("token", "")))
+                    except PushError as exc:
+                        raise SyncError(400, "bad_token", str(exc)) from exc
+                    return {"ok": True, "registered": True,
+                            "note": "pings are only sent when FCM is set up on the PC and notifications sync is on"}
+                if command == "sync_status":
+                    from app.remote.push import PushStore
+
+                    return {"ok": True, "datasets": store.status(device.id),
+                            "push": "registered" if PushStore(hub.mobile.database).registered(device.id) else "not registered (polling)"}
+                if command == "sync_forget":
+                    from app.remote.push import PushStore
+
+                    PushStore(hub.mobile.database).forget(device.id)
+                    return {"ok": True, "removed": store.forget_device(device.id)}
+                if command == "notifications":
+                    return {"ok": True, **store.notifications(device.id, _int("since", 0), _int("limit", 30))}
+                if command == "sync_pull":
+                    return {"ok": True, **store.pull(device.id, dataset, _int("since", 0), _int("limit", 200))}
+                return {"ok": True, **store.push(device.id, dataset, arguments.get("changes"))}
+
+            try:
+                return await asyncio.to_thread(_sync)
+            except SyncError as exc:
+                raise MobileError(exc.status, exc.code, str(exc)) from exc
 
         # everything below touches files, the screen or the system: record/refresh a control session
         if command in STEP_UP_COMMANDS or command in ("list_files", "read_file", "get_file", "screen"):

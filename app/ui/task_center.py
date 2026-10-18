@@ -14,7 +14,7 @@ from app.core import task_center
 
 
 # One colour per state, so running / waiting / paused / failed / completed can be told apart at a glance
-STATUS_COLOR = {"RUNNING": "#1565c0", "QUEUED": "#455a64", "WAITING_FOR_APPROVAL": "#6a1b9a", "PAUSED": "#ef6c00",
+STATUS_COLOR = {"RUNNING": "#1565c0", "QUEUED": "#455a64", "WAITING_FOR_APPROVAL": "#6a1b9a", "PAUSED": "#ef6c00", "RECOVERY_REQUIRED": "#d84315",
                 "COMPLETED": "#2e7d32", "FAILED": "#c62828", "CANCELLED": "#757575", "ROLLED_BACK": "#757575"}
 
 
@@ -69,7 +69,9 @@ class TaskCenterDialog(QDialog):
                 if col == 0 and t.status in STATUS_COLOR:
                     cell.setForeground(QBrush(QColor(STATUS_COLOR[t.status])))
                     cell.setToolTip({"WAITING_FOR_APPROVAL": "Waiting for your go-ahead",
-                                     "PAUSED": "Stopped; say 'continue my mission' or cancel it"}.get(t.status, ""))
+                                     "PAUSED": "Stopped; say 'continue my mission' or cancel it",
+                                     "RECOVERY_REQUIRED": "A step was cut off and may already have happened: "
+                                                          "check, then skip it, retry it or cancel"}.get(t.status, ""))
                 self.table.setItem(row, col, cell)
         self.table.resizeColumnsToContents()
         self._selected()

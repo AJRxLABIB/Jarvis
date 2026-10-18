@@ -174,6 +174,45 @@ _NOTES_START = re.compile(r"^(?:please\s+)?(?:(?:start|begin)\s+(?:taking\s+)?(?
                           r"take\s+(?:meeting\s+|lecture\s+|class\s+)?notes|(?:start|begin)\s+(?:the\s+)?(?:meeting|lecture|class)\s+"
                           r"(?:notes|recording)|(?:লেকচার|মিটিং|ক্লাস)?\s*নোট\s*(?:নাও|নেওয়া\s*শুরু\s*করো|শুরু\s*করো|লিখো))"
                           r"(?:\s+please)?[.!।]*$", re.I)
+_JOURNAL_ADD = re.compile(r"^(?:please\s+)?(?:(?:add|put|write)\s+(?:this\s+)?(?:to|in|into)\s+my\s+(?:journal|diary)|"
+                          r"(?:journal|diary)(?:\s+entry)?|note\s+to\s+self|voice\s+note)\s*[:,\-]\s*(?P<text>\S.{1,1990})$",
+                          re.I | re.S)
+_JOURNAL_ADD_AFTER = re.compile(r"^(?:please\s+)?(?:add|put|write)\s+(?P<text>\S.{1,1990}?)\s+(?:to|in|into)\s+my\s+"
+                                r"(?:journal|diary)[.!]*$", re.I | re.S)
+_JOURNAL_READ = re.compile(r"^(?:(?:show|read)\s+(?:me\s+)?my\s+(?:journal|diary)(?:\s+(?P<today>for\s+today|today))?|"
+                           r"what\s+did\s+i\s+(?:write|journal)\s+today)[?.!]*$", re.I)
+_HABIT_DONE = re.compile(r"^(?:mark|tick(?:\s+off)?)\s+(?:the\s+|my\s+)?habit\s+(?P<name>[\w][\w\s'-]{1,58}?)(?:\s+(?:as\s+)?"
+                         r"(?:done|complete|completed))?(?:\s+for\s+today|\s+today)?[.!]*$|"
+                         r"^i\s+(?:did|finished|completed)\s+(?:my\s+|the\s+)?habit\s+(?P<name2>[\w][\w\s'-]{1,58}?)"
+                         r"(?:\s+today)?[.!]*$", re.I)
+_HABIT_ADD = re.compile(r"^(?:start\s+)?track(?:ing)?\s+(?:the\s+|a\s+|my\s+)?habit\s+(?:of\s+)?(?P<name>[\w][\w\s'-]{1,58}?)[.!]*$",
+                        re.I)
+_HABIT_LEFT = re.compile(r"^(?:which|what)\s+habits?\s+(?:are\s+)?(?:left|remaining)(?:\s+today)?[?.!]*$|"
+                         r"^(?:show\s+(?:me\s+)?)?my\s+habits?(?:\s+streaks?)?[?.!]*$", re.I)
+
+
+def match_journal_habits(cleaned: str) -> ToolCall | None:
+    """'note to self: ...', 'add ... to my journal', 'mark exercise done', 'track the habit drink water'."""
+    entry = _JOURNAL_ADD.match(cleaned) or _JOURNAL_ADD_AFTER.match(cleaned)
+    if entry:
+        return ToolCall("journal", {"action": "add", "text": entry.group("text").strip()})
+    if len(cleaned) > 80:
+        return None
+    read = _JOURNAL_READ.match(cleaned)
+    if read:
+        return ToolCall("journal", {"action": "today" if read.groupdict().get("today") or "today" in cleaned.lower()
+                                    else "list"})
+    habit = _HABIT_ADD.match(cleaned)
+    if habit:
+        return ToolCall("habits", {"action": "add", "name": habit.group("name").strip()})
+    habit = _HABIT_DONE.match(cleaned)
+    if habit:
+        return ToolCall("habits", {"action": "done", "name": (habit.group("name") or habit.group("name2")).strip()})
+    if _HABIT_LEFT.match(cleaned):
+        return ToolCall("habits", {"action": "streaks" if "streak" in cleaned.lower() else "today"})
+    return None
+
+
 _TODO_ADD = re.compile(r"^(?:please\s+)?(?:add|put)\s+(?P<text>.{2,120}?)\s+(?:to|on)\s+(?:my\s+|the\s+)?"
                        r"(?:to-?do\s+list|to\s+do\s+list|list|todos?)(?:\s+(?:for\s+)?(?P<due>today|tomorrow|"
                        r"(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)))?[.!]*$", re.I)
@@ -274,6 +313,14 @@ _SCROLL = re.compile(r"^(?:please\s+)?scroll\s+(?P<dir>up|down)(?:\s+(?P<more>mo
 _DICTATION = re.compile(r"^(?:please\s+)?(?:start\s+(?:dictation|dictating|typing)|type\s+what\s+i\s+say|"
                         r"dictation\s+(?:mode|on)|লিখে\s*যাও)[.!]*$", re.I)
 _JARVIS = [
+    # "show me my screen" / "show my windows" / "mission control" -> the window overview; "show my tabs" -> tab overview
+    (re.compile(r"^(?:please\s+)?(?:can\s+you\s+)?(?:show|display|open|list)\s+(?:me\s+)?(?:all\s+)?(?:of\s+)?"
+                r"(?:my\s+|the\s+)?(?:open(?:ed)?\s+|running\s+)?(?:browser\s+|chrome\s+|edge\s+)?tabs"
+                r"(?:\s+(?:overview|view))?(?:\s+please)?[.!?]*$", re.I), "tab_overview"),
+    (re.compile(r"^(?:please\s+)?(?:can\s+you\s+)?(?:show|display)\s+(?:me\s+)?(?:all\s+)?(?:of\s+)?(?:my\s+|the\s+)?"
+                r"(?:open(?:ed)?\s+|running\s+)?(?:screen|screens|windows|apps|applications|programs)"
+                r"(?:\s+(?:overview|view))?(?:\s+please)?[.!?]*$|^(?:please\s+)?(?:open\s+)?(?:mission\s+control|window\s+"
+                r"overview|task\s+view|all\s+(?:my\s+)?windows)[.!?]*$", re.I), "window_overview"),
     (re.compile(r"^(?:open|show)\s+(?:your|jarvis'?s?|the\s+jarvis)\s+settings[.!]*$", re.I), "open_settings"),
     (re.compile(r"^(?:open|show)\s+(?:my\s+|the\s+)?memor(?:y|ies)(?:\s+window)?[.!]*$", re.I), "open_memory"),
     (re.compile(r"^(?:open|show)\s+(?:the\s+)?privacy(?:\s+dashboard)?[.!]*$", re.I), "open_privacy"),
@@ -294,10 +341,15 @@ _JARVIS = [
     (re.compile(r"^(?:new\s+conversation|start\s+over|forget\s+this\s+conversation)[.!]*$", re.I), "new_conversation"),
     (re.compile(r"^(?:please\s+)?(?:hide\s+(?:yourself|your\s+window|the\s+(?:jarvis\s+)?window|jarvis)|"
                 r"minimi[sz]e\s+(?:yourself|your\s+window|the\s+jarvis\s+window|jarvis)|"
-                r"go\s+to\s+the\s+background|get\s+out\s+of\s+(?:the|my)\s+way|show\s+me\s+my\s+(?:screen|desktop))"
+                r"go\s+to\s+the\s+background|get\s+out\s+of\s+(?:the|my)\s+way|show\s+me\s+my\s+desktop)"
                 r"(?:\s+please)?(?:\s*[,.;]?\s*(?:i|so|because)\s+.{0,60})?[.!]*$", re.I), "hide_window"),
+    (re.compile(r"^(?:please\s+)?(?:(?:refresh|reload)(?:\s+(?:yourself|jarvis|the\s+assistant))?|"
+                r"(?:restart|reboot|relaunch|refresh|reload)\s+(?:yourself|jarvis|the\s+assistant))"
+                r"(?:\s+(?:now|please))?[.!]*$", re.I), "restart_jarvis"),
     (re.compile(r"^(?:show\s+yourself|show\s+your\s+window|come\s+back|where\s+are\s+you)[.!?]*$", re.I), "show_window"),
     (re.compile(r"^(?:open|run|start)\s+(?:the\s+)?setup\s+wizard[.!]*$", re.I), "setup_wizard"),
+    (re.compile(r"^(?:please\s+)?(?:mute|turn\s+off|switch\s+off)\s+(?:the\s+|your\s+|my\s+)?(?:microphone|mic)"
+                r"(?:\s+(?:now|please))?[.!]*$", re.I), "mute_microphone"),
     (re.compile(r"^(?:make|run|give\s+me|show)?\s*(?:a\s+|the\s+|your\s+)?health\s+(?:report|check)[.!]*$", re.I),
      "health_report"),
     (re.compile(r"^(?:compare|test)\s+(?:the\s+|my\s+)?(?:ai\s+)?models[.!]*$", re.I), "compare_models"),
@@ -427,6 +479,7 @@ _FOCUS_START = re.compile(
     r"(?:let\s+me\s+|i\s+(?:want|need)\s+to\s+)?focus|focus\s+mode|do\s+not\s+disturb(?:\s+mode)?)"
     r"(?:\s+(?:for|during)\s+(?P<amount>\d{1,3}|an?|one|two|half\s+an?)\s*(?P<unit>minutes?|mins?|hours?|hrs?))?"
     r"(?P<close>\s+(?:and|,)\s+close\s+(?:the\s+)?(?:distractions|distracting\s+apps|games|chat\s+apps))?"
+    r"(?P<keep>\s+(?:and|,)\s+keep\s+(?:the\s+|all\s+)?(?:distractions|distracting\s+apps|games|chat\s+apps|them)\s+closed)?"
     r"(?:\s+please)?[.!]*$", re.I)
 _FOCUS_STOP = re.compile(r"^(?:jarvis,?\s+)?(?:stop|end|cancel|turn\s+off|finish)\s+(?:the\s+)?(?:focus(?:\s+mode)?|"
                          r"deep\s+work|pomodoro|do\s+not\s+disturb)(?:\s+please)?[.!]*$|^মনোযোগ\s+(?:মোড\s+)?বন্ধ\s+করো[।.!]*$",
@@ -455,6 +508,9 @@ def focus_command(text: str) -> ToolCall | None:
     arguments = {"action": "start", "minutes": minutes}
     if match.groupdict().get("close"):
         arguments["close_distractions"] = True
+    if match.groupdict().get("keep"):
+        arguments["close_distractions"] = True
+        arguments["keep_closed"] = True
     return ToolCall("focus_mode", arguments)
 
 
@@ -621,6 +677,12 @@ _E = r"(?:\s+please)?[.!?]*$"
 _LOOK_SCREEN = re.compile(_P + r"(?:visuali[sz]e[ds]?|look\s+at|describe|check|analy[sz]e|read)\s+(?:my|the|this)\s+"
                           r"(?:screen|desktop)|^(?:please\s+)?(?:jarvis\s*,?\s+)?(?:what'?s|what\s+is|what\s+do\s+you\s+"
                           r"see|what\s+can\s+you\s+see)\s+on\s+(?:my|the)\s+(?:screen|desktop)" + _E, re.I)
+# "can you see my screen", "what am I looking at" -> describe the screen; "read this" -> read the window's text
+_SEE_SCREEN = re.compile(_P + r"(?:can\s+you\s+see\s+(?:my|the|this)\s+(?:screen|window)|what\s+am\s+i\s+looking\s+at|"
+                         r"what'?s\s+(?:on|in)\s+this\s+(?:window|page|app)|look\s+at\s+this|see\s+my\s+screen)" + _E, re.I)
+_READ_THIS = re.compile(_P + r"(?:read\s+(?:this|that|it|this\s+(?:page|window|text)|what'?s\s+(?:here|written|on\s+"
+                        r"(?:the|my)\s+screen))(?:\s+(?:to|for)\s+me)?|read\s+(?:me\s+)?(?:the\s+)?(?:text\s+on\s+)?(?:this|"
+                        r"the)\s+(?:screen|window))" + _E, re.I)
 # "restart Spotify", "relaunch Chrome" (the PC words are power_control's)
 _RESTART_APP = re.compile(_P + r"(?:restart|relaunch|reopen|reload)\s+(?:the\s+|my\s+)?(?P<name>[\w .+&'-]{2,40}?)"
                           r"(?:\s+app(?:lication)?)?(?:\s+for\s+me)?" + _E, re.I)
@@ -859,6 +921,16 @@ _MISSION_ROLLBACK = re.compile(_P + r"(?:roll\s*back|undo)\s+(?:my\s+|the\s+)?(?
 _TASK_CENTER = re.compile(_P + r"(?:(?:show|list|open)\s+(?:me\s+)?(?:the\s+|my\s+)?(?:background\s+tasks|"
                           r"task\s+cent(?:er|re))|what(?:'s|\s+is)\s+running\s+in\s+the\s+background)" + _E, re.I)
 _MY_DAY = re.compile(_P + r"(?:(?:show|open)\s+(?:me\s+)?my\s+(?:day|to-?do\s+(?:window|screen)|planner)|my\s+day)" + _E, re.I)
+_STUDIO = re.compile(_P + r"(?:open|show)\s+(?:the\s+|my\s+)?(?:workflow\s+(?:studio|editor)|automation\s+(?:studio|editor))" + _E, re.I)
+_RECORDED_ACTION = re.compile(r"\b(?:open|opened|run|ran|start|started|play|played|close|closed|search|searched|back\s?up|backed|"
+                              r"backup|finish|finished|complete|completed|create|created|send|sent|save|saved|lock|locked|"
+                              r"screenshot|launch|launched|update|updated|focus|focused|schedule|scheduled|remind|reminded)\b", re.I)
+_HISTORY_LAST = re.compile(_P + r"(?:when\s+(?:did\s+i|was\s+the\s+last\s+time\s+i|have\s+i)\s+(?:last\s+)?|when\s+did\s+you\s+last\s+)(?P<what>[\w' ]{3,80}?)(?:\s+(?P<period>today|yesterday|this\s+week|this\s+morning|last\s+night))?" + _E, re.I)
+_HISTORY_COUNT = re.compile(_P + r"how\s+many\s+times\s+(?:did|have)\s+(?:i|you)\s+(?P<what>[\w' ]{3,80}?)(?:\s+(?P<period>today|yesterday|this\s+week|this\s+morning|last\s+night))?" + _E, re.I)
+_SECURITY_CENTER = re.compile(_P + r"(?:open|show)\s+(?:the\s+|my\s+)?security\s+(?:center|centre|dashboard)" + _E, re.I)
+_PLAN_DAY = re.compile(_P + r"(?:plan\s+my\s+day|make\s+(?:me\s+)?a\s+plan\s+for\s+today|what\s+should\s+i\s+(?:do|work\s+on)\s+(?:next|today))" + _E, re.I)
+_REPLAN_DAY = re.compile(_P + r"(?:replan(?:\s+my\s+day)?|re-?plan(?:\s+my\s+day)?)(?:\s*,?\s*i\s+(?:lost|have\s+lost)\s+(?P<n>\d{1,3})\s*(?P<u>minutes?|mins?|hours?|hrs?))?" + _E, re.I)
+_REVIEW_DAY = re.compile(_P + r"(?:review\s+my\s+day|how\s+did\s+(?:my\s+)?(?:plan|day)\s+go|did\s+i\s+(?:follow|stick\s+to)\s+my\s+plan)" + _E, re.I)
 _DAY_STATUS = re.compile(_P + r"(?:how(?:'s|\s+is)\s+my\s+day(?:\s+going)?|what(?:'s|\s+is)\s+on\s+my\s+plate|"
                          r"(?:what\s+did\s+i|summari[sz]e\s+what\s+i)\s+(?:complete|completed|finish|finished|do|did)"
                          r"(?:\s+today)?|end\s+of\s+day\s+summary)" + _E, re.I)
@@ -1111,6 +1183,24 @@ def match_goal_or_mission(cleaned: str) -> ToolCall | None:
         return ToolCall("pc_health", {})
     if _MY_DAY.match(cleaned):
         return ToolCall("jarvis_control", {"action": "my_day"})
+    if _REVIEW_DAY.match(cleaned):
+        return ToolCall("plan_my_day", {"review": True})
+    replan = _REPLAN_DAY.match(cleaned)
+    if replan:
+        lost = int(replan.group("n") or 0) * (60 if (replan.group("u") or "").lower().startswith("h") else 1)
+        return ToolCall("plan_my_day", {"interruption_minutes": min(lost, 960)})
+    if _PLAN_DAY.match(cleaned):
+        return ToolCall("plan_my_day", {})
+    if _STUDIO.match(cleaned):
+        return ToolCall("jarvis_control", {"action": "workflow_studio"})
+    if _SECURITY_CENTER.match(cleaned):
+        return ToolCall("jarvis_control", {"action": "security_center"})
+    history = _HISTORY_COUNT.match(cleaned) or _HISTORY_LAST.match(cleaned)
+    if history and _RECORDED_ACTION.search(history.group("what")):      # only things Jarvis itself does and records
+        args = {"kind": "count" if _HISTORY_COUNT.match(cleaned) else "last", "what": history.group("what").strip()}
+        if history.group("period"):
+            args["period"] = history.group("period")
+        return ToolCall("ask_history", args)
     if _DAY_STATUS.match(cleaned):
         return ToolCall("command_center", {"evening": bool(re.search(r"complet|finish|did|do\b|end\s+of\s+day", cleaned, re.I))})
     if _LIST_AGENTS.match(cleaned):
@@ -1233,6 +1323,9 @@ def match_shortcut(
     session = match_sessions_and_research(cleaned) if len(cleaned) <= 320 else None
     if session is not None:
         return session
+    personal = match_journal_habits(cleaned)
+    if personal is not None:
+        return personal
     if len(cleaned) > 60:
         return None
     level = level_command(cleaned)
@@ -1306,6 +1399,10 @@ def match_shortcut(
         return ToolCall("restart_application", {"name": match.group("name").strip(" ,.")})
     if _LOOK_SCREEN.match(cleaned):
         return ToolCall("describe_screen", {"target": "screen"})
+    if _SEE_SCREEN.match(cleaned):
+        return ToolCall("describe_screen", {"target": "window"})
+    if _READ_THIS.match(cleaned):
+        return ToolCall("read_screen", {"target": "window"})
     if _UPDATE.match(cleaned):
         return ToolCall("windows_update", {"action": "install"})
     if _UPDATE_LIST.match(cleaned):

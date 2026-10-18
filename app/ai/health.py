@@ -27,6 +27,9 @@ class _Record:
     open_until: float = 0.0
     last_error: str = ""
     latencies: deque = field(default_factory=lambda: deque(maxlen=LATENCY_WINDOW))
+    first_tokens: deque = field(default_factory=lambda: deque(maxlen=LATENCY_WINDOW))
+    tool_calls: int = 0
+    tool_call_errors: int = 0       # unknown tool name or malformed arguments - the model's fault, not the tool's
 
 
 class ModelHealth:
@@ -43,6 +46,16 @@ class ModelHealth:
         rec.consecutive_failures = 0
         rec.open_until = 0.0
         rec.latencies.append(max(0.0, seconds))
+
+    def first_token(self, model: str, seconds: float) -> None:
+        """Time until the first piece of an answer arrived (what makes a reply feel fast or slow)."""
+        self._rec(model).first_tokens.append(max(0.0, seconds))
+
+    def tool_call(self, model: str, well_formed: bool) -> None:
+        """One tool call the model chose: ``well_formed`` False = a tool that doesn't exist or unusable arguments."""
+        rec = self._rec(model)
+        rec.tool_calls += 1
+        rec.tool_call_errors += 0 if well_formed else 1
 
     def failure(self, model: str, error: str) -> None:
         rec = self._rec(model)
@@ -67,8 +80,13 @@ class ModelHealth:
         out = {}
         for name, rec in self._records.items():
             avg = sum(rec.latencies) / len(rec.latencies) if rec.latencies else None
+            first = sum(rec.first_tokens) / len(rec.first_tokens) if rec.first_tokens else None
             out[name] = {"calls": rec.total_calls, "failures": rec.total_failures,
                          "avg_seconds": round(avg, 2) if avg is not None else None,
+                         "first_token_seconds": round(first, 2) if first is not None else None,
+                         "tool_calls": rec.tool_calls,
+                         "tool_call_ok_rate": (round(1 - rec.tool_call_errors / rec.tool_calls, 3)
+                                               if rec.tool_calls else None),
                          "skipped_for": round(self.cooldown_left(name)), "last_error": rec.last_error}
         return out
 

@@ -66,7 +66,26 @@ def _code(ctx: ToolContext, proposal_id: int) -> Proposal:
 # ------------------------------------------------------------------ improve yourself / list / show
 
 
+def _growth_note(ctx: ToolContext) -> str:
+    """How the learning loop is doing, and the other lever: tuning the AI itself (app/agent/growth.py)."""
+    try:
+        from app.agent.growth import Growth
+
+        report = Growth(ctx.database).report()
+    except Exception:
+        return ""
+    rate = (f" I learn from every request: {report['success_rate']:.0%} of the last {report['turns']} went right, "
+            f"{report['skills']} skills and {report['lessons']} lessons so far." if report.get("turns") else "")
+    return rate + " Say 'tune your AI' to test a better AI set-up on your real requests."
+
+
 def improve_yourself(_: NoArgs, ctx: ToolContext) -> ToolResult:
+    result = _improve_yourself(ctx)
+    note = _growth_note(ctx)
+    return ToolResult.success(result.message + note, **(result.data or {})) if result.ok and note else result
+
+
+def _improve_yourself(ctx: ToolContext) -> ToolResult:
     store = _store(ctx)
     findings = analyze.failures(ctx.database)
     added = []

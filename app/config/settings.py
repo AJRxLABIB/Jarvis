@@ -58,6 +58,7 @@ class Settings(BaseModel):
 
     assistant_name: str = "Jarvis"
     user_address: str = ""  # e.g. "sir" or a name; empty = no honorific
+    user_name: str = Field(default="", max_length=40)  # your name, shown on the start screen (empty = "THIS PC")
     ai_provider: str = "ollama"
     ollama_host: str = "http://127.0.0.1:11434"
     ai_model: str = ""  # empty = choose from installed Ollama models
@@ -79,6 +80,16 @@ class Settings(BaseModel):
     memory_suggestions: bool = True  # offer lasting facts you mention as memories; nothing is saved until you accept
     tone_aware: bool = True  # sound rushed or tired -> shorter, gentler answers (speed and loudness only)
     document_folders: str = Field(default="", max_length=2000)  # ;-separated folders for "ask my documents"
+    clipboard_history: bool = False  # remember what you copy (text only; secrets and card numbers are never kept)
+    clipboard_retention_days: int = Field(default=7, ge=1, le=90)
+    ai_auto_switch: bool = False  # switch to a benchmark-backed model when the evidence says so (app/ai/switching.py)
+    core_renderer: Literal["auto", "gl", "painter"] = "auto"   # the 3D core: auto = OpenGL when possible, else painter
+    visual_quality: Literal["auto", "low", "balanced", "high"] = "auto"
+    core_speed: float = Field(default=1.0, ge=0.3, le=2.0)       # core animation speed
+    glow_intensity: float = Field(default=1.0, ge=0.3, le=2.0)
+    reduced_motion: bool = False                                  # calm motion: slower core, no sway or breathing
+    core_hud_rings: bool = False                                  # the flat rings / gauges / tick bezel around the core
+    taint_lockdown: bool = False  # after reading web/email/documents, the model is not even offered send/save tools
     ai_think: bool = False  # let "thinking" models reason first (slower)
     ollama_keep_alive: str = "30m"
     context_max_messages: int = Field(default=24, ge=2, le=200)
@@ -88,6 +99,7 @@ class Settings(BaseModel):
     wake_word_engine: str = "auto"  # auto | openwakeword | whisper
     wake_word_threshold: float = Field(default=0.5, ge=0.1, le=0.95)  # lower = more sensitive
     wake_on_name: bool = True  # also wake on just the name ("Jarvis", "Jarvis, are you there?")
+    fcm_service_account: Path | None = None  # Firebase service-account JSON for phone push wake-ups (your own project)
     wake_word_model: Path | None = None  # custom openWakeWord .onnx for another wake phrase
     # once woken, keep the conversation going without the wake phrase until this long without a request
     follow_up_seconds: float = Field(default=20.0, ge=0, le=900)
@@ -102,6 +114,7 @@ class Settings(BaseModel):
     tts_neural_voice_bn: str = Field(default="bn-BD-PradeepNeural", max_length=60)
     tts_kokoro_voice: str = Field(default="bm_george", max_length=40)  # offline English voice (TTS_ENGINE=kokoro)
     tts_sapi_voice: str = ""  # part of a Windows voice name, e.g. "Zira"; empty = default
+    tts_style: Literal["natural", "classic"] = "natural"   # natural = human, professional; classic = the old robotic edge
     tts_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     tts_volume: float = Field(default=1.0, ge=0.0, le=1.0)
     microphone_enabled: bool = True
@@ -119,7 +132,7 @@ class Settings(BaseModel):
     personal_wake_check: bool = True  # after Menu -> Teach me my wake word: your recordings confirm each wake-up
     stt_min_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
     vad_engine: str = "auto"  # auto = neural (Silero) speech detection if available, else energy
-    silence_timeout: float = Field(default=0.9, ge=0.3, le=5.0)
+    silence_timeout: float = Field(default=0.7, ge=0.3, le=5.0)   # unfinished sentences still get a grace period
     speech_start_timeout: float = Field(default=6.0, ge=1.0, le=30.0)
     max_record_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
     offline_mode: str = "auto"  # auto = online, offline only while there's no internet | on | off
@@ -195,12 +208,25 @@ class Settings(BaseModel):
     barge_in: bool = True  # "Hey Jarvis" while it's speaking stops the speech and listens
     voice_interrupt: bool = True  # talk over it ("stop", or a new command) while it speaks (needs a GPU)
     voice_confirm: bool = True  # answer "yes"/"no" (হ্যাঁ/না) out loud to its questions
+    autonomy: Literal["observe", "suggest", "routine", "approval"] = "routine"   # how much Jarvis may do by itself
+    full_power: bool = False   # nothing is off-limits: CRITICAL actions ask you ON SCREEN instead of being blocked
+    autonomy_remote: Literal["observe", "suggest", "routine", "approval"] = "routine"  # requests from a phone
+    autonomy_ask_categories: str = Field(default="", max_length=300)    # tool categories that always ask
+    autonomy_block_categories: str = Field(default="", max_length=300)  # tool categories switched off
     speaker_verification: bool = False  # only the enrolled voice can give commands (Menu -> Enroll my voice)
     speaker_threshold: float = Field(default=0.45, ge=0.1, le=0.95)  # higher = stricter
     speak_typed_replies: bool = False  # also speak answers to typed messages
+    show_sources: bool = True  # under answers that used tools / saved memories: where the facts came from
+    learn_from_use: bool = True  # learn skills & lessons from every request's real outcome (app/agent/growth.py)
     monitor_interval: float = Field(default=3.0, ge=1.0, le=60.0)  # seconds between system-monitor updates
     dev_command_timeout: float = Field(default=120.0, ge=5, le=3600)
     auto_backup: bool = True  # a verified copy of the database once a day (data\\backups, newest 7 kept)
+    memory_event_retention_days: int = Field(default=0, ge=0, le=3650)  # forget what Jarvis recorded itself after N days (0 = keep)
+    metrics_retention_days: int = Field(default=14, ge=1, le=90)  # how long health readings are kept
+    github_token: str = Field(default="", max_length=400, repr=False)  # read-only GitHub access token (secret)
+    google_client_id: str = Field(default="", max_length=200)  # your own Google OAuth "Desktop app" client (Calendar / Drive)
+    google_client_secret: str = Field(default="", max_length=200, repr=False)  # its secret (secret setting)
+    process_history: bool = False  # OFF by default: also record the top programs' names with CPU / memory numbers (for per-program baselines)
     metrics_history: bool = True  # a light record of CPU / memory / disk / battery (once a minute, 14 days) for trends
 
     @field_validator("assistant_name")
@@ -272,6 +298,13 @@ class Settings(BaseModel):
         value = value.lower()
         if value not in WAKE_WORD_ENGINES:
             raise ValueError(f"must be one of {', '.join(WAKE_WORD_ENGINES)}")
+        return value
+
+    @field_validator("fcm_service_account")
+    @classmethod
+    def _check_fcm_file(cls, value: Path | None) -> Path | None:
+        if value is not None and (not value.is_absolute() or value.suffix.lower() != ".json"):
+            raise ValueError("must be the absolute path of the Firebase service-account .json file")
         return value
 
     @field_validator("wake_word_model")
@@ -438,7 +471,8 @@ class Settings(BaseModel):
             raise ValueError(f"must be one of {', '.join(LOG_LEVELS)}")
         return value
 
-    @field_validator("data_dir", "dev_project_dir", "screenshot_dir", "wake_word_model", "jarvis_source_dir", mode="before")
+    @field_validator("data_dir", "dev_project_dir", "screenshot_dir", "wake_word_model", "jarvis_source_dir", "fcm_service_account",
+                     mode="before")
     @classmethod
     def _empty_data_dir(cls, value: Any) -> Any:
         if value is None or (isinstance(value, str) and not value.strip()):

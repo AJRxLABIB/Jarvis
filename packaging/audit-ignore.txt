@@ -1,0 +1,3 @@
+# Accepted dependency vulnerabilities (CI's pip-audit step skips these IDs). One per line:
+#   <VULN-ID>  # why it is acceptable, review by YYYY-MM-DD
+# Empty on purpose: every known vulnerability in requirements.txt currently fails the build.

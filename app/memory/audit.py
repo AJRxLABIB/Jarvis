@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.core.auditchain import seal
 from app.memory.database import Database, utc_now_iso
 from app.utils.logging_setup import get_logger
 from app.utils.redaction import redact_value
@@ -27,11 +28,12 @@ class AuditLog:
         run = current()
         try:
             with self._db.transaction() as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "INSERT INTO audit_log (ts, event, tool, permission_level, decision, details, run_id) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (utc_now_iso(), event, tool, level, decision, payload, run.id if run is not None else None),
                 )
+                seal(conn, int(cursor.lastrowid))
         except Exception:  # auditing must never break the action itself
             _log.warning("could not write audit entry", exc_info=True)
 

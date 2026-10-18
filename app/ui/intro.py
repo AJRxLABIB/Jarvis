@@ -19,15 +19,16 @@ from typing import Callable
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QConicalGradient, QFont, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QWidget
+from app.ui.styles.tokens import COLOR
 
-CYAN = QColor("#22d3ee")
-BLUE = QColor("#38bdf8")
-GOLD = QColor("#f5b642")
+CYAN = QColor(COLOR["cyan"])
+BLUE = QColor(COLOR["accent"])
+GOLD = QColor(COLOR["gold"])
 ORANGE = QColor("#f59e0b")
-GREEN = QColor("#34d399")
-RED = QColor("#f87171")
-DIM = QColor("#5f7f9c")
-TEXT = QColor("#d6e6f5")
+GREEN = QColor(COLOR["ok"])
+RED = QColor(COLOR["danger"])
+DIM = QColor(COLOR["dim"])
+TEXT = QColor(COLOR["text"])
 KIND_COLORS = {"ok": GREEN, "warn": ORANGE, "bad": RED, "wait": GOLD, "info": CYAN}
 GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&@$"
 
@@ -68,12 +69,13 @@ class IntroScreen(QWidget):
     finished = Signal()  # the command center should appear now (the intro keeps fading out on top)
 
     def __init__(self, title: str, subtitle: str, status_lines: list[StatusLine],
-                 clock: Callable[[], float] = time.monotonic, wait_for_ready: bool = False) -> None:
+                 clock: Callable[[], float] = time.monotonic, wait_for_ready: bool = False, owner: str = "") -> None:
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setCursor(Qt.CursorShape.BlankCursor)
         self.title = title.upper()
         self.subtitle = subtitle.upper()
+        self.owner = (owner.strip() or "THIS PC").upper()[:40]  # heading of the right-hand panel
         self.lines = status_lines
         self._clock = clock
         self._t0: float | None = None
@@ -381,7 +383,7 @@ class IntroScreen(QWidget):
                 p.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
                 p.restore()
         sub = span(t, 2.3, 0.6)
-        if sub > 0:
+        if sub > 0 and self.subtitle:
             p.setFont(mono(11, spacing=4))
             p.setPen(DIM.lighter(130))
             typed = self.subtitle[: int(len(self.subtitle) * sub)]
@@ -439,7 +441,7 @@ class IntroScreen(QWidget):
         p.setFont(mono(9, bold=True, spacing=2))
         p.setPen(QColor(34, 211, 238, int(255 * show)))
         right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        p.drawText(QRectF(x - 300, y - 14, 300, 20), right, "THIS PC")
+        p.drawText(QRectF(x - 300, y - 14, 300, 20), right, self.owner)
         p.setPen(QPen(QColor(34, 211, 238, int(90 * show)), 1))
         p.drawLine(QPointF(x - 300 * ease(show), y + 8), QPointF(x, y + 8))
         p.setFont(mono(9))

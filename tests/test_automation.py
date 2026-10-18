@@ -295,3 +295,20 @@ def test_workflow_direct_command() -> None:
     call = match_shortcut("start my development environment", lambda n: None, known)
     assert call == ToolCall("run_workflow", {"name": "development environment"})
     assert match_shortcut("start my car", lambda n: None, known) is None
+
+
+def test_missed_repeats_are_reported_and_a_sleep_gap_does_not_burst(db: Database) -> None:
+    """A daily task missed while Jarvis was closed is TOLD (not silently skipped); after the PC slept for a day, an
+    old run is skipped with a notice instead of firing late, while one that is only minutes late still runs."""
+    calls, clock = [], Clock(NOW)
+    scheduler, notes, _ = scheduler_for(db, calls, clock)
+    trigger = DailyTrigger(time="16:00")
+    task, _ = scheduler.store.save("work apps", trigger, steps("step_one"), trigger.next_run(NOW))
+    clock.now = NOW.replace(hour=20)                                     # closed through 16:00
+    asyncio.run(scheduler.catch_up())
+    assert notes and notes[-1][0] == "Missed" and "skipped, not run late" in notes[-1][1] and calls == []
+    assert scheduler.store.get(task.id).next_run_at.startswith("2026-09-24T16:00")
+    asyncio.run(scheduler.tick())                                       # the loop is running from here on
+    clock.now = clock.now + timedelta(days=1, hours=2)                  # PC asleep through the next 16:00
+    assert asyncio.run(scheduler.tick()) == [] and calls == []
+    assert "while the PC was asleep" in notes[-1][1]

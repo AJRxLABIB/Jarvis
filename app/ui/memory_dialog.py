@@ -37,6 +37,10 @@ class MemoryDialog(QDialog):
 
         add = QPushButton("Add...")
         add.clicked.connect(self.add)
+        edit_button = QPushButton("Edit...")
+        edit_button.setToolTip("Change the selected memory's words (the old wording is kept in its history)")
+        edit_button.setAccessibleName("Edit the selected memory")
+        edit_button.clicked.connect(self.edit_selected)
         why = QPushButton("Why?")
         why.setToolTip("Why Jarvis remembers it and where it came from")
         why.clicked.connect(self.explain_selected)
@@ -51,6 +55,7 @@ class MemoryDialog(QDialog):
         close.clicked.connect(self.accept)
         buttons = QHBoxLayout()
         buttons.addWidget(add)
+        buttons.addWidget(edit_button)
         buttons.addWidget(why)
         buttons.addWidget(self.toggle_button)
         buttons.addWidget(self.delete_button)
@@ -179,6 +184,23 @@ class MemoryDialog(QDialog):
             QMessageBox.warning(self, "Not saved", str(exc))
             return
         self.refresh()
+
+    def edit_selected(self, text: str | None = None) -> bool:
+        ids = self.selected_ids()
+        memory = self.manager.get(ids[0]) if ids else None
+        if memory is None:
+            return False
+        if text is None:
+            text, ok = QInputDialog.getText(self, "Edit memory", "What should it say?", text=memory.content)
+            if not ok:
+                return False
+        try:
+            self.manager.edit(memory, text)
+        except ToolError as exc:
+            QMessageBox.warning(self, "Not changed", str(exc))
+            return False
+        self.refresh()
+        return True
 
     def delete_selected(self) -> None:
         ids = self.selected_ids()

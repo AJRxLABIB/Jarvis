@@ -147,3 +147,16 @@ def test_task_center_colours_the_states(tmp_path: Path) -> None:
     MissionStore(database).create("x1", validate_plan([step("breaks", "a")], ex.registry, ex.context))
     dialog = TaskCenterDialog(database, lambda text: None)
     assert dialog.table.item(0, 0).foreground().color().name() == STATUS_COLOR["QUEUED"]
+
+
+def test_plan_buttons_show_the_plan_and_the_review(tmp_path: Path) -> None:
+    from app.ui.my_day import MyDayDialog
+
+    ctx = ctx_for(tmp_path)
+    p.add_todo(p.TodoArgs(text="Write the report", due="today", minutes=60), ctx)
+    dialog = MyDayDialog(ctx)
+    assert dialog.table.columnCount() == 7 and dialog.table.item(0, 6).text() == "60"
+    dialog.plan_button.click()
+    assert "Write the report" in dialog.today_text.toPlainText() and "Plan for" in dialog.today_text.toPlainText()
+    dialog.review_button.click()
+    assert "planned" in dialog.today_text.toPlainText().lower()

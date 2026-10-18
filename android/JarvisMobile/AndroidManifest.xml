@@ -13,6 +13,14 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- "open an app on my phone": see the launchable apps (Android 11+ package visibility) -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application android:label="JARVIS Mobile" android:icon="@mipmap/ic_launcher" android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true" android:label="JARVIS Mobile"
@@ -28,6 +36,24 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="jarvismobile" />
                 <data android:scheme="jarviswake" />
+            </intent-filter>
+        </activity>
+        <!-- Opt-in background check for to-do changes and generic PC notices (Settings > Sync). Polling, not push. -->
+        <service android:name=".SyncJob" android:exported="false" android:permission="android.permission.BIND_JOB_SERVICE" />
+        <!-- Forwards notifications only after you grant notification access AND switch forwarding on in the app. -->
+        <service android:name=".NotifyForward" android:exported="true" android:label="JARVIS Mobile"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <!-- Share > JARVIS Mobile: text or a link to the PC -->
+        <activity android:name=".ShareActivity" android:exported="true" android:label="Send to my PC"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
     </application>

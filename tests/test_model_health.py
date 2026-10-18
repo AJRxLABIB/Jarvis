@@ -56,7 +56,8 @@ def test_failing_smart_model_is_skipped_after_repeated_failures() -> None:
     assert not ai.health.available("qwen3:8b")
     attempts = len(fake.requests) if hasattr(fake, "requests") else None
     response = asyncio.run(ai.chat([ChatMessage.user("explain it")], smart=True))
-    assert response.model == "qwen3:4b-instruct" and ai.last_route["fallback"] is None  # not even tried
+    assert response.model == "qwen3:4b-instruct"                                      # not even tried ...
+    assert "qwen3:8b kept failing" in (ai.last_route["fallback"] or "")                # ... and you are told why
     if attempts is not None:
         assert len(fake.requests) == attempts + 1  # one request, not two
     assert ai.health.summary()["qwen3:8b"]["failures"] == FAILURES_TO_OPEN

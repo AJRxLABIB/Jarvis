@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QTabWidget,
+                               QVBoxLayout, QWidget)
 
 from app.core import knowledge_graph
 
@@ -14,7 +15,7 @@ class KnowledgeDialog(QDialog):
     def __init__(self, ctx, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Knowledge")
-        self.setMinimumSize(720, 480)
+        self.setMinimumSize(820, 560)
         self.ctx = ctx
         counts = knowledge_graph.summary(ctx)
         overview = QLabel("What I know, linked: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) +
@@ -38,14 +39,35 @@ class KnowledgeDialog(QDialog):
         examples.setMaximumHeight(110)
         close = QPushButton("Close")
         close.clicked.connect(self.accept)
-        layout = QVBoxLayout(self)
+        ask_page = QWidget()
+        layout = QVBoxLayout(ask_page)
         layout.addWidget(overview)
         layout.addLayout(row)
         layout.addWidget(examples)
         layout.addWidget(self.answer)
         layout.addWidget(QLabel("Evidence"))
         layout.addWidget(self.evidence, 1)
-        layout.addWidget(close)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(ask_page, "Ask")
+        self._browser = None
+        self.tabs.addTab(QWidget(), "Browse")
+        self.tabs.currentChanged.connect(self._open_browser)
+        outer = QVBoxLayout(self)
+        outer.addWidget(self.tabs, 1)
+        outer.addWidget(close)
+
+    def _open_browser(self, index: int) -> None:
+        """The map is built the first time Browse is opened (reading projects and files takes a moment)."""
+        if index != 1 or self._browser is not None:
+            return
+        from app.ui.graph_browser import GraphBrowser
+
+        self._browser = GraphBrowser(self.ctx)
+        self.tabs.blockSignals(True)
+        self.tabs.removeTab(1)
+        self.tabs.insertTab(1, self._browser, "Browse")
+        self.tabs.setCurrentIndex(1)
+        self.tabs.blockSignals(False)
 
     def ask(self) -> None:
         text = self.question.text().strip()

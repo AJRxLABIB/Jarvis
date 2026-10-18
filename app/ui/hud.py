@@ -115,7 +115,7 @@ class HexBackground(QWidget):
         if not self.isVisible() or self.window().isMinimized():
             return True  # keep the clock, draw nothing
         if now - getattr(self, "_last_frame", 0.0) < 1 / 15:
-            return True  # the backdrop moves slowly: 15 frames a second are plenty
+            return True  # the backdrop moves slowly; the holographic band is paced by the core (holo_frame)
         self._last_frame = now
         if now - getattr(self, "_covered_at", -10.0) > 1.0:
             self._covered = self._covered_region()
@@ -151,7 +151,50 @@ class HexBackground(QWidget):
             mote[0] = (mote[0] + mote[2] * dt) % max(1, w)
             mote[1] = (mote[1] + mote[3] * dt) % max(1, h)
             real_update(QRect(int(mote[0] - 6), int(mote[1] - 6), 12, 12))
+        if not self.holo_paced:
+            band = self._holo_band()
+            if band is not None:              # no core to pace it: repaint the band with the backdrop
+                real_update(band)
         return True
+
+    holo_paced = False      # True once the 3D core drives holo_frame()
+    HOLO_FPS = 40
+
+    def holo_frame(self) -> None:
+        """Called after each core frame: repaints the holographic band at up to HOLO_FPS, in step with the core."""
+        import time as _time
+
+        self.holo_paced = True
+        now = _time.perf_counter()
+        if now - getattr(self, "_holo_at", 0.0) < 1.0 / self.HOLO_FPS - 0.004:
+            return
+        self._holo_at = now
+        band = self._holo_band()
+        if band is not None and self.isVisible():
+            if getattr(self, "_covered", None) is None:
+                self._covered = self._covered_region()
+            self._update_gaps(band)
+
+    # ---- the holographic layer: energy streaks and audio waves from the core across the whole window
+    holo_source = None   # callable -> (centre QPointF in this widget, radius, colour QColor, painter-owner) or None
+
+    def _holo(self):
+        source = self.holo_source
+        if source is None:
+            return None
+        try:
+            return source()
+        except RuntimeError:                  # the core widget is being destroyed
+            return None
+
+    def _holo_band(self):
+        from PySide6.QtCore import QRect
+
+        holo = self._holo()
+        if holo is None:
+            return None
+        c, R = holo[0], holo[1]
+        return QRect(0, int(c.y() - R * 0.75), self.width(), int(R * 1.5))
 
     def _covered_region(self):
         """Where the panels are: the background shows only in the gaps, so only the gaps are repainted
@@ -164,6 +207,8 @@ class HexBackground(QWidget):
             if not child.isVisible() or child.width() < 40 or child.height() < 20:
                 continue
             name = type(child).__name__
+            if getattr(child, "frameless", False):
+                continue                      # a frameless panel shows the background (and its animation) through
             if name in ("DashPanel", "StatusCard", "HudPanel") or child.objectName() == "dashHeader":
                 top_left = child.mapTo(self, child.rect().topLeft())
                 covered = covered.united(QRegion(top_left.x(), top_left.y(), child.width(), child.height()))
@@ -187,6 +232,11 @@ class HexBackground(QWidget):
         p.drawPixmap(clip, self._cache, clip)
         if getattr(self, "_moving", False):
             self._paint_motion(p)
+        holo = self._holo()
+        if holo is not None:
+            c, R, color, owner = holo
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            owner.paint_holo(p, c, R, self.width(), color)
         p.end()
 
     def _paint_motion(self, p: QPainter) -> None:

@@ -134,10 +134,18 @@ def test_intro_child_is_handled_before_anything_else(monkeypatch) -> None:
     from app.ui import intro_process
 
     seen = []
-    monkeypatch.setattr(intro_process, "run_intro_child", lambda title, sub: seen.append((title, sub)) or 0)
+    monkeypatch.setattr(intro_process, "run_intro_child", lambda title, sub, owner="": seen.append((title, sub, owner)) or 0)
     monkeypatch.setattr(app_main, "bootstrap", lambda *a, **kw: pytest.fail("no bootstrap for the intro"))
-    assert app_main.main(["--intro-child", "--intro-title", "J.A.R.V.I.S.", "--intro-subtitle", "x"]) == 0
-    assert seen == [("J.A.R.V.I.S.", "x")]
+    assert app_main.main(["--intro-child", "--intro-title", "J.A.R.V.I.S.", "--intro-subtitle", "x",
+                          "--intro-owner", "Labib"]) == 0
+    assert seen == [("J.A.R.V.I.S.", "x", "Labib")]
+
+
+def test_intro_shows_your_name_and_no_subtitle_line() -> None:
+    from app.ui.intro_process import child_command
+
+    cmd = child_command("J.A.R.V.I.S.", "", "Labib")
+    assert cmd[cmd.index("--intro-owner") + 1] == "Labib" and "--intro-owner" not in child_command("J", "")
 
 
 # ------------------------------------------------------------------ Qt parts

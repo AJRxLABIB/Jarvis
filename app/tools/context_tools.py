@@ -65,6 +65,8 @@ async def model_status(_: NoArgs, ctx: ToolContext) -> ToolResult:
     if last:
         message += f" Last request: {last['model']} ({last['role']})" + (
             f", after {last['fallback']}" if last.get("fallback") else "") + "."
+    if last and last.get("switched"):
+        message += f" Switched automatically: {last['switched']}."
     health = ctx.ai.health.summary() if ctx.ai is not None and hasattr(ctx.ai, "health") else {}
     skipped = [f"{name} (failing; skipped for {info['skipped_for']} s)" for name, info in health.items()
                if info["skipped_for"] > 0]

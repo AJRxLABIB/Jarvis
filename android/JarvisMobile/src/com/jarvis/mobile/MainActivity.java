@@ -53,6 +53,7 @@ public class MainActivity extends Activity {
     private Map<String, Object> lastStatus = new LinkedHashMap<String, Object>();
     private Map<String, Object> pendingApproval;
     private boolean wakeFetchTried = false;
+    private int phoneTicks = 0;
 
     private final Runnable poller = new Runnable() {
         @Override public void run() {
@@ -234,6 +235,13 @@ public class MainActivity extends Activity {
         Button connect = Ui.button(this, "Connect to Windows (sign in)", Ui.PANEL);
         connect.setOnClickListener(v -> connectToWindows(pc));
         content.addView(connect);
+
+        Button cancelTask = Ui.button(this, "Cancel what Jarvis is doing", Ui.PANEL);
+        cancelTask.setContentDescription("Cancel the current request on the PC. Automations keep running.");
+        cancelTask.setOnClickListener(v -> actions.run(pc, away, "cancel", new LinkedHashMap<String, Object>(),
+                (result, error) -> toast(error != null ? "Couldn't reach the PC."
+                        : Json.str(result.json(), "message", "Cancelled."))));
+        content.addView(cancelTask);
 
         Button emergency = Ui.button(this, "EMERGENCY STOP", Ui.RED);
         emergency.setOnClickListener(v -> emergencyStop(pc));
@@ -475,6 +483,9 @@ public class MainActivity extends Activity {
         appCard.addView(update);
         content.addView(appCard);
 
+        if (pc != null) renderSync(pc);
+        renderPhoneLink();
+
         LinearLayout awayCard = Ui.card(this);
         awayCard.addView(Ui.text(this, "Connection", 15, Ui.CYAN));
         awayCard.addView(Ui.text(this, away ? "Using the away address (Tailscale)" : "Using the home network", 13,
@@ -483,6 +494,93 @@ public class MainActivity extends Activity {
         toggle.setOnClickListener(v -> { away = !away; render(); });
         awayCard.addView(toggle);
         content.addView(awayCard);
+    }
+
+    // ------------------------------------------------------------------ PC <-> phone (see PhoneActions)
+
+    private void renderPhoneLink() {
+        LinearLayout card = Ui.card(this);
+        card.addView(Ui.text(this, "PC \u2194 phone", 16, Ui.CYAN));
+        card.addView(Ui.text(this, "Let your PC do a few things here: flashlight, ring (find my phone), open an app or "
+                + "a link, show a message. Opening apps/links works while this app is on screen (Android rule).", 12, Ui.DIM));
+        boolean control = PhoneActions.controlAllowed(this);
+        Button toggle = Ui.button(this, control ? "Let my PC control this phone: ON" : "Let my PC control this phone: OFF",
+                control ? Ui.CYAN : Ui.PANEL);
+        toggle.setOnClickListener(v -> { PhoneActions.setControlAllowed(this, !PhoneActions.controlAllowed(this)); render(); });
+        card.addView(toggle);
+        boolean forward = PhoneActions.forwardNotifications(this);
+        Button notes = Ui.button(this, forward ? "Forward notifications to my PC: ON" : "Forward notifications to my PC: OFF",
+                forward ? Ui.CYAN : Ui.PANEL);
+        notes.setOnClickListener(v -> {
+            PhoneActions.setForwardNotifications(this, !PhoneActions.forwardNotifications(this));
+            render();
+        });
+        card.addView(notes);
+        Button access = Ui.button(this, "Give notification access (Android settings)", Ui.PANEL);
+        access.setOnClickListener(v -> {
+            try { startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")); }
+            catch (Exception e) { toast("Open Settings > Notifications > Notification access."); }
+        });
+        card.addView(access);
+        card.addView(Ui.text(this, "Codes that look like one-time passwords are removed before anything is sent. "
+                + "Share > JARVIS Mobile sends text or a link to the PC.", 12, Ui.DIM));
+        content.addView(card);
+    }
+
+    // ------------------------------------------------------------------ to-do sync (see SyncClient)
+
+    private void renderSync(Pc pc) {
+        SyncClient client = AppSync.client(this, pc, away);
+        LinearLayout card = Ui.card(this);
+        card.addView(Ui.text(this, "To-do sync", 16, Ui.CYAN));
+        card.addView(Ui.text(this, "Only if you switched it on for this phone on the PC (Jarvis > mobile_sync). "
+                + "Edits wait here until you sync; they are signed with your fingerprint / PIN key.", 12, Ui.DIM));
+        List<Map<String, Object>> items = client.list();
+        int shown = 0;
+        for (Map<String, Object> item : items) {
+            if (shown++ >= 12) break;
+            final long id = numericLong(item, "id");
+            @SuppressWarnings("unchecked") Map<String, Object> fields = (Map<String, Object>) item.get("fields");
+            final boolean done = fields != null && Boolean.TRUE.equals(fields.get("done"));
+            String text = fields == null ? "" : String.valueOf(fields.get("text"));
+            Button row = Ui.button(this, (done ? "[x] " : "[ ] ") + text, Ui.PANEL);
+            row.setOnClickListener(v -> { client.setDone(id, !done); render(); });
+            card.addView(row);
+        }
+        if (items.isEmpty()) card.addView(Ui.text(this, "Nothing here yet. Sync to fetch your PC's to-dos.", 13, Ui.DIM));
+        if (client.queued() > 0) card.addView(Ui.text(this, client.queued() + " edit(s) waiting to be sent.", 12, Ui.GOLD));
+        Button add = Ui.button(this, "Add a to-do", Ui.PANEL);
+        add.setOnClickListener(v -> ask("New to-do", text -> { client.addTodo(text); render(); }));
+        card.addView(add);
+        Button syncNow = Ui.button(this, "Sync now", Ui.CYAN);
+        syncNow.setOnClickListener(v -> syncNow(pc));
+        card.addView(syncNow);
+        Button background = Ui.button(this, AppSync.backgroundOn(this) ? "Background checks: on (tap to turn off)"
+                : "Background checks: off (tap to turn on)", Ui.PANEL);
+        background.setOnClickListener(v -> {
+            boolean turningOn = !AppSync.backgroundOn(this);
+            if (turningOn && android.os.Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 3);   // Android 13+: asked once, here
+            }
+            AppSync.setBackground(this, turningOn);
+            render();
+        });
+        card.addView(background);
+        content.addView(card);
+    }
+
+    private void syncNow(Pc pc) {
+        final SyncClient client = AppSync.client(this, pc, away);
+        actions.runOnPool(() -> {
+            try {
+                final SyncClient.Summary summary = client.sync();
+                actions.onMain(() -> { toast(summary.text()); render(); });
+            } catch (final Exception e) {
+                if (SyncClient.isAuthError(e)) actions.onMain(() -> promptDeviceAuth(() -> syncNow(pc)));
+                else actions.onMain(() -> toast("Sync failed: " + (e.getMessage() == null ? "can't reach the PC" : e.getMessage())));
+            }
+        });
     }
 
     // ------------------------------------------------------------------ actions
@@ -728,6 +826,12 @@ public class MainActivity extends Activity {
             }
         });
         pollEvents(pc);
+        if (PhoneActions.controlAllowed(this) || ++phoneTicks % 12 == 0) {   // actions from the PC; state now and then
+            final boolean awayNow = away;
+            actions.runOnPool(() -> {
+                try { PhoneActions.checkIn(MainActivity.this, pc, awayNow); } catch (Exception ignored) { /* PC offline */ }
+            });
+        }
     }
 
     @SuppressWarnings("unchecked")
