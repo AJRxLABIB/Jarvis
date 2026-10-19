@@ -45,7 +45,7 @@ _log = get_logger("core.missions")
 MAX_STEPS = 12
 NOT_A_STEP = frozenset({
     "start_mission", "resume_mission", "cancel_mission", "mission_status", "mission_history", "rollback_mission", "task_center", "undo_last_action", "set_reminder",
-    "schedule_task", "save_workflow", "run_workflow", "manage_automation", "forget_everything", "forget_history",
+    "schedule_task", "save_workflow", "teach_workflow", "run_workflow", "manage_automation", "forget_everything", "forget_history",
     "change_setting", "jarvis_control", "power_control", "windows_update", "close_all_apps", "end_process",
     "propose_code_change", "test_proposal", "apply_proposal", "rollback_proposal", "restore_workflow",
     "delegate", "run_team",  # never in a mission (orchestration doesn't nest)

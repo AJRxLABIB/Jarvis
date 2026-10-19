@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 from pathlib import Path
 from urllib.parse import urlencode
@@ -92,6 +93,9 @@ class RemoteHub:
         self.cancel: Callable[[], str] | None = None     # cancel just the current request (phone permission "chat")
         self.run_tool = None  # async (tool, arguments) -> dict: through the executor (the safety kernel)
         self.phone_screen = None  # app.remote.phone_screen.PhoneScreenHub: a phone sharing its screen with this PC
+        self.phone_inbox = None   # app.remote.phone_inbox.PhoneInbox: files a phone sends to this PC
+        self.on_file = None       # callable(phone name, path): tell the window a file arrived
+        self.clipboard = None     # callable(text): put text from the phone onto the PC's clipboard (window thread)
         self.send, self.answer, self.pending, self.status = send, answer, pending, status
         self.voice = voice  # audio from the phone -> the text it heard (then sent like a message)
         self.messages: deque[dict[str, Any]] = deque(maxlen=200)
@@ -257,6 +261,13 @@ class RemoteServer:
                     "pending": hub.pending()}
         if command == "wait_events":
             return await self._wait_events(arguments)
+        if command == "phone_clipboard":
+            text = str(arguments.get("text", ""))[:8000]
+            if not text.strip():
+                raise MobileError(400, "malformed", "The clipboard was empty.")
+            if hub.clipboard is not None:
+                hub.clipboard(text)
+            return {"ok": True, "message": "On your PC's clipboard."}
         if command == "chat":
             text = str(arguments.get("text", "")).strip()[:2000]
             if not text:
@@ -597,6 +608,48 @@ class RemoteServer:
                 return web.json_response({"ok": False, "error": exc.code, "message": str(exc)}, status=400)
             return web.json_response({"request_id": envelope.get("request_id"), **result})
 
+        async def mobile_upload(request):  # Share > JARVIS Mobile: one signed file (app/remote/phone_inbox.py)
+            from app.remote.mobile import MobileError
+            from app.remote.phone_inbox import MAX_FILE_BYTES, InboxError
+
+            ok, code = self._reachable(request, bucket="upload:", limit=20)
+            if not ok:
+                return web.json_response({"ok": False, "error": "rate"}, status=code)
+            if self.hub.mobile is None or self.hub.phone_inbox is None:
+                return web.json_response({"ok": False, "error": "unavailable"}, status=503)
+            limit = MAX_FILE_BYTES * 4 // 3 + 16 * 1024
+            if (request.content_length or 0) > limit:
+                return web.json_response({"ok": False, "error": "too_big"}, status=413)
+            body = bytearray()
+            while True:                     # read it ourselves: the server-wide body limit stays small
+                chunk = await request.content.readany()
+                if not chunk:
+                    break
+                body += chunk
+                if len(body) > limit:
+                    return web.json_response({"ok": False, "error": "too_big"}, status=413)
+            try:
+                import json as _json
+
+                envelope = _json.loads(bytes(body))
+            except ValueError:
+                return web.json_response({"ok": False, "error": "malformed"}, status=400)
+            try:
+                device, command, arguments = self.hub.mobile.verify(envelope)
+                if command != "phone_file":
+                    raise MobileError(400, "malformed", "This address only takes files.")
+                path = await asyncio.to_thread(self.hub.phone_inbox.save, str(arguments.get("name", "")),
+                                               arguments.get("data", ""))
+            except MobileError as exc:
+                return web.json_response({"ok": False, "error": exc.code, "message": str(exc)}, status=exc.status)
+            except InboxError as exc:
+                return web.json_response({"ok": False, "error": exc.code, "message": str(exc)}, status=400)
+            log_event(_log, "phone_file_received", device=device.id, bytes=path.stat().st_size)
+            if self.hub.on_file is not None:
+                self.hub.on_file(device.name, path)
+            return web.json_response({"request_id": envelope.get("request_id"), "ok": True,
+                                      "message": f"Saved on your PC as {path.name}."})
+
         async def manifest(request):  # "Add to Home screen": opens like an app, full screen
             return web.json_response({"name": "Jarvis", "short_name": "Jarvis", "start_url": "/", "display": "standalone",
                                       "background_color": "#02050b", "theme_color": "#02050b",
@@ -614,6 +667,7 @@ class RemoteServer:
         application.router.add_post("/api/mobile/pair", open_guard(mobile_pair))
         application.router.add_post("/api/mobile/command", open_guard(mobile_command))
         application.router.add_post("/api/mobile/frame", mobile_frame)
+        application.router.add_post("/api/mobile/upload", mobile_upload)
         application.router.add_get("/api/wake-config", guard(wake_config))
         application.router.add_get("/icon.svg", open_guard(icon))
         application.router.add_post("/api/pair", open_guard(pair))

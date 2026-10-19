@@ -23,7 +23,7 @@ _NAME = re.compile(r"^[\w][\w .,:'&()\-]{0,59}$")
 # Automations can't create, change or run automations (no self-replicating schedules).
 FORBIDDEN_STEP_TOOLS = frozenset({"set_reminder", "schedule_task", "save_workflow", "run_workflow", "manage_automation",
                                   "list_automations", "forget_everything", "import_workflow",
-                                  "export_workflow", "background_mode", "simulate_workflow"})
+                                  "export_workflow", "background_mode", "simulate_workflow", "teach_workflow"})
 _TRIGGER = TypeAdapter(Trigger)
 
 

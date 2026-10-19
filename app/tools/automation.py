@@ -120,12 +120,14 @@ class ScheduleArgs(ToolArgs):
     date: str | None = Field(default=None, max_length=20, description="Run once on this date (with time)")
     every_minutes: int | None = Field(default=None, ge=5, le=10080, description="Repeat every N minutes")
     battery_below: int | None = Field(default=None, ge=1, le=99, description="Run when the battery drops below this %")
-    when_event: Literal["wifi", "app_opened", "usb", "file_changed"] | None = Field(
+    when_event: Literal["wifi", "app_opened", "usb", "file_changed", "phone_charging", "phone_battery_low"] | None = Field(
         default=None, description="Run when this happens: joining Wi-Fi, opening an app, plugging in a USB drive, "
-                                  "a file added or changed in a folder")
+                                  "a file added or changed in a folder, your phone being plugged in / unplugged, "
+                                  "your phone's battery dropping low")
     event_value: str | None = Field(default=None, max_length=260,
                                     description="The Wi-Fi name or app name for when_event; for file_changed the full "
-                                                "folder path, optionally followed by |*.pdf")
+                                                "folder path, optionally followed by |*.pdf; for phone_charging "
+                                                "'started' or 'stopped'; for phone_battery_low a percent (default 20)")
 
 
 def _trigger_for(args: ScheduleArgs, ctx: ToolContext) -> Any:
@@ -187,6 +189,55 @@ def save_workflow(args: WorkflowArgs, ctx: ToolContext) -> ToolResult:
     task, replaced = _save(ctx, check_name(args.name), ManualTrigger(), parse_steps(args.steps))
     return ToolResult.success(f"{'Updated' if replaced else 'Saved'} the workflow '{task.name}' ({len(task.steps)} steps).",
                               **task.to_dict())
+
+
+class TeachArgs(ToolArgs):
+    action: Literal["start", "stop", "cancel", "status"] = Field(
+        description="start = begin a teach session (name needed); stop = save what Jarvis did since as a workflow; "
+                    "cancel = forget it; status = what has been noted so far")
+    name: str = Field(default="", max_length=60, description="Workflow name (start)")
+
+
+def _teach_risk(args: TeachArgs, _ctx: ToolContext) -> RiskLevel:
+    return RiskLevel.MODERATE if args.action == "stop" else RiskLevel.SAFE
+
+
+def _teach_question(args: TeachArgs, _ctx: ToolContext) -> str:
+    from app.automation.teach import TEACHER
+
+    session = TEACHER.session
+    if session is None:
+        return "Save the taught workflow?"
+    steps = "; ".join(Step.model_validate({"tool": s["tool"], "arguments": s["arguments"]}).describe() for s in session.steps)
+    return f"Save the workflow '{session.name}' from what I did: {steps or 'nothing yet'}?"
+
+
+def teach_workflow(args: TeachArgs, ctx: ToolContext) -> ToolResult:
+    from app.automation.teach import TEACHER
+
+    if args.action == "start":
+        name = check_name(args.name)
+        TEACHER.start(name)
+        return ToolResult.success(f"Teaching '{name}'. Now tell me what to do, one thing at a time - I note only what I "
+                                  "actually do (never your keyboard or mouse). Say 'done teaching' to save it.", teaching=name)
+    session = TEACHER.session
+    if session is None:
+        return ToolResult.success("No teach session is running. Say 'teach you a routine called ...' to start one.")
+    if args.action == "status":
+        done = "; ".join(s["tool"] for s in session.steps) or "nothing yet"
+        return ToolResult.success(f"Teaching '{session.name}': {len(session.steps)} step(s) so far - {done}.",
+                                  steps=len(session.steps), skipped=session.skipped)
+    if args.action == "cancel":
+        TEACHER.cancel()
+        return ToolResult.success(f"Stopped teaching '{session.name}'. Nothing was saved.")
+    if not session.steps:
+        raise ToolError("I haven't done anything yet this session, so there is nothing to save. Tell me what to do first "
+                        "(or say 'cancel teaching').", "nothing_recorded")
+    task, replaced = _save(ctx, session.name, ManualTrigger(), parse_steps(session.steps))
+    TEACHER.cancel()
+    note = f" (left out: {'; '.join(session.skipped)})" if session.skipped else ""
+    return ToolResult.success(f"{'Updated' if replaced else 'Saved'} the workflow '{task.name}' with {len(task.steps)} "
+                              f"step(s). Run it any time: 'run {task.name}'.{note}", **task.to_dict())
 
 
 class NameArgs(ToolArgs):
@@ -489,6 +540,10 @@ TOOLS: tuple[Tool, ...] = (
          save_workflow, WorkflowArgs, RiskLevel.MODERATE, "automation",
          precheck=lambda a, c: (check_name(a.name), validate_steps(parse_steps(a.steps), c.get_tool_registry(), c)) and None,
          confirmation=_workflow_question),
+    Tool("teach_workflow", "Teach Jarvis a routine by showing: start a session, do the routine by telling Jarvis what "
+         "to do, then stop to save what it actually did as a workflow (asks first). Never records the keyboard, mouse "
+         "or screen.", teach_workflow, TeachArgs, RiskLevel.SAFE, "automation", risk=_teach_risk,
+         confirmation=_teach_question),
     Tool("run_workflow", "Run a saved workflow, e.g. 'development environment'. resume=true continues one that "
          "stopped, from the step it stopped at.", run_workflow, RunWorkflowArgs,
          RiskLevel.SAFE, "automation", timeout=900),

@@ -19,18 +19,23 @@ from app.tools.base import Tool, ToolArgs, ToolContext, ToolError, ToolResult
 class PhoneArgs(ToolArgs):
     action: Literal["status", "flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "show_text",
                     "open_gallery", "open_camera", "open_messages", "open_dialer", "share_screen",
-                    "call", "end_call", "send_sms", "read_messages", "find_contact", "cancel_pending"] = Field(
+                    "call", "end_call", "send_sms", "read_messages", "find_contact", "cancel_pending",
+                    "read_screen", "tap_text", "set_clipboard", "locate", "received_files", "lock_phone"] = Field(
         description="status = battery/connection; ring = find my phone; open_app needs app; open_link needs url; "
                     "share_screen = ask the phone to start sharing its screen; call / send_sms need number (a contact "
                     "name or a number); send_sms needs text; read_messages = latest SMS (count, optional from); "
-                    "find_contact needs name; cancel_pending = withdraw requests the phone hasn't taken yet")
+                    "find_contact needs name; cancel_pending = withdraw requests the phone hasn't taken yet; "
+                    "read_screen = the text on the phone's screen now; tap_text = tap the button/item with that "
+                    "text (text); set_clipboard = put text on the phone's clipboard; locate = where the phone is; "
+                    "received_files = files the phone sent to this PC; lock_phone = lock the phone's screen")
     number: str = Field(default="", max_length=60, description="Who to call / text: a contact name or a phone number")
     count: int = Field(default=5, ge=1, le=10, description="How many messages to read")
     sender: str = Field(default="", max_length=60, description="read_messages: only from this contact / number")
     name: str = Field(default="", max_length=60, description="find_contact: the contact's name")
     app: str = Field(default="", max_length=60, description="App to open on the phone, e.g. 'WhatsApp'")
     url: str = Field(default="", max_length=1900, description="http(s) link to open on the phone")
-    text: str = Field(default="", max_length=500, description="Message to show on the phone")
+    text: str = Field(default="", max_length=4000,
+                      description="Message to show / SMS text / words to tap / text for the phone's clipboard")
     phone: str = Field(default="", max_length=60, description="Which phone (name), if more than one is paired")
 
 
@@ -63,6 +68,16 @@ async def phone_control(args: PhoneArgs, ctx: ToolContext) -> ToolResult:
         if not state.get("control"):
             parts.append("control from the PC is OFF on the phone")
         return ToolResult.success(f"{device.name}: " + ", ".join(parts) + ".", phone=device.name, state=state)
+    if args.action == "received_files":
+        from app.remote.phone_inbox import PhoneInbox
+
+        if ctx.paths is None:
+            raise ToolError("This needs Jarvis's data folder.", "unavailable")
+        files = PhoneInbox(ctx.paths.data_dir).recent(10)
+        if not files:
+            return ToolResult.success("Nothing has come from the phone yet (on the phone: Share > JARVIS Mobile).")
+        return ToolResult.success("From your phone: " + "; ".join(f.name for f in files) + f". Folder: {files[0].parent}",
+                                  files=[str(f) for f in files])
     if args.action == "cancel_pending":
         withdrawn = link.cancel(device.id)
         return ToolResult.success(f"Withdrew {withdrawn} request(s) {device.name} hadn't taken yet." if withdrawn else
@@ -96,9 +111,9 @@ async def phone_control(args: PhoneArgs, ctx: ToolContext) -> ToolResult:
 
 
 def _risk(args: PhoneArgs, _ctx: ToolContext) -> RiskLevel:
-    if args.action in ("call", "send_sms"):
-        return RiskLevel.DANGEROUS            # reaches another person: always asks, on screen, with the details
-    if args.action in ("open_link", "read_messages", "find_contact"):
+    if args.action in ("call", "send_sms", "lock_phone"):
+        return RiskLevel.DANGEROUS            # reaches another person / shuts you out of the phone: always asks, on screen
+    if args.action in ("open_link", "read_messages", "find_contact", "read_screen", "tap_text", "locate"):
         return RiskLevel.MODERATE             # private data / outside content
     return RiskLevel.SAFE
 
@@ -112,6 +127,14 @@ def _confirmation(args: PhoneArgs, _ctx: ToolContext) -> str:
         return f"Read your latest {args.count} SMS" + (f" from {args.sender}" if args.sender else "") + " (codes hidden)?"
     if args.action == "find_contact":
         return f"Look up {args.name} in your phone's contacts?"
+    if args.action == "read_screen":
+        return "Read what's on your phone's screen right now (passwords are never read)?"
+    if args.action == "tap_text":
+        return f"Tap '{args.text}' on your phone's screen?"
+    if args.action == "lock_phone":
+        return "Lock your phone's screen now?"
+    if args.action == "locate":
+        return "Ask your phone where it is (its last known location)?"
     return f"Do '{args.action}' on your phone?"
 
 

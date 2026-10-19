@@ -91,3 +91,60 @@ TOOLS = (
          "month's report by category, 6-month trend, set or show budgets, delete a record, export to CSV.", expenses, ExpenseArgs, RiskLevel.SAFE,
          "finance", risk=_risk),
 )
+
+
+# ------------------------------------------------------------------ expenses from bank / mobile-money SMS
+
+class BankSmsArgs(ToolArgs):
+    action: Literal["preview", "import"] = Field(
+        default="preview", description="preview = show what would be added; import = add them as expenses")
+    sender: str = Field(default="", max_length=60, description="Only messages from this sender, e.g. 'bKash' or a bank")
+    count: int = Field(default=10, ge=1, le=10, description="How many of the latest SMS to look at")
+
+
+async def import_bank_sms(args: BankSmsArgs, ctx: ToolContext) -> ToolResult:
+    """Reads the latest SMS on your paired phone (JARVIS Mobile, 'Allow calls and messages'), finds payments and
+    adds them as expenses - never the same message twice, nothing guessed."""
+    import asyncio
+
+    from app.core import bank_sms
+    from app.tools.phone_link_tool import _phone
+
+    if ctx.database is None:
+        raise ToolError("Expense records need the local database.", "no_database")
+    device, link = _phone(ctx, "")
+    command_id = link.queue(device.id, "read_messages", {"count": args.count, "from": args.sender})
+    outcome = await asyncio.to_thread(link.wait, command_id, 15.0)
+    if outcome["status"] != "done":
+        why = outcome["result"] or "open JARVIS Mobile or turn on Stay connected"
+        raise ToolError(f"{device.name} didn't send its messages ({outcome['status']}: {why}).", "phone_failed")
+    messages = bank_sms.split_phone_messages(outcome["result"] or "")
+    found = [(who, bank_sms.parse(text)) for who, text in messages]
+    payments = [(who, p) for who, p in found if p is not None]
+    seen = bank_sms.already_imported(ctx.database, [p.fingerprint for _, p in payments])
+    new = [(who, p) for who, p in payments if p.fingerprint not in seen]
+    skipped = len(messages) - len(payments)
+    lines = [f"{p.amount:,.2f} - {p.note.removeprefix('SMS: ')} (from {who})" for who, p in new]
+    if args.action == "preview" or not new:
+        head = (f"Found {len(new)} new payment(s) in {len(messages)} SMS" + (f"; {len(seen)} already added" if seen else "")
+                + (f"; {skipped} weren't payments" if skipped else "") + ".")
+        return ToolResult.success(head + (" " + "; ".join(lines) + ". Say 'import them' to add." if lines and
+                                          args.action == "preview" else ""), new=len(new), skipped=skipped)
+    finance = Finance(ctx.database)
+    currency = getattr(ctx.settings, "currency", "") or ""
+    for _who, p in new:
+        finance.add(p.amount, f"{p.note} [sms:{p.fingerprint}]", "", currency)
+    return ToolResult.success(f"Added {len(new)} expense(s) from your SMS: " + "; ".join(lines) + ".", added=len(new))
+
+
+def _sms_risk(args: BankSmsArgs, _ctx: ToolContext) -> RiskLevel:
+    return RiskLevel.MODERATE
+
+
+TOOLS = TOOLS + (
+    Tool("import_bank_sms", "Expenses from the bank / bKash / Nagad SMS on the user's phone: preview the payments "
+         "found in the latest messages, or import them (never the same message twice).", import_bank_sms, BankSmsArgs,
+         RiskLevel.MODERATE, "finance", timeout=25, risk=_sms_risk,
+         confirmation=lambda a, _: ("Read your latest SMS on the phone and add the payments as expenses?" if a.action ==
+                                    "import" else "Read your latest SMS on the phone to look for payments?")),
+)

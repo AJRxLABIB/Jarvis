@@ -59,13 +59,14 @@ def matches(query: str, title: str, note: str, group: str) -> bool:
 
 
 class WorkspacesDialog(QDialog):
-    def __init__(self, window, parent=None) -> None:
+    def __init__(self, window, parent=None, send_command=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Workspaces")
         self.setMinimumSize(760, 520)
         self.window_ = window
+        self.send_command = send_command      # Enter with no matching screen: the text goes to Jarvis as a command
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Type to find a screen (Enter opens the first)")
+        self.search.setPlaceholderText("Find a screen - or type any command and press Enter")
         self.search.setAccessibleName("Find a screen")
         self.search.textChanged.connect(self._filter)
         self.search.returnPressed.connect(self.open_first)
@@ -120,5 +121,9 @@ class WorkspacesDialog(QDialog):
 
     def open_first(self) -> None:
         shown = self.visible()
-        if shown:
+        text = self.search.text().strip()
+        if shown and (not text or len(shown) < len(self.buttons)):
             self.open(shown[0])
+        elif text and self.send_command is not None:      # a command palette too: "open spotify", "volume 30"
+            self.accept()
+            self.send_command(text)

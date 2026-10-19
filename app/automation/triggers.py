@@ -141,11 +141,20 @@ class BatteryTrigger(_Trigger):
         return f"when the battery drops below {self.percent}% (while unplugged)"
 
 
+def phone_percent(value: str) -> int:
+    try:
+        return max(1, min(int(str(value).strip().rstrip("%") or 20), 99))
+    except ValueError:
+        return 20
+
+
 class EventTrigger(_Trigger):
     """Something that happens: joining a Wi-Fi network, opening an app, plugging in a USB drive."""
     type: Literal["event"] = "event"
-    event: Literal["wifi", "app_opened", "usb", "file_changed"]
-    value: str = Field(default="", max_length=260)  # Wi-Fi name, app name ("" = any), or folder[|*.pdf] for files
+    event: Literal["wifi", "app_opened", "usb", "file_changed", "phone_charging", "phone_battery_low"]
+    # Wi-Fi name, app name ("" = any), folder[|*.pdf] for files, "started"/"stopped" ("" = either) for the phone's
+    # charger, or a percent (default 20) for the phone's battery
+    value: str = Field(default="", max_length=260)
 
     def next_run(self, after: datetime) -> None:
         return None  # checked by the scheduler, not time-based
@@ -158,6 +167,11 @@ class EventTrigger(_Trigger):
         if self.event == "file_changed":
             folder, pattern = split_watch(self.value)
             return f"when a file {'matching ' + pattern + ' ' if pattern != '*' else ''}is added or changed in {folder}"
+        if self.event == "phone_charging":
+            word = {"started": "is plugged in", "stopped": "is unplugged"}.get(self.value.strip().lower(), "is plugged in or unplugged")
+            return f"when your phone {word}"
+        if self.event == "phone_battery_low":
+            return f"when your phone's battery drops below {phone_percent(self.value)}% (while unplugged)"
         return "when a USB drive is plugged in"
 
 

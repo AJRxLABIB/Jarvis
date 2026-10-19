@@ -584,3 +584,63 @@ sharing PC<->phone and phone->PC file upload from the app; a combined performanc
 model connect, first reply are logged separately: window_ready, model_warmed_up, voice_stats); automatic rollback
 after an applied self-improvement (rollback stays one approved command). Only 12 of ~225 tools have a verify step.
 Not verified on real hardware: everything phone-side, the security center on Windows.
+
+## Round 37 - "it said WhatsApp is open, but nothing opened"
+
+* Cause (jarvis.log 20:59): every reply in that exchange had tools_used = [] - the AI (jarvis / qwen3:4b) only SAID
+  "Opening WhatsApp now" / "WhatsApp is open"; no action ran. A false success.
+* app/agent/honesty.py + ConversationManager._keep_words_and_deeds: a reply that claims an action with no tool call
+  either really does it (through the executor, as the model's choice, so risky actions still ask) or gets an honest
+  "(Correction: no action actually ran ...)". "Do it" / "yes" / "I'm ready" / "হ্যাঁ" right after Jarvis offered or
+  claimed an action now runs that action directly instead of going back to the model.
+* open_application now waits for the app's window (Store apps take a few seconds) and brings it IN FRONT, checks it,
+  and says so if Windows kept it behind; stepping aside without the fade (OpenGL window) now also brings the app forward.
+* Tests: tests/test_honesty.py. Not verified on Windows: the foreground behaviour itself.
+
+## Round 38 - "build all" (the idea list), JARVIS Mobile 1.3
+
+Many items of the idea list already existed (UI-element clicks, browser automation, Office documents, duplicates,
+PC health / troubleshoot, journal / habits / expenses, flashcards, meeting notes, model roles, voice verification,
+audit chain, emergency stop, focus mode, phone remote keys). Built new this round (all with tests):
+
+| Built | Where | Tests |
+|---|---|---|
+| Phone screen as text + tap by text (accessibility tree, passwords never read, protected apps give nothing) | ControlService.readScreen/tapText; phone_control read_screen / tap_text (MODERATE) | test_phone_v13.py |
+| Two-way clipboard: PC -> phone (set_clipboard), phone -> PC ("Send my clipboard to the PC") | PhoneActions, phone_clipboard command | test_phone_v13.py |
+| Photos / files from the phone (Share > JARVIS Mobile) -> data\phone_inbox (signed /api/mobile/upload, 25 MB, 300 MB/day, never overwrites, never runs) | ShareActivity, app/remote/phone_inbox.py | test_phone_v13.py (real signed upload) |
+| Where is my phone (last known location, only to your PC, after you allow Location) | PhoneActions.locate | test_phone_v13.py |
+| Expenses from bank / bKash / Nagad SMS: preview, import, never twice, OTPs / credits skipped; the phone no longer hides amounts (only messages with a code are masked) | app/core/bank_sms.py, import_bank_sms | test_bank_sms.py |
+| Clipboard AI: summarise / translate / fix / explain / reply / shorten what you copied, result back on the clipboard (local model; secrets refused) | app/tools/power_tools.py clipboard_ai | test_power_tools.py |
+| Excel through Office's own COM: sheets, read, write, append row, create; writes ask; '=' values are text unless allowed (formula injection) | power_tools.excel_control | test_power_tools.py (fake Excel) |
+| Phone low-battery alert on the PC (once per drop below 15 %) | PhoneLink._battery_alert | test_power_tools.py |
+| Command palette: Ctrl+K - no matching screen + Enter = run it as a command | app/ui/workspaces.py | test_power_tools.py |
+| Document answers cite the PDF page and warn when a file changed since indexing; files named like passwords / keys and AppData / .ssh are never indexed | app/memory/semantic.py, tools/knowledge.py | test_docs_pages.py |
+| Bangla digits in direct commands ("ভলিউম ৫০") | ConversationManager._shortcuts | test_docs_pages.py |
+
+Not built (honest): teach-by-showing recorder (recording your input globally is keylogger-like; workflows can be
+saved from what Jarvis did instead), phone-side automations (geofence / charging triggers), automatic swapping of a
+bigger "thinking" model, phone lock from the PC (needs Android device-admin). Nothing on the phone
+has run on a real device yet: rebuild JARVIS Mobile 1.3.0 (packaging\build_android.ps1). Excel automation and
+foreground handling are untested on Windows.
+
+## Round 40 - the four "not built" items, JARVIS Mobile 1.4
+
+| Built | Where | Tests |
+|---|---|---|
+| Lock the phone from the PC. Only after YOU activate JARVIS Mobile as a device admin on the phone (Android's own screen opens); the only policy is `force-lock` (no wipe, no password rules). Always asks on screen (DANGEROUS) | LockAdmin.java, res/xml/device_admin.xml, phone_control `lock_phone` | test_phone_v14.py |
+| Phone-side triggers for automations: "when my phone is plugged in / unplugged", "when my phone's battery drops below N%" (`when_event` phone_charging / phone_battery_low). They use the phone's check-ins, so they fire while the app is open or "Stay connected" is on | phone_link.LATEST, scheduler `_phone_due`, triggers.py | test_phone_v14.py |
+| Hard questions use a bigger installed model when it FITS ENTIRELY in GPU memory (`AI_AUTO_SMART`, on by default; never when the GPU can't be read; never an embedding or no-tools model); the first use is told with the answer | app/ai/thinking_swap.py, manager `_bigger_that_fits` | test_thinking_swap.py |
+| Teach by showing, the safe version: "teach routine X" -> tell Jarvis what to do -> "done teaching" saves what Jarvis actually ran as a workflow (asks first, shows the steps). It never records your keyboard, mouse or screen (that would be a keylogger); secrets, risky tools and tools automations may not use are left out | app/automation/teach.py, tool `teach_workflow` | test_teach.py |
+
+Honest limits: nothing phone-side has run on a real device. On a 6 GB GPU a bigger model rarely fits next to speech, so
+the swap will mostly stay idle there (it never trades speed for size). The teach recorder cannot learn things you do by
+hand; it learns what you tell Jarvis to do. App version 1.4.0 (rebuild and install it).
+
+## Round 39 - encrypted USB backup
+
+`app/memory/encrypted_backup.py` + `scripts/encrypted_backup.py`: a database snapshot (SQLite backup API, integrity
+checked) encrypted with your password (scrypt + AES-256-GCM) into `jarvis-<time>.jbk` on any drive. The password is never
+stored (lose it, lose the file). `open` decrypts to a new .db, checks it, never overwrites. Usage:
+`python scripts\encrypted_backup.py save E:\` / `open E:\jarvis-....jbk restored.db`; then restore with the existing
+restore path. Tests: tests/test_encrypted_backup.py (round trip, wrong password, tampering). Not done: a button or voice
+command for it, and only the database is covered (not `.env` or phone keys, deliberately).

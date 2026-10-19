@@ -351,7 +351,46 @@ def open_application(args: OpenAppArgs, ctx: ToolContext) -> ToolResult:
         url = website_url(args.profile)
         where = open_url(url, ctx, browser)
         return ToolResult.success(f"Opened {urlparse(url).hostname} in {where}.", url=url)
-    return _launch(target, ctx, args.profile)
+    result = _launch(target, ctx, args.profile)
+    if not result.ok:
+        return result
+    try:
+        shown = present_app(target.display_name, ctx)
+    except Exception:                       # bringing it forward is a courtesy: never fail the launch over it
+        _log.warning("could not bring %s to the front", target.display_name, exc_info=True)
+        shown = None
+    message = result.message
+    if shown is False:
+        message += (" It started, but Windows kept it behind - it's in the taskbar (say "
+                    f"'switch to {target.display_name}').")
+    return ToolResult(True, message, {**result.data, "in_front": shown}, result.error)
+
+
+def present_app(name: str, ctx: ToolContext, seconds: float = 6.0) -> bool | None:
+    """Put the app you just opened IN FRONT, where you can see it: wait for its window (Store apps such as WhatsApp
+    take a few seconds), restore it if minimised, bring it to the foreground and check that it is there.
+    None = no window to find (e.g. a tray-only app)."""
+    import sys
+
+    if not winapi.is_windows() or sys.platform != "win32":     # (tests fake Windows; this needs the real one)
+        return None
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            _, windows, _ = _target_windows(name, ctx)
+        except Exception:
+            windows = []
+        windows = [w for w in windows if not w.cloaked] or windows
+        if windows:
+            hwnd = windows[0].hwnd
+            winapi.force_foreground(hwnd)
+            if _wait_for(lambda: winapi.foreground_window() == hwnd, 1.0):
+                log_event(_log, "app_presented", app=name)
+                return True
+            winapi.focus_window(hwnd)
+            return _wait_for(lambda: winapi.foreground_window() == hwnd, 1.0)
+        time.sleep(0.3)
+    return None
 
 
 def _process_matches(process: str, procs: set[str], stems: set[str]) -> bool:

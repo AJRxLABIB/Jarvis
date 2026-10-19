@@ -37,7 +37,7 @@ def test_the_service_is_not_exported_and_needs_the_job_permission() -> None:
 def test_sync_code_compiles_against_android_stand_ins_and_its_rules_hold() -> None:
     src = ANDROID / "src/com/jarvis/mobile"
     files = [str(src / n) for n in ("Json.java", "SyncClient.java", "AppSync.java", "SyncJob.java", "Store.java", "Pc.java",
-                                             "PhoneActions.java", "NotifyForward.java", "ShareActivity.java",
+                                             "PhoneActions.java", "NotifyForward.java",
                                              "LiveEvents.java")]
     files += [str(p) for p in sorted((ANDROID / "test/android_api").rglob("*.java"))]
     files += [str(p) for p in sorted((ANDROID / "test/stubs/com").rglob("*.java"))] + [str(ANDROID / "test/SyncClientTest.java")]

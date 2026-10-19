@@ -15,7 +15,7 @@ from __future__ import annotations
 GROUPS: dict[str, tuple[str, ...]] = {
     "identity": ("assistant_name", "user_address", "user_name", "setup_done", "settings_version"),
     "ai": ("ai_provider", "ollama_host", "ai_model", "auto_start_ollama", "hide_ollama_window", "ai_request_timeout",
-           "ai_temperature", "ai_context_window", "ai_fast_model", "ai_smart_model", "ai_coding_model", "ai_think", "ai_auto_switch", "taint_lockdown", "ollama_keep_alive",
+           "ai_temperature", "ai_context_window", "ai_fast_model", "ai_smart_model", "ai_coding_model", "ai_think", "ai_auto_smart", "ai_auto_switch", "taint_lockdown", "ollama_keep_alive",
            "context_max_messages", "context_max_chars", "idle_unload_minutes", "ollama_fast_memory",
            "gpu_memory_saver", "vision_model", "embedding_model"),
     "memory": ("conversation_memory", "memory_suggestions", "clipboard_history", "clipboard_retention_days", "document_folders", "world_context"),

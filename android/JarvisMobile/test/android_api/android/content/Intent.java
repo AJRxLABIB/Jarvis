@@ -6,6 +6,7 @@ public class Intent implements Parcelable {
     public static final String ACTION_MAIN = "android.intent.action.MAIN", ACTION_VIEW = "android.intent.action.VIEW",
             ACTION_BATTERY_CHANGED = "android.intent.action.BATTERY_CHANGED", CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER",
             EXTRA_TEXT = "android.intent.extra.TEXT", ACTION_SEND = "android.intent.action.SEND", EXTRA_SUBJECT = "s",
+            EXTRA_STREAM = "android.intent.extra.STREAM",
             ACTION_CALL = "android.intent.action.CALL", ACTION_DIAL = "android.intent.action.DIAL", ACTION_SENDTO = "android.intent.action.SENDTO";
     public static final int FLAG_ACTIVITY_NEW_TASK = 0x10000000, FLAG_ACTIVITY_CLEAR_TOP = 0x04000000;
     public Intent() {}

@@ -21,8 +21,13 @@ ACTIONS = ("flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "
            # JARVIS Mobile 1.2: apps without a name, screen sharing, and calls / SMS / contacts (a separate switch on
            # the phone: "Allow calls and messages", plus Android's own permissions)
            "open_gallery", "open_camera", "open_messages", "open_dialer", "share_screen",
-           "call", "end_call", "send_sms", "read_messages", "find_contact")
+           "call", "end_call", "send_sms", "read_messages", "find_contact",
+           # 1.3: what's on the phone's screen / tap by its text (accessibility), clipboard, where the phone is
+           "read_screen", "tap_text", "set_clipboard", "locate",
+           # 1.4: lock the screen (only once YOU made JARVIS Mobile a device admin on the phone; lock is its only power)
+           "lock_phone")
 COMMS = frozenset({"call", "end_call", "send_sms", "read_messages", "find_contact"})
+LATEST: dict[str, Any] = {}      # the last report of the phone that checked in (battery, charging) for automations
 MAX_RESULT = 2000
 UNSUPPORTED_MARK = "this phone app doesn't know"   # what older JARVIS Mobile apps answer for a new action
 _WHO = re.compile(r"^[\w\s+().\-'\u0980-\u09FF]{1,60}$")
@@ -81,6 +86,16 @@ def check_action(action: str, args: dict[str, Any]) -> dict[str, Any]:
         clean["count"] = max(1, min(count, 10))
         if str(args.get("from", "")).strip():
             clean["from"] = _who(args.get("from", ""), "From whom?")
+    elif action == "tap_text":
+        target = " ".join(str(args.get("text", "")).split())[:100]
+        if not target:
+            raise ValueError("Tap what (the words on the button)?")
+        clean["text"] = target
+    elif action == "set_clipboard":
+        text = str(args.get("text", ""))[:4000]
+        if not text.strip():
+            raise ValueError("What should go on the phone's clipboard?")
+        clean["text"] = text
     elif action == "find_contact":
         clean["name"] = _who(args.get("name", ""), "Whose number?")
     return clean
@@ -154,10 +169,13 @@ class PhoneLink:
     def collect(self, device_id: str, report: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """The phone checks in: store what it reports, hand over (and mark sent) its unexpired actions."""
         now = _iso(_now())
-        state = {k: report[k] for k in ("battery", "charging", "control", "notifications", "comms", "app_version")
+        state = {k: report[k] for k in ("battery", "charging", "control", "notifications", "comms", "lock", "app_version")
                  if isinstance(report, dict) and k in report}
         previous = {k: v for k, v in self.state(device_id).items() if k != "seen"}
+        self._battery_alert(device_id, previous, state)
         state = {**previous, **state}                     # a bare check-in keeps what the phone said last time
+        LATEST.clear()                                    # what phone-event automations look at (this process only)
+        LATEST.update({k: state[k] for k in ("battery", "charging") if k in state})
         with self.db.connect() as conn:
             conn.execute("INSERT INTO phone_state (device_id, seen, state) VALUES (?, ?, ?) ON CONFLICT(device_id) "
                          "DO UPDATE SET seen = excluded.seen, state = excluded.state", (device_id, now, json.dumps(state)))
@@ -169,6 +187,29 @@ class PhoneLink:
             if ids:
                 conn.execute(f"UPDATE phone_commands SET status = 'sent' WHERE id IN ({','.join('?' * len(ids))})", ids)
         return [{"id": r["id"], "action": r["action"], "args": json.loads(r["args"])} for r in rows]
+
+    LOW_BATTERY = 15
+
+    def _battery_alert(self, device_id: str, before: dict, now: dict) -> None:
+        """The phone's battery just went under LOW_BATTERY % and it isn't charging: tell the PC once (not every
+        check-in) - the notification center shows it, quiet hours decide whether it's spoken."""
+        level, was = now.get("battery"), before.get("battery")
+        if not isinstance(level, (int, float)) or now.get("charging") or level > self.LOW_BATTERY:
+            return
+        if isinstance(was, (int, float)) and was <= self.LOW_BATTERY:
+            return                                        # already told
+        try:
+            from app.core import events
+
+            name = device_id
+            with self.db.connect() as conn:
+                row = conn.execute("SELECT name FROM mobile_devices WHERE id = ?", (device_id,)).fetchone()
+                if row is not None:
+                    name = row["name"]
+            events.BUS.publish(events.BATTERY_LOW, message=f"{name}'s battery is at {int(level)}% - plug it in.",
+                               critical=level <= 5, device=name)
+        except Exception:
+            pass
 
     def report(self, device_id: str, command_id: int, ok: bool, message: str = "", unsupported: bool = False) -> bool:
         """The phone's answer: done / failed / unsupported (its app doesn't know the action - an older version)."""

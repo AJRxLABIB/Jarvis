@@ -65,6 +65,7 @@ public final class PhoneActions {
         out.put("control", controlAllowed(c));
         out.put("notifications", forwardNotifications(c));
         out.put("comms", commsAllowed(c));
+        out.put("lock", LockAdmin.active(c));
         out.put("app_version", MainActivity.APP_VERSION);
         return out;
     }
@@ -87,6 +88,11 @@ public final class PhoneActions {
                 Intent ask = new Intent(c, MainActivity.class).putExtra(MainActivity.EXTRA_START_SHARE, true);
                 return start(c, ask, "Asked on the phone to start sharing - tap 'Start now' there.");
             }
+            if ("read_screen".equals(action)) return ControlService.readScreen(c);
+            if ("tap_text".equals(action)) return ControlService.tapText(c, Json.str(args, "text", ""));
+            if ("set_clipboard".equals(action)) return setClipboard(c, Json.str(args, "text", ""));
+            if ("locate".equals(action)) return locate(c);
+            if ("lock_phone".equals(action)) return LockAdmin.lockNow(c);
             if (Comms.ACTIONS.contains(action)) {
                 if (!commsAllowed(c)) return new Object[]{false, "calls and messages from the PC are switched off on the phone "
                         + "(JARVIS Mobile > Control > 'Allow calls and messages')"};
@@ -159,6 +165,33 @@ public final class PhoneActions {
         }
         return new Object[]{true, done + (ControlService.running() ? "" : " (If nothing opened: turn on 'JARVIS control' "
                 + "in Accessibility, or keep JARVIS Mobile open.)")};
+    }
+
+    private static Object[] setClipboard(Context c, String text) {
+        android.content.ClipboardManager cm = (android.content.ClipboardManager) c.getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null || text.isEmpty()) return new Object[]{false, "no clipboard"};
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("JARVIS", text));
+        return new Object[]{true, "On the phone's clipboard."};
+    }
+
+    /** The phone's last known location (GPS / network), only to your PC. Needs Location allowed for the app. */
+    private static Object[] locate(Context c) {
+        boolean fine = Build.VERSION.SDK_INT < 23
+                || c.checkSelfPermission("android.permission.ACCESS_FINE_LOCATION") == PackageManager.PERMISSION_GRANTED
+                || c.checkSelfPermission("android.permission.ACCESS_COARSE_LOCATION") == PackageManager.PERMISSION_GRANTED;
+        if (!fine) return new Object[]{false, "allow Location for JARVIS Mobile first (Control > Allow location)"};
+        android.location.LocationManager lm = (android.location.LocationManager) c.getSystemService(Context.LOCATION_SERVICE);
+        android.location.Location best = null;
+        for (String provider : lm.getProviders(true)) {
+            android.location.Location l = lm.getLastKnownLocation(provider);
+            if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
+        }
+        if (best == null) return new Object[]{false, "the phone doesn't know its location yet (open Maps once)"};
+        long minutes = Math.max(0, (System.currentTimeMillis() - best.getTime()) / 60000);
+        return new Object[]{true, String.format(java.util.Locale.US,
+                "%.5f, %.5f (within %d m, %d min ago) https://www.openstreetmap.org/?mlat=%.5f&mlon=%.5f#map=17/%.5f/%.5f",
+                best.getLatitude(), best.getLongitude(), (int) best.getAccuracy(), minutes,
+                best.getLatitude(), best.getLongitude(), best.getLatitude(), best.getLongitude())};
     }
 
     private static Object[] openGallery(Context c) {

@@ -12,7 +12,8 @@ import android.content.res.Resources;
 public abstract class Context {
     public static final String JOB_SCHEDULER_SERVICE = "jobscheduler", NOTIFICATION_SERVICE = "notification",
             CAMERA_SERVICE = "camera", KEYGUARD_SERVICE = "keyguard", MEDIA_PROJECTION_SERVICE = "media_projection",
-            CONNECTIVITY_SERVICE = "connectivity", TELECOM_SERVICE = "telecom", WIFI_SERVICE = "wifi", AUDIO_SERVICE = "audio", VIBRATOR_SERVICE = "vibrator";
+            CONNECTIVITY_SERVICE = "connectivity", TELECOM_SERVICE = "telecom", CLIPBOARD_SERVICE = "clipboard", DEVICE_POLICY_SERVICE = "device_policy",
+            LOCATION_SERVICE = "location", WIFI_SERVICE = "wifi", AUDIO_SERVICE = "audio", VIBRATOR_SERVICE = "vibrator";
     public static final int MODE_PRIVATE = 0;
     public abstract SharedPreferences getSharedPreferences(String name, int mode);
     public abstract Object getSystemService(String name);
@@ -32,7 +33,8 @@ public abstract class Context {
 }
 """)
 c("android/content/ContentResolver.java", """package android.content;
-public class ContentResolver { public android.database.Cursor query(android.net.Uri u, String[] p, String s, String[] a, String o) { return null; } }
+public class ContentResolver { public android.database.Cursor query(android.net.Uri u, String[] p, String s, String[] a, String o) { return null; }
+    public java.io.InputStream openInputStream(android.net.Uri u) throws java.io.FileNotFoundException { return null; } }
 """)
 c("android/content/ActivityNotFoundException.java", "package android.content;\npublic class ActivityNotFoundException extends RuntimeException {}\n")
 c("android/database/Cursor.java", """package android.database;
@@ -45,11 +47,37 @@ public final class ContactsContract {
     public static final class PhoneLookup { public static final android.net.Uri CONTENT_FILTER_URI = null; public static final String DISPLAY_NAME = "display_name"; }
 }
 """)
+c("android/app/admin/DeviceAdminReceiver.java", "package android.app.admin;\npublic class DeviceAdminReceiver extends android.content.BroadcastReceiver { public void onReceive(android.content.Context c, android.content.Intent i) {} }\n")
+c("android/app/admin/DevicePolicyManager.java", """package android.app.admin;
+import android.content.ComponentName;
+public class DevicePolicyManager {
+    public static final String ACTION_ADD_DEVICE_ADMIN = "x", EXTRA_DEVICE_ADMIN = "y", EXTRA_ADD_EXPLANATION = "z";
+    public boolean isAdminActive(ComponentName c) { return false; }
+    public void lockNow() {}
+}
+""")
 c("android/telecom/TelecomManager.java", "package android.telecom;\npublic class TelecomManager { public boolean endCall() { return true; } }\n")
 c("android/telephony/SmsManager.java", """package android.telephony;
 public class SmsManager { public static SmsManager getDefault() { return new SmsManager(); }
     public java.util.ArrayList<String> divideMessage(String t) { return new java.util.ArrayList<String>(); }
     public void sendMultipartTextMessage(String to, String sc, java.util.ArrayList<String> parts, java.util.ArrayList<android.app.PendingIntent> s, java.util.ArrayList<android.app.PendingIntent> d) {} }
+""")
+c("android/graphics/Rect.java", "package android.graphics;\npublic final class Rect { public int left, top, right, bottom; public float exactCenterX() { return 0; } public float exactCenterY() { return 0; } }\n")
+c("android/content/ClipboardManager.java", """package android.content;
+public class ClipboardManager { public void setPrimaryClip(ClipData c) {} public ClipData getPrimaryClip() { return null; } }
+""")
+c("android/content/ClipData.java", """package android.content;
+public class ClipData { public static ClipData newPlainText(CharSequence l, CharSequence t) { return new ClipData(); }
+    public int getItemCount() { return 0; } public Item getItemAt(int i) { return new Item(); }
+    public static class Item { public CharSequence coerceToText(Context c) { return ""; } } }
+""")
+c("android/location/Location.java", """package android.location;
+public class Location { public double getLatitude() { return 0; } public double getLongitude() { return 0; }
+    public float getAccuracy() { return 0; } public long getTime() { return 0; } }
+""")
+c("android/location/LocationManager.java", """package android.location;
+public class LocationManager { public java.util.List<String> getProviders(boolean enabled) { return new java.util.ArrayList<String>(); }
+    public Location getLastKnownLocation(String p) { return null; } }
 """)
 c("android/content/res/Resources.java", """package android.content.res;
 public class Resources { public android.util.DisplayMetrics getDisplayMetrics() { return new android.util.DisplayMetrics(); } }
@@ -62,6 +90,7 @@ public class Intent implements Parcelable {
     public static final String ACTION_MAIN = "android.intent.action.MAIN", ACTION_VIEW = "android.intent.action.VIEW",
             ACTION_BATTERY_CHANGED = "android.intent.action.BATTERY_CHANGED", CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER",
             EXTRA_TEXT = "android.intent.extra.TEXT", ACTION_SEND = "android.intent.action.SEND", EXTRA_SUBJECT = "s",
+            EXTRA_STREAM = "android.intent.extra.STREAM",
             ACTION_CALL = "android.intent.action.CALL", ACTION_DIAL = "android.intent.action.DIAL", ACTION_SENDTO = "android.intent.action.SENDTO";
     public static final int FLAG_ACTIVITY_NEW_TASK = 0x10000000, FLAG_ACTIVITY_CLEAR_TOP = 0x04000000;
     public Intent() {}
@@ -244,7 +273,7 @@ public interface DialogInterface {
     void cancel();
 }
 """)
-c("android/content/ComponentName.java", "package android.content;\npublic class ComponentName { public ComponentName(String p, String c) {} public ComponentName(Context c, Class<?> k) {} public String getPackageName() { return \"\"; } public String getClassName() { return \"\"; } }\n")
+c("android/content/ComponentName.java", "package android.content;\npublic class ComponentName implements android.os.Parcelable { public ComponentName(String p, String c) {} public ComponentName(Context c, Class<?> k) {} public String getPackageName() { return \"\"; } public String getClassName() { return \"\"; } }\n")
 c("android/graphics/Color.java", """package android.graphics;
 public class Color { public static final int BLACK = 0xff000000, WHITE = -1, TRANSPARENT = 0;
     public static int rgb(int r, int g, int b) { return 0; } public static int argb(int a, int r, int g, int b) { return 0; } public static int parseColor(String s) { return 0; } }
@@ -473,8 +502,14 @@ c("android/view/accessibility/AccessibilityEvent.java", "package android.view.ac
 c("android/view/accessibility/AccessibilityNodeInfo.java", """package android.view.accessibility;
 public class AccessibilityNodeInfo { public static final int FOCUS_INPUT = 1, ACTION_SET_TEXT = 2097152;
     public static final String ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE = "ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE";
+    public static final int ACTION_CLICK = 16;
     public AccessibilityNodeInfo findFocus(int f) { return null; } public boolean isEditable() { return true; }
-    public CharSequence getText() { return null; } public boolean performAction(int a, android.os.Bundle b) { return true; } }
+    public CharSequence getText() { return null; } public boolean performAction(int a, android.os.Bundle b) { return true; }
+    public boolean performAction(int a) { return true; } public CharSequence getPackageName() { return null; }
+    public boolean isVisibleToUser() { return true; } public boolean isPassword() { return false; }
+    public CharSequence getContentDescription() { return null; } public boolean isClickable() { return false; }
+    public int getChildCount() { return 0; } public AccessibilityNodeInfo getChild(int i) { return null; }
+    public AccessibilityNodeInfo getParent() { return null; } public void getBoundsInScreen(android.graphics.Rect r) {} }
 """)
 c("android/R.java", """package android;
 public final class R { public static final class drawable { public static final int ic_dialog_info = 1, ic_menu_view = 2, stat_notify_sync = 3; }
@@ -497,7 +532,7 @@ c("android/content/pm/PackageInfo.java", "package android.content.pm;\npublic cl
 c("android/net/Uri.java", """package android.net;
 public abstract class Uri { public static Uri parse(String s) { return null; }
     public String getScheme() { return null; } public String getHost() { return null; } public String getQueryParameter(String k) { return null; }
-    public String getPath() { return null; }
+    public String getPath() { return null; } public String getLastPathSegment() { return null; }
     public static String encode(String s) { return s; } public static Uri withAppendedPath(Uri base, String p) { return null; } }
 """)
 c("android/Manifest.java", "package android;\npublic final class Manifest { public static final class permission { public static final String RECORD_AUDIO = \"a\", POST_NOTIFICATIONS = \"b\"; } }\n")

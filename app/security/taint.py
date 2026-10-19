@@ -149,7 +149,7 @@ def egress_reason(tool: str, arguments: dict[str, Any], taint: Taint | None, use
 # Anything that would PERSIST (a memory, a nickname, a contact, a goal, an automation) and that the model
 # decides on after reading untrusted text asks first: outside text must not plant memories or standing rules.
 PERSISTENT_TOOLS = frozenset({
-    "add_device", "add_project_note", "remember", "memory_suggestion", "set_nickname", "save_contact", "set_goal", "update_goal", "save_workflow",
+    "add_device", "add_project_note", "remember", "memory_suggestion", "set_nickname", "save_contact", "set_goal", "update_goal", "save_workflow", "teach_workflow",
     "schedule_task", "set_reminder", "manage_automation", "accept_fix", "propose_code_change", "restore_workflow",
     "resolve_memory_conflict",
 })

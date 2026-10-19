@@ -82,6 +82,7 @@ class Settings(BaseModel):
     document_folders: str = Field(default="", max_length=2000)  # ;-separated folders for "ask my documents"
     clipboard_history: bool = False  # remember what you copy (text only; secrets and card numbers are never kept)
     clipboard_retention_days: int = Field(default=7, ge=1, le=90)
+    ai_auto_smart: bool = True  # hard questions use a bigger installed model when it fits entirely on the GPU (app/ai/thinking_swap.py)
     ai_auto_switch: bool = False  # switch to a benchmark-backed model when the evidence says so (app/ai/switching.py)
     core_renderer: Literal["auto", "gl", "painter"] = "auto"   # the 3D core: auto = OpenGL when possible, else painter
     visual_quality: Literal["auto", "low", "balanced", "high"] = "auto"

@@ -159,6 +159,9 @@ DeltaCallback = Callable[[str], None]
 ToolCallback = Callable[[ToolExecution], None]
 
 
+_BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
+
+
 @dataclass(frozen=True)
 class AssistantReply:
     text: str
@@ -597,6 +600,10 @@ class ConversationManager:
                     _log.exception("Unexpected error during chat", extra={"event": "chat_crashed"})
                 return AssistantReply(message, ok=False, error=code)
 
+            if model != "direct":
+                reply_text, executions = await self._keep_words_and_deeds(reply_text, executions, on_delta)
+            elif executions:
+                self._unbacked_action = None
             elapsed = int((time.perf_counter() - started) * 1000)
             if not wants_emoji(text):
                 reply_text = strip_emoji(reply_text)
@@ -954,6 +961,7 @@ class ConversationManager:
 
     def _shortcuts(self, text: str) -> list[ToolCall]:
         """Direct commands for the request: one, several ("open Chrome and Spotify"), or none (-> the model)."""
+        text = text.translate(_BN_DIGITS)          # "ভলিউম ৫০" / "remind me in ১০ minutes" -> ASCII digits
         save = SAVE_SETUP.match(" ".join(text.split()))
         if save and self.tools is not None and self.tools.context.database:
             from app.agent import activity
@@ -1027,6 +1035,12 @@ class ConversationManager:
                 shortcuts = self._shortcuts(misheard)
                 if shortcuts:
                     self.reply_language = "bn"
+        if not shortcuts:
+            follow = self._follow_up_action(user_message.content)
+            if follow:                        # "do it" after "I can open WhatsApp" / after a claim that didn't run
+                shortcuts = self._follow_up_calls(follow)
+                if shortcuts:
+                    log_event(_log, "follow_up_action", action=follow.split()[0])
         if self.reply_language == "bn":  # Bangla headlines for a Bangla question
             shortcuts = [ToolCall(c.name, {**c.arguments, "language": "bn"}) if c.name == "get_news" else c
                          for c in shortcuts]
@@ -1103,6 +1117,66 @@ class ConversationManager:
                 turn.append(ChatMessage.tool(call.name, execution.result.to_model_text()))
         return model, text, turn, stats, executions
 
+    _unbacked_action: str | None = None   # an action the last reply claimed but no tool ran (app/agent/honesty.py)
+
+    def _follow_up_action(self, text: str) -> str | None:
+        """'do it' / 'yes' / "I'm ready" right after Jarvis offered (or claimed without doing) an action."""
+        from app.agent.honesty import is_affirmation, offered_action
+
+        if not is_affirmation(text):
+            return None
+        last = getattr(self, "_last_exchange", None)
+        return self._unbacked_action or (offered_action(last[1]) if last else None)
+
+    def _follow_up_calls(self, action: str) -> list[ToolCall]:
+        calls = self._shortcuts(action)
+        if not calls and action.startswith("open ") and self.tools is not None and \
+                self.tools.registry.get("open_application"):
+            calls = [ToolCall("open_application", {"name": action[5:]})]
+        return calls
+
+    async def _keep_words_and_deeds(self, reply_text: str, executions: list, on_delta) -> tuple[str, list]:
+        """The model said it did something but called no tool: do it for real (through the executor, with the usual
+        checks - as the model's choice, not yours, so anything risky still asks) or say plainly that nothing ran."""
+        from app.agent.honesty import CORRECTION, CORRECTION_GENERIC, claimed_action, claims_done
+
+        self._unbacked_action = None
+        if executions or self.tools is None:
+            return reply_text, executions
+        claim = claimed_action(reply_text)
+        calls = self._shortcuts(claim) if claim else []
+        if not calls and claim and claim.startswith("open ") and self.tools.registry.get("open_application"):
+            calls = [ToolCall("open_application", {"name": claim[5:]})]   # the app the reply named; checked as usual
+        if calls:
+            log_event(_log, "unbacked_claim_done", action=claim.split()[0])
+            done: list = []
+            for call in calls[:3]:
+                if self.on_tool_start is not None:
+                    self.on_tool_start(call)
+                execution = await self.tools.execute(call)
+                done.append(execution)
+                self.note_execution(execution)
+                if self.on_tool is not None:
+                    try:
+                        self.on_tool(execution)
+                    except Exception:
+                        _log.warning("tool callback failed", exc_info=True)
+            failed = [e for e in done if not e.result.ok]
+            if failed:
+                extra = f"\n\n({failed[0].result.message or 'It did not work.'})"
+                if on_delta is not None:
+                    on_delta(extra)
+                reply_text += extra
+            return reply_text, done
+        if claim or claims_done(reply_text):
+            log_event(_log, "unbacked_claim_corrected")
+            self._unbacked_action = claim
+            extra = CORRECTION.format(cmd=claim) if claim else CORRECTION_GENERIC
+            if on_delta is not None:
+                on_delta(extra)
+            return reply_text + extra, executions
+        return reply_text, executions
+
     @staticmethod
     def _is_text_call(text: str, known: set[str]) -> bool:
         return bool(known) and parse_text_tool_call(text, known) is not None
@@ -1130,6 +1204,8 @@ class ConversationManager:
 
     def _fallback_notice(self) -> str:
         route = getattr(self.ai, "last_route", None)
+        if isinstance(route, dict) and route.get("auto"):
+            return f"\n\n(Note: {route['auto']}.)"
         if isinstance(route, dict) and route.get("fallback"):
             return (f"\n\n(Note: {route['fallback']}, so I answered with {route['model']}. "
                     "This answer may be less detailed than usual.)")

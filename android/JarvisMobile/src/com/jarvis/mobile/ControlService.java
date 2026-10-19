@@ -96,6 +96,72 @@ public final class ControlService extends AccessibilityService {
         return v instanceof Number ? ((Number) v).doubleValue() : fallback;
     }
 
+    /** The text on the screen now (other apps included), for "what's on my phone": visible texts and buttons, in
+     *  reading order. Password fields are never read; apps that block screenshots usually block this too. */
+    public static Object[] readScreen(Context c) {
+        ControlService s = instance;
+        if (s == null || !allowed(c)) return new Object[]{false, "turn on 'JARVIS control' (Accessibility) and 'Allow the PC to tap' on the phone"};
+        AccessibilityNodeInfo root = s.getRootInActiveWindow();
+        if (root == null) return new Object[]{false, "the phone didn't give the screen's contents (a protected app?)"};
+        StringBuilder out = new StringBuilder();
+        CharSequence pkg = root.getPackageName();
+        if (pkg != null) out.append("[").append(pkg).append("] ");
+        collect(root, out, new int[]{0});
+        String text = out.toString().trim();
+        return new Object[]{true, text.length() > 1900 ? text.substring(0, 1900) + "..." : text};
+    }
+
+    private static void collect(AccessibilityNodeInfo node, StringBuilder out, int[] count) {
+        if (node == null || count[0] > 150 || out.length() > 2000) return;
+        if (node.isVisibleToUser()) {
+            CharSequence t = node.isPassword() ? null : node.getText();
+            CharSequence d = node.getContentDescription();
+            String piece = t != null && t.length() > 0 ? t.toString() : d != null ? d.toString() : "";
+            if (!piece.trim().isEmpty()) {
+                out.append(node.isClickable() ? "[" + piece.trim() + "]" : piece.trim()).append(" | ");
+                count[0]++;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) collect(node.getChild(i), out, count);
+    }
+
+    /** Tap the button / item whose text (or description) contains ``wanted`` - by the screen's own structure, not
+     *  by a remembered position, so it still works when things moved. */
+    public static Object[] tapText(Context c, String wanted) {
+        ControlService s = instance;
+        if (s == null || !allowed(c)) return new Object[]{false, "turn on 'JARVIS control' (Accessibility) and 'Allow the PC to tap' on the phone"};
+        AccessibilityNodeInfo root = s.getRootInActiveWindow();
+        if (root == null || wanted.trim().isEmpty()) return new Object[]{false, "nothing to tap"};
+        AccessibilityNodeInfo node = find(root, wanted.trim().toLowerCase(java.util.Locale.ROOT));
+        if (node == null) return new Object[]{false, "no '" + wanted + "' on the phone's screen now"};
+        AccessibilityNodeInfo target = node;
+        while (target != null && !target.isClickable()) target = target.getParent();
+        if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            return new Object[]{true, "Tapped '" + wanted + "'."};
+        }
+        android.graphics.Rect r = new android.graphics.Rect();
+        node.getBoundsInScreen(r);
+        Path path = new Path();
+        path.moveTo(r.exactCenterX(), r.exactCenterY());
+        boolean ok = s.gesture(path, 60);
+        return new Object[]{ok, ok ? "Tapped '" + wanted + "'." : "the phone refused the tap"};
+    }
+
+    private static AccessibilityNodeInfo find(AccessibilityNodeInfo node, String wanted) {
+        if (node == null) return null;
+        if (node.isVisibleToUser() && !node.isPassword()) {
+            CharSequence t = node.getText();
+            CharSequence d = node.getContentDescription();
+            if ((t != null && t.toString().toLowerCase(java.util.Locale.ROOT).contains(wanted))
+                    || (d != null && d.toString().toLowerCase(java.util.Locale.ROOT).contains(wanted))) return node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo hit = find(node.getChild(i), wanted);
+            if (hit != null) return hit;
+        }
+        return null;
+    }
+
     private float[] point(Map<String, Object> event, String kx, String ky) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         double x = Math.max(0, Math.min(1, number(event, kx, 0.5)));

@@ -123,6 +123,7 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
                   low=0, high=720, step=5),
         FieldSpec("gpu_memory_saver", "Small GPU: keep the AI and speech both on the GPU", "bool"),
         FieldSpec("taint_lockdown", "After reading web pages, email or documents, don't even offer sending/saving tools", "bool"),
+        FieldSpec("ai_auto_smart", "Hard questions: use a bigger installed model if it fits my GPU", "bool"),
         FieldSpec("ai_auto_switch", "Switch models automatically when my benchmark results say it's safer", "bool"),
         FieldSpec("ai_think", "Let reasoning models think first (slower)", "bool"),
         FieldSpec("ollama_keep_alive", "Keep model loaded for", "text", tip="e.g. 10m, 1h, 0 (unload), -1 (always)"),

@@ -132,6 +132,23 @@ controls that PC actually has (no Wake button when Wake-on-LAN isn't set up, no 
   within ~3 s. For apps and calls to open while JARVIS Mobile is closed, also turn on "JARVIS control" (Accessibility).
 * The PC's phone-screen window can "Ask the phone to share": the phone shows Android's "Start now?" - you tap it.
 
+## 1.3.0: screen text, clipboard, files, location
+
+* Your PC can read the text on the phone's screen and tap a button by its words (needs "JARVIS control" +
+  "Allow the PC to tap"; password fields are never read).
+* Clipboard both ways: the PC can put text on the phone's clipboard; the app's "Send my clipboard to the PC" sends
+  yours (Android only lets an app read the clipboard while it is on screen).
+* Share > JARVIS Mobile now takes photos and any file -> saved on the PC in data\phone_inbox.
+* "Where is my phone": its last known location, after "Allow location"; sent only to your PC.
+
+## 1.4.0: lock the screen from the PC, phone-state triggers
+
+* "Lock my phone": the first time, the phone opens Android's own "Device admin" screen - tap Activate. JARVIS Mobile asks
+  for ONE power (`force-lock`): it cannot wipe the phone, change the PIN or read anything through it. Switch it off in
+  Settings > Security > Device admin apps. The PC asks you on screen every time.
+* Automations can start when the phone is plugged in / unplugged or its battery falls below a level. They run from the
+  phone's check-ins, so keep the app open or "Stay connected" on.
+
 ## Known limitations (honest)
 
 * **No lock-screen bypass exists** and none is attempted. Remote Desktop signs you into your session remotely (the

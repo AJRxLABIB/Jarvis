@@ -50,6 +50,7 @@ PROTOCOLS = frozenset({1})         # envelope versions this PC understands (the 
 IDEMPOTENT_SECONDS = 600           # a repeated request_id (a retry after a lost answer) gets the first answer again
 NONCE_KEEP_SECONDS = 600
 MAX_ARGUMENT_CHARS = 8000
+FILE_ARGUMENT_CHARS = 35_000_000   # a file from the phone (base64, 25 MB); only on /api/mobile/upload
 FRAME_ARGUMENT_CHARS = 620_000     # a screen frame (base64 JPEG); only on /api/mobile/frame, which has its own size cap
 TRUST_STATES = ("pending", "trusted", "restricted", "revoked")
 # What a phone may be allowed to do. "emergency" can't be taken away from a trusted phone.
@@ -70,7 +71,9 @@ COMMANDS: dict[str, tuple[str | None, str | None]] = {
     "events": ("read", None),         # new messages + the approval question waiting
     "wait_events": ("read", None),
     "screen_frame": ("read", None),   # the phone shares its own screen (it asked you, Android asked you): /api/mobile/frame
-    "screen_stopped": ("read", None),    # the same, but held open until something happens (instant updates, no Firebase)
+    "screen_stopped": ("read", None),
+    "phone_file": ("read", None),       # Share > JARVIS Mobile: a photo / file to this PC (/api/mobile/upload)
+    "phone_clipboard": ("read", None),  # "Send clipboard to PC": text onto the PC's clipboard    # the same, but held open until something happens (instant updates, no Firebase)
     "chat": ("chat", None),
     "approve": ("approve", None),
     "emergency_stop": (None, None),   # always allowed for a trusted or restricted phone
@@ -440,7 +443,8 @@ class MobileRegistry:
         command = envelope["command"]
         if command not in COMMANDS:
             raise MobileError(400, "unknown_command", f"Unknown command '{command[:40]}'.")
-        limit = FRAME_ARGUMENT_CHARS if command == "screen_frame" else MAX_ARGUMENT_CHARS
+        limit = (FRAME_ARGUMENT_CHARS if command == "screen_frame" else FILE_ARGUMENT_CHARS if command == "phone_file"
+                 else MAX_ARGUMENT_CHARS)
         if len(envelope["arguments"]) > limit:
             raise MobileError(413, "too_big", "The arguments are too long.")
         device = self.get(envelope["device_id"])

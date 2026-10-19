@@ -2,8 +2,8 @@
 <!-- JARVIS Mobile: your secure remote terminal for the JARVIS PC. It never handles your Windows password. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jarvis.mobile"
-    android:versionCode="3"
-    android:versionName="1.2.0">
+    android:versionCode="5"
+    android:versionName="1.4.0">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 
@@ -23,6 +23,9 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- "where is my phone": its last known location, only to your PC, after you allow Location -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- "open an app on my phone": see the launchable apps (Android 11+ package visibility) -->
     <queries>
@@ -92,6 +95,14 @@
             </intent-filter>
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/jarvis_control" />
         </service>
+        <!-- Lock the screen from the PC: only after YOU activate it (Settings > Device admin apps); force-lock is its only policy -->
+        <receiver android:name=".LockAdmin" android:exported="true" android:label="JARVIS lock"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data android:name="android.app.device_admin" android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
         <!-- Share > JARVIS Mobile: text or a link to the PC -->
         <activity android:name=".ShareActivity" android:exported="true" android:label="Send to my PC"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
@@ -99,6 +110,12 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+            </intent-filter>
+            <!-- a photo or any file -> saved on the PC (data\phone_inbox) -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
     </application>

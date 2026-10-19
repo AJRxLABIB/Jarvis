@@ -205,6 +205,11 @@ class RemoteMixin:
         hub.emergency = self._mobile_emergency
         hub.phone_screen = self.phone_screens()
         hub.cancel = self._mobile_cancel
+        from app.remote.phone_inbox import PhoneInbox
+
+        hub.phone_inbox = PhoneInbox(self.ctx.paths.data_dir)
+        hub.clipboard = self._clipboard_from_phone
+        hub.on_file = lambda phone, path: self.notice.emit(f"{phone} sent a file: {path.name} (saved in {path.parent}).")
 
         async def run_tool(tool: str, arguments: dict) -> dict:
             # the phone's button press is your own command, exactly like saying it: same checks, same audit
@@ -230,6 +235,16 @@ class RemoteMixin:
 
             screens = self._phone_screens = PhoneScreenHub()
         return screens
+
+    def _clipboard_from_phone(self, text: str) -> None:
+        """'Send clipboard to PC' on the phone: the text goes onto this PC's clipboard (Windows clipboard API)."""
+        from app.tools import winapi
+
+        try:
+            winapi.set_clipboard_text(text)
+        except Exception:
+            _log.warning("could not set the clipboard from the phone", exc_info=True)
+        self.notice.emit("Your phone's clipboard is on the PC now (Ctrl+V).")
 
     def ask_phone_to_share(self) -> str:
         """The PC viewer's "Ask the phone to share": queue share_screen for the most recently seen trusted phone."""

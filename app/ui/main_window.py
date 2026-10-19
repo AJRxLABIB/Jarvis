@@ -831,6 +831,7 @@ class MainWindow(QMainWindow):
 
         if not motion.ENABLED or not self._can_fade():
             self.showMinimized()
+            self._front_target()
             finish()
             return
         from PySide6.QtCore import QEasingCurve, QPropertyAnimation
@@ -844,19 +845,24 @@ class MainWindow(QMainWindow):
         def gone() -> None:
             self.showMinimized()
             self.setWindowOpacity(1.0)  # ready for the way back
-            try:  # and the app you're working with (the one just opened) is the one in front
-                from app.tools import winapi
-
-                target = winapi.target_window()
-                if target is not None:
-                    winapi.force_foreground(target.hwnd)
-            except Exception:
-                pass
+            self._front_target()
             finish()
 
         fade.finished.connect(gone)
         self._step_fade = fade
         fade.start()
+
+    @staticmethod
+    def _front_target() -> None:
+        """The app you're working with (the one just opened) is the one in front once Jarvis stepped aside."""
+        try:
+            from app.tools import winapi
+
+            target = winapi.target_window()
+            if target is not None:
+                winapi.force_foreground(target.hwnd)
+        except Exception:
+            pass
 
     def _can_fade(self) -> bool:
         """Whole-window opacity fades turn the window into a Windows layered window; with the OpenGL backdrop that froze
@@ -1530,7 +1536,7 @@ class MainWindow(QMainWindow):
     def open_workspaces(self) -> None:
         from app.ui.workspaces import WorkspacesDialog
 
-        WorkspacesDialog(self, parent=self).exec()
+        WorkspacesDialog(self, parent=self, send_command=self.controller.send_text).exec()
 
     def open_phone_screen(self) -> None:
         """A phone sharing its screen (it starts the sharing; Android asks it every time). Not modal: keep working."""

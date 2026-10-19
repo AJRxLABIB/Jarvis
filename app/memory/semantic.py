@@ -96,7 +96,39 @@ def read_pdf(path: Path) -> str:
     except ImportError as exc:
         raise ValueError("PDF support needs pypdf: pip install -r requirements.txt") from exc
     reader = PdfReader(str(path))
-    return "\n".join((page.extract_text() or "") for page in reader.pages[:500])
+    # each page starts with a "[p. N]" marker, so answers can say which page they come from (paged_chunks)
+    return "\n\n".join(f"[p. {n}]\n{page.extract_text() or ''}" for n, page in enumerate(reader.pages[:500], 1))
+
+
+_PAGE = re.compile(r"\[p\. (\d{1,4})\]")
+
+
+def paged_chunks(text: str) -> list[str]:
+    """chunks() for text with "[p. N]" page markers: every passage starts with the page it begins on."""
+    pieces = chunks(text)
+    if not _PAGE.search(text):
+        return pieces
+    out, pos = [], 0
+    flat = re.sub(r"[ \t]+", " ", text)
+    for piece in pieces:
+        found = flat.find(piece[:60], pos)
+        start = found if found >= 0 else pos
+        pos = max(pos, start)
+        before = list(_PAGE.finditer(flat, 0, start + 1))
+        page = before[-1].group(1) if before else "1"
+        out.append(piece if piece.startswith("[p. ") else f"[p. {page}] {piece}")
+    return out
+
+
+SENSITIVE_PARTS = {"appdata", "$recycle.bin", ".ssh", ".gnupg"}
+SENSITIVE_NAME = re.compile(r"(?:^|[\W_])(?:passwords?|credentials?|secrets?|private[\W_]?key|recovery[\W_]?codes?)"
+                            r"(?:[\W_]|$)|^\.env", re.I)
+
+
+def is_sensitive(path: Path) -> bool:
+    """Never indexed even inside a chosen folder: system / app-data folders and files named like passwords or keys."""
+    parts = {p.lower() for p in path.parts}
+    return bool(parts & SENSITIVE_PARTS) or bool(SENSITIVE_NAME.search(path.stem))
 
 
 def read_document(path: Path) -> str:
@@ -197,7 +229,8 @@ class SemanticIndex:
         stats["removed"] = self._purge_missing(folder, known)
         for path in sorted(folder.rglob("*")):
             if not path.is_file() or path.suffix.lower() not in DOC_EXTENSIONS or any(
-                    part.startswith(".") or part in ("node_modules", "__pycache__", ".git") for part in path.parts):
+                    part.startswith(".") or part in ("node_modules", "__pycache__", ".git") for part in path.parts) \
+                    or is_sensitive(path.relative_to(folder) if path.is_relative_to(folder) else path):
                 continue
             try:
                 info = path.stat()
@@ -207,7 +240,7 @@ class SemanticIndex:
                 if known.get(str(path)) == info.st_mtime:
                     stats["unchanged"] += 1
                     continue
-                passages = chunks(read_document(path))
+                passages = paged_chunks(read_document(path))
             except Exception:
                 _log.warning("could not read a document", exc_info=True)
                 stats["skipped"] += 1

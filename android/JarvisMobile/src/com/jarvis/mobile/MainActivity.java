@@ -35,7 +35,7 @@ import java.util.Map;
  *     Windows password, and never claims Windows is unlocked when it isn't.
  */
 public class MainActivity extends Activity {
-    static final String APP_VERSION = "1.2.0";
+    static final String APP_VERSION = "1.4.0";
     static final String EXTRA_START_SHARE = "com.jarvis.mobile.START_SHARE";   // the PC asked to start sharing
     private static final int REQ_VOICE = 1, REQ_AUTH = 2, REQ_SHARE = 3;
 
@@ -578,9 +578,32 @@ public class MainActivity extends Activity {
             ui.postDelayed(this::render, 400);
         });
         card.addView(link);
+        Button clip = Ui.button(this, "Send my clipboard to the PC", Ui.PANEL);
+        clip.setOnClickListener(v -> sendClipboard());
+        card.addView(clip);
+        Button loc = Ui.button(this, "Allow location (for 'where is my phone')", Ui.PANEL);
+        loc.setOnClickListener(v -> {
+            if (android.os.Build.VERSION.SDK_INT >= 23) requestPermissions(new String[]{
+                    "android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION"}, 6);
+        });
+        card.addView(loc);
+        card.addView(Ui.text(this, "Share > JARVIS Mobile sends photos and files to the PC (data\\phone_inbox).", 12, Ui.DIM));
         card.addView(Ui.text(this, "Staying connected lets the PC reach this phone while the app is closed (a notification "
                 + "shows it). For calls and apps to open from the background, also turn on 'JARVIS control' below.", 12, Ui.DIM));
         content.addView(card);
+    }
+
+    private void sendClipboard() {
+        final Pc pc = store.current();
+        android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        android.content.ClipData clip = cm == null ? null : cm.getPrimaryClip();
+        CharSequence text = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(this) : null;
+        if (pc == null || text == null || text.toString().trim().isEmpty()) { toast("The clipboard is empty."); return; }
+        Map<String, Object> args = new LinkedHashMap<String, Object>();
+        String s = text.toString();
+        args.put("text", s.length() > 7000 ? s.substring(0, 7000) : s);
+        actions.run(pc, away, "phone_clipboard", args, (result, error) ->
+                toast(error == null && result != null && result.ok() ? "On your PC's clipboard." : "Couldn't reach your PC."));
     }
 
     private void renderScreenShare() {

@@ -321,6 +321,10 @@ class AIManager:
         if model is None and smart:  # AI_SMART_MODEL for hard questions
             model = await self._optional_model(self.settings.ai_smart_model, "smart")
             role = "smart"
+            if model is None and getattr(self.settings, "ai_auto_smart", False) and not coding:
+                model = await self._bigger_that_fits(tools)
+                if model is not None:
+                    role = "smart-auto"
         elif model is None and fast:
             model = await self._fast_model()
             role = "fast"
@@ -339,6 +343,9 @@ class AIManager:
             model, _ = await self.resolve_model()
             role = "default"
         self.last_route = {"role": role, "model": model.name, "fallback": None}
+        auto_note = self.__dict__.pop("_auto_note", None)
+        if auto_note and role == "smart-auto":
+            self.last_route["auto"] = auto_note
         if substituted is not None and substituted[0] != model.name:
             self.last_route["fallback"] = self._announce_once(f"{substituted[0]} {substituted[1]}")
         missing = self.__dict__.pop("_saved_missing", None)
@@ -352,6 +359,45 @@ class AIManager:
             )
         think = self.settings.ai_think if model.supports_thinking else None
         return ChatRequest(model=model.name, messages=tuple(messages), tools=tuple(tools), think=think)
+
+    _gpu_total: tuple[float, float | None] = (0.0, None)      # (when read, total MB)
+
+    async def _gpu_total_mb(self) -> float | None:
+        when, total = self._gpu_total
+        if time.monotonic() - when < 600 and when:
+            return total
+
+        def read() -> float | None:
+            try:
+                from app.tools.system import gpu_info
+
+                gpus = gpu_info().get("gpus") or []
+                return max(float(g["memory_total_mb"]) for g in gpus) if gpus else None
+            except Exception:
+                return None
+
+        total = await asyncio.to_thread(read)
+        self._gpu_total = (time.monotonic(), total)
+        return total
+
+    async def _bigger_that_fits(self, tools: Sequence[ToolSpec]) -> ModelInfo | None:
+        """AI_AUTO_SMART: for a hard request, a bigger installed model that fits entirely on the GPU (see
+        app/ai/thinking_swap.py). None = keep the default."""
+        from app.ai import thinking_swap
+
+        try:
+            default, _ = await self.resolve_model()
+            budget = thinking_swap.gpu_budget_mb(await self._gpu_total_mb(),
+                                                 bool(getattr(self.settings, "gpu_memory_saver", False)))
+            models = [m for m in await self.models() if self.health.available(m.name)]
+            chosen = thinking_swap.pick(default, models, budget, tools=bool(tools))
+        except Exception:
+            return None
+        if chosen is not None:
+            log_event(_log, "smart_model_auto", default=default.name, chosen=chosen.name)
+            self.__dict__["_auto_note"] = self._announce_once(
+                f"this was a hard question, so I used the bigger model {chosen.name} (it fits your GPU)")
+        return chosen
 
     async def _auto_switch(self, model: ModelInfo, tools: Sequence[ToolSpec], untrusted: bool) -> ModelInfo:
         """AI_AUTO_SWITCH: replace ``model`` by an installed, benchmark-backed one when app/ai/switching.py says so."""

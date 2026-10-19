@@ -120,7 +120,10 @@ public final class Comms {
 
     /** One-time codes never leave the phone. */
     static String hideCodes(String text) {
-        return text == null ? "" : text.replaceAll("(?<!\\d)\\d{4,8}(?!\\d)", "••••");
+        if (text == null) return "";
+        // only messages that carry a code are masked: amounts in payment messages (Tk 5000) stay readable
+        if (!text.matches("(?is).*(\\b(otp|code|pin|verification|password|passcode)\\b|কোড|ওটিপি|পিন).*")) return text;
+        return text.replaceAll("(?<!\\d)\\d{4,8}(?!\\d)", "\u2022\u2022\u2022\u2022");
     }
 
     private static Object[] read(Context c, int count, String from) {

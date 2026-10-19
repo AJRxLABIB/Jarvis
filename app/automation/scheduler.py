@@ -24,7 +24,7 @@ import psutil
 from app.agent.tool_manager import ToolExecution, ToolExecutor
 from app.ai.base import ToolCall
 from app.automation.tasks import AutomationStore, AutomationTask
-from app.automation.triggers import BatteryTrigger, EventTrigger, OnceTrigger
+from app.automation.triggers import BatteryTrigger, EventTrigger, OnceTrigger, phone_percent
 from app.utils.logging_setup import get_logger, log_event
 
 _log = get_logger("automation")
@@ -57,7 +57,13 @@ def _battery() -> tuple[float, bool] | None:
 
 def _pc_events() -> dict:
     """What the event triggers look at: the Wi-Fi name, running apps, removable drives."""
-    snapshot: dict = {"wifi": "", "apps": set(), "usb": set()}
+    snapshot: dict = {"wifi": "", "apps": set(), "usb": set(), "phone": {}}
+    try:
+        from app.remote import phone_link
+
+        snapshot["phone"] = dict(phone_link.LATEST)       # what your phone last reported (empty until it checks in)
+    except Exception:
+        pass
     try:
         from app.tools import winapi
 
@@ -241,7 +247,24 @@ class Scheduler:
             new = set(now.get("apps", set())) - set(before.get("apps", set()))
             wanted = wanted.removesuffix(".exe")
             return any(wanted in app for app in new) if wanted else False
+        if trigger.event in ("phone_charging", "phone_battery_low"):
+            return Scheduler._phone_due(trigger, before.get("phone") or {}, now.get("phone") or {})
         return bool(set(now.get("usb", set())) - set(before.get("usb", set())))
+
+    @staticmethod
+    def _phone_due(trigger: EventTrigger, before: dict, now: dict) -> bool:
+        """Changes between two looks at the phone's last report (a phone that wasn't known before never 'changes')."""
+        if not before or not now:
+            return False
+        if trigger.event == "phone_charging":
+            if before.get("charging") is None or now.get("charging") is None or before["charging"] == now["charging"]:
+                return False
+            wanted = trigger.value.strip().lower()
+            return not wanted or wanted == ("started" if now["charging"] else "stopped")
+        limit = phone_percent(trigger.value)
+        level, was = now.get("battery"), before.get("battery")
+        return (isinstance(level, (int, float)) and isinstance(was, (int, float)) and not now.get("charging")
+                and level < limit <= was)
 
     def _files_due(self, task: AutomationTask) -> bool:
         from app.automation import filewatch

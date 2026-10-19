@@ -490,6 +490,7 @@ class ToolExecutor:
         if outcome.ok and tool.verify is not None:
             outcome = await self._verify(tool, args, outcome, call)
         if outcome.ok:
+            self._teach(tool, args)
             self._record_undo(call, outcome, run)
             if run is not None and gate.once_key is not None:
                 run.completed[gate.once_key] = outcome.message[:200]
@@ -501,6 +502,17 @@ class ToolExecutor:
                 except Exception:
                     _log.warning("taint tracking failed", exc_info=True)
         return outcome
+
+    def _teach(self, tool: Tool, args: Any) -> None:
+        """A teach session (app/automation/teach.py) remembers the tools Jarvis really ran - nothing else."""
+        from app.automation.teach import TEACHER
+
+        if not TEACHER.active:
+            return
+        try:
+            TEACHER.record(tool.name, args.model_dump(exclude_defaults=True), tool.level_for(args, self.context))
+        except Exception:
+            _log.warning("teach session could not record %s", tool.name, exc_info=True)
 
     async def _verify(self, tool: Tool, args: Any, outcome: ToolResult, call: ToolCall) -> ToolResult:
         """The verification contract: the tool's own check of the real world after it said "done"."""
