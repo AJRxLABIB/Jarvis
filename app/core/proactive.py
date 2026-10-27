@@ -148,6 +148,13 @@ def candidates(ctx, now: datetime) -> list[Candidate]:
     found += _mission_signals(ctx, now)
     found += _project_signals(ctx)
     found += _failure_signals(ctx)
+    try:
+        from app.core import radar
+
+        found += radar.signals(ctx, now)
+        found, _held = radar.Feedback(ctx.database).filter(found)        # snoozed / muted / auto-muted alerts stay quiet
+    except Exception:
+        _log.warning("radar signals unavailable", exc_info=True)
     return found
 
 

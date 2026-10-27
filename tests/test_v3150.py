@@ -218,6 +218,8 @@ def test_revoked_phone_loses_access_at_once(registry) -> None:
     again = Phone()
     again.key, again.public = phone.key, phone.public  # the same (lost) phone's key
     assert code_of(lambda: registry.pair(again.pair_request(session))) == "already_paired"
+    fresh = Phone()                                     # the phone makes a NEW key and retries with the same code
+    assert registry.pair(fresh.pair_request(session)).trust == "pending"
 
 
 def test_commands_become_fixed_tool_calls_only() -> None:

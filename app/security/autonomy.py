@@ -28,7 +28,7 @@ READ_ONLY = frozenset({
     "calendar_events", "check_device", "check_project", "code_impact", "command_center", "current_context",
     "daily_briefing", "describe_screen", "dev_environment", "device_info", "diagnose_jarvis", "explain_action",
     "explain_memory", "file_info", "find_files", "find_my_files", "find_duplicates", "get_datetime", "get_news",
-    "get_weather", "git_log", "git_status", "health_history", "home_status", "integrations", "list_agents",
+    "get_weather", "git_log", "goal_check", "investigate", "research_brief", "goal_review", "capability_report", "anomalies", "git_status", "health_history", "home_status", "integrations", "list_agents",
     "list_automations", "list_contacts", "list_devices", "list_folder", "list_goals", "list_nicknames",
     "list_processes", "list_proposals", "list_todos", "list_undoable", "mission_history", "mission_status",
     "model_status", "pc_health", "program_history", "project_profile", "read_clipboard", "read_code", "read_emails",
@@ -63,6 +63,18 @@ def is_read_only(tool: str, arguments: dict | None = None) -> bool:
         return (arguments or {}).get("action") == "status"
     if tool in ("journal", "habits"):
         return (arguments or {}).get("action") in ("list", "search", "today", "report", "streaks")
+    if tool == "decision":
+        return (arguments or {}).get("action") in ("list", "show", "relevant", "compare")
+    if tool == "preferences":
+        return (arguments or {}).get("action") in ("list", "questions", "resolve")
+    if tool == "handoff":
+        return (arguments or {}).get("action") in ("list", "inspect")
+    if tool == "task_replay":
+        return (arguments or {}).get("action", "diagnose") in ("list", "show", "diagnose", "simulate")
+    if tool == "experience":
+        return (arguments or {}).get("action", "propose") == "propose"
+    if tool == "radar_feedback":
+        return (arguments or {}).get("action") == "scan"
     if tool == "learning":
         return (arguments or {}).get("action", "report") in ("report", "lessons")
     if tool == "local_device":

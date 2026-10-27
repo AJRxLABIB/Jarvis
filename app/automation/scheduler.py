@@ -361,10 +361,40 @@ class Scheduler:
             return True                       # unknown tool: be careful
         return tool.risk is not None or int(tool.level) > 0
 
+    def _track_reliability(self, task: AutomationTask, report: RunReport, once: bool) -> None:
+        """Record the run; a skill that failed several times in a row is switched off with the reason (never deleted)."""
+        try:
+            from app.automation import reliability
+
+            db = getattr(self.store, "_db", None)
+            if db is None or once:
+                return
+            reliability.record(db, task.name, report.ok, report.failed_step, report.message)
+            bad = None if report.ok else reliability.should_suspend(db, task.name)
+            if bad is not None and task.enabled:
+                self.store.set_enabled(task.id, False, None)
+                why = (f"suspended: it failed {bad.streak_failures} runs in a row"
+                       + (f" (last: {bad.last_failure[:120]})" if bad.last_failure else "") + ". Fix the cause, then re-enable it.")
+                self.store.record_run(task.id, why, None, disable=True)
+                self.notify(task.name, f"'{task.name}' {why}")
+        except Exception:
+            _log.warning("could not track reliability for %s", task.name, exc_info=True)
+
     async def run(self, task: AutomationTask, *, manual: bool = False, resume: bool = False,
-                  uncertain: str | None = None) -> RunReport:
-        """``uncertain``: what to do when ``resume`` meets a step whose outcome is unknown - 'repeat' or 'skip'."""
+                  uncertain: str | None = None, params: dict[str, Any] | None = None) -> RunReport:
+        """``uncertain``: what to do when ``resume`` meets a step whose outcome is unknown - 'repeat' or 'skip'.
+        ``params``: values for the workflow's named inputs (else their defaults); refused if one is unknown or missing."""
+        from dataclasses import replace
+
+        from app.automation.tasks import bind
         from app.core.runs import Run, RunStore, running
+
+        try:
+            bound = bind(task.steps, task.parameters, params)
+        except Exception as exc:
+            return RunReport(task, ok=False, message=str(exc))
+        if bound is not task.steps:
+            task = replace(task, steps=bound)
 
         if task.id in self._running:  # a manual run must not overlap a scheduled one (or itself)
             log_event(_log, "automation_overlap_refused", name=task.name, manual=manual)
@@ -470,6 +500,7 @@ class Scheduler:
             self.store.record_run(task.id, "ok" if report.ok else report.message, next_run, disable=once)
         else:
             self.store.record_run(task.id, "ok" if report.ok else report.message, None)
+        self._track_reliability(task, report, once)
         log_event(_log, "automation_finished", name=task.name, ok=report.ok, failed_step=report.failed_step)
         if self.on_run is not None:
             try:

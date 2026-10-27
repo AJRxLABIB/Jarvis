@@ -146,6 +146,8 @@ class MainWindow(QMainWindow):
         self.mute_mic_action.setToolTip("Nothing listens while this is on - not even the wake word")
         self.mute_mic_action.toggled.connect(lambda on: self.controller.set_mic_muted(on))
         self.menu.addSeparator()
+        self.menu.addAction("Command center (Ctrl+Shift+C)", lambda: self.show_command_center())
+        self.menu.addAction("Core view (Ctrl+Shift+H)", lambda: self.show_page(0))
         self.menu.addAction("Workspaces (every screen, Ctrl+K)...", self.open_workspaces)
         self.menu.addAction("Settings...", self.open_settings)
         self.memory_action = self.menu.addAction("Memory...", self.open_memory)
@@ -624,6 +626,8 @@ class MainWindow(QMainWindow):
         self.live_box.setObjectName("liveBox")
         self.live_box.setFixedWidth(230)
         self._last_action = "--"
+        self.command_center = None            # built the first time it is opened (Ctrl+Shift+C)
+        self._bottom_bar = [self.live_voice_button, self.input, self.mic_button, self.send_button, self.stop_button]
         input_row = QHBoxLayout()
         input_row.setSpacing(8)
         input_row.addWidget(self.live_voice_button)
@@ -695,6 +699,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=controller.cancel)
         QShortcut(QKeySequence(Qt.Key.Key_F11), self, activated=self.toggle_full_screen)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.open_workspaces)
+        QShortcut(QKeySequence("Ctrl+Shift+C"), self, activated=self.show_command_center)
+        QShortcut(QKeySequence("Ctrl+Shift+H"), self, activated=lambda: self.show_page(0))
         QShortcut(QKeySequence("Ctrl+M"), self, activated=lambda: self.controller.set_mic_muted(
             not self.controller.mic_muted))
 
@@ -1078,7 +1084,40 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- dashboard
 
+    def show_command_center(self, section: str = "") -> None:
+        """The command-center view (left rail, conversation, context panel): created on first use, replays the chat."""
+        if self.command_center is None:
+            from app.ui.command_center.view import CommandCenterView
+
+            view = CommandCenterView(self.controller, self)
+            for role, text in self.chat.messages:
+                if text:
+                    view.chat.add_message(role, text)
+            view.core_requested.connect(lambda: self.show_page(0))
+            self.command_center = view
+            self._cc_index = self.pages.addWidget(view)
+            self._apply_stats_to_cc()
+        self.pages.setCurrentIndex(self._cc_index)
+        for widget in self._bottom_bar:        # the view has its own command bar
+            widget.setVisible(False)
+        if section:
+            self.command_center.show_section(section)
+        self.command_center.command.focus()
+
+    def _apply_stats_to_cc(self) -> None:
+        if self.command_center is None:
+            return
+        try:
+            cpu = psutil.cpu_percent(None)
+            ram = psutil.virtual_memory().percent
+        except Exception:
+            cpu = ram = None
+        self.command_center.on_stats(cpu, ram, self._gpu_text if getattr(self, "_gpu_available", False) else None)
+
     def show_page(self, index: int) -> None:
+        for widget in getattr(self, "_bottom_bar", []):
+            if widget is not self.live_box:
+                widget.setVisible(True)
         self.pages.setCurrentIndex(index)
         for i, tab in enumerate(self.tabs[:2]):
             tab.set_current(i == index)
@@ -1108,6 +1147,8 @@ class MainWindow(QMainWindow):
         from app.ui.dashboard_fx import apply_fx_settings
 
         apply_fx_settings(self)
+        if self.command_center is not None:
+            self.command_center.apply_style()
 
     def _apply_hud_rings(self) -> None:
         """The flat rings, gauges and ticks around the core: off by default (Settings brings them back)."""
@@ -1823,6 +1864,8 @@ class MainWindow(QMainWindow):
         if s.pids is not None:
             self.rows["procs"].set(str(s.pids))
         self._update_dashboard_stats()
+        if self.command_center is not None:
+            self.command_center.on_stats(cpu, memory.percent, self._gpu_text if self._gpu_available else None)
 
     _IGNORED_PROCESSES = frozenset({"system idle process", "idle", "system", "registry", "memory compression"})
 

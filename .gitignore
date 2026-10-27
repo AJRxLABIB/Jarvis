@@ -37,3 +37,12 @@ build/
 dist/
 packaging/version_info.txt
 shots/
+
+# Secrets and artifacts that must never be committed
+.env.bak
+android/signing/
+*.jks
+*.keystore
+*.zip
+Claude outputs/
+shots/

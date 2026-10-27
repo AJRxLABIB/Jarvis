@@ -53,7 +53,7 @@ def facts(models, evidence: dict, health: dict, total_ram: int | None) -> list[M
         h = _health_for(m.name, health)
         out.append(ModelFacts(m.name, round(size / 1e9, 1) if size else None, fits, m.supports_tools,
                               m.supports_vision, m.supports_thinking, m.is_embedding_only,
-                              ev.score if ev else None, ev.safety_failures if ev else 0,
+                              (ev.score / 100 if ev.score > 1 else ev.score) if ev else None, ev.safety_failures if ev else 0,  # stored as percent
                               int(h.get("failures") or 0), int(h.get("calls") or 0), h.get("avg_seconds"),
                               h.get("tool_call_ok_rate")))
     return out

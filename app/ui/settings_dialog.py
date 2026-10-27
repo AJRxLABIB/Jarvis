@@ -38,7 +38,7 @@ from app.config.live_fields import POLICY_FIELDS, REMOTE_FIELDS, STARTUP_ONLY_FI
 
 LIVE_FIELDS = LIVE_FIELDS | REMOTE_FIELDS | STARTUP_ONLY_FIELDS | POLICY_FIELDS | {
     "visual_quality", "core_speed", "glow_intensity", "reduced_motion", "core_hud_rings", "core_pulses", "core_trails",
-    "ui_sounds", "ui_sound_volume", "hidden_panels", "speech_dataset", "automation_quiet_hours", "briefing_length", "briefing_sections", "auto_sort_downloads", "weekly_health_check"}
+    "ui_sounds", "ui_sound_volume", "ui_theme", "ui_text_scale", "hidden_panels", "speech_dataset", "automation_quiet_hours", "briefing_length", "briefing_sections", "auto_sort_downloads", "weekly_health_check"}
 
 
 @dataclass(frozen=True)
@@ -97,6 +97,8 @@ TABS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         FieldSpec("core_trails", "Sparks with trails around the core", "bool"),
         FieldSpec("ui_sounds", "Interface sounds (tick, attention, done, error)", "bool"),
         FieldSpec("ui_sound_volume", "Interface sound volume", "float", low=0, high=1, step=0.1),
+        FieldSpec("ui_theme", "Command center: dark or light", "choice", options=("dark", "light")),
+        FieldSpec("ui_text_scale", "Command center: text size", "float", low=0.8, high=1.6, step=0.1),
         FieldSpec("hud_scale", "Window size (HUD scale)", "float", low=0.75, high=1.5, step=0.05,
                   tip="Scales the whole window; applies the next time Jarvis starts"),
         FieldSpec("hidden_panels", "Hide dashboard panels", "text",

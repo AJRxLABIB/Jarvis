@@ -258,7 +258,7 @@ class ToolExecutor:
             self._audit(
                 "tool_result", call, level=int(level) if level is not None else None,
                 decision=decision.value if decision else None,
-                details={"ok": result.ok, "error": result.error, "message": result.message},
+                details={"ok": result.ok, "error": result.error, "message": result.message, "elapsed_ms": elapsed},
             )
             return ToolExecution(call, result, level, decision, elapsed)
 
@@ -516,8 +516,11 @@ class ToolExecutor:
 
     async def _verify(self, tool: Tool, args: Any, outcome: ToolResult, call: ToolCall) -> ToolResult:
         """The verification contract: the tool's own check of the real world after it said "done"."""
+        from app.core import activity
+
         try:
-            ok, found = await asyncio.wait_for(asyncio.to_thread(tool.verify, args, outcome, self.context), 10.0)
+            with activity.verifying():
+                ok, found = await asyncio.wait_for(asyncio.to_thread(tool.verify, args, outcome, self.context), 10.0)
         except Exception:
             _log.warning("verification of %s failed to run", tool.name, exc_info=True)
             return outcome  # can't check: report what the tool said, without claiming more

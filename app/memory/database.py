@@ -1040,6 +1040,108 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX idx_phone_commands_device ON phone_commands (device_id, status)",
         ),
     ),
+    Migration(
+        37,
+        "intelligence_records",
+        (
+            # decision records: what was chosen, over what, why, on what evidence, and how it turned out (all editable)
+            """
+            CREATE TABLE decision_records (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                title        TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                chosen       TEXT NOT NULL CHECK (length(chosen) BETWEEN 1 AND 300),
+                alternatives TEXT NOT NULL DEFAULT '[]',
+                criteria     TEXT NOT NULL DEFAULT '[]',
+                evidence     TEXT NOT NULL DEFAULT '[]',
+                outcome      TEXT NOT NULL DEFAULT '',
+                status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'reversed')),
+                project      TEXT NOT NULL DEFAULT '',
+                created_at   TEXT NOT NULL,
+                updated_at   TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_decision_records_project ON decision_records (project, status)",
+            # preferences: stated by you (explicit) or only noticed (observed -> a candidate that is never used until you confirm)
+            """
+            CREATE TABLE preferences (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                key        TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 60),
+                text       TEXT NOT NULL CHECK (length(text) BETWEEN 1 AND 200),
+                value      TEXT NOT NULL DEFAULT '',
+                scope      TEXT NOT NULL DEFAULT 'global' CHECK (length(scope) BETWEEN 1 AND 60),
+                source     TEXT NOT NULL CHECK (source IN ('explicit', 'observed')),
+                status     TEXT NOT NULL CHECK (status IN ('candidate', 'confirmed', 'rejected')),
+                seen       INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (key, scope)
+            )
+            """,
+            # what you told the radar about an alert: snooze, mute, was it useful
+            """
+            CREATE TABLE radar_feedback (
+                key           TEXT PRIMARY KEY CHECK (length(key) BETWEEN 1 AND 120),
+                muted         INTEGER NOT NULL DEFAULT 0 CHECK (muted IN (0, 1)),
+                snoozed_until TEXT,
+                useful        INTEGER NOT NULL DEFAULT 0,
+                not_useful    INTEGER NOT NULL DEFAULT 0,
+                updated_at    TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
+    Migration(
+        38,
+        "task_handoffs",
+        (
+            # a mission handed to a paired device: issued here, validated and consumed once, expiring, revocable
+            """
+            CREATE TABLE handoffs (
+                id          TEXT PRIMARY KEY CHECK (length(id) BETWEEN 8 AND 64),
+                mission_id  TEXT NOT NULL,
+                device_id   TEXT NOT NULL,
+                digest      TEXT NOT NULL,
+                state       TEXT NOT NULL DEFAULT 'issued' CHECK (state IN ('issued', 'accepted', 'revoked')),
+                created_at  TEXT NOT NULL,
+                expires_at  TEXT NOT NULL,
+                accepted_at TEXT
+            )
+            """,
+            "CREATE INDEX idx_handoffs_device ON handoffs (device_id, state)",
+        ),
+    ),
+    Migration(
+        39,
+        "skill_runs",
+        (
+            # a reliability history for saved workflows / automations: one row per finished run, so a skill that keeps
+            # failing can be suspended with a reason instead of failing silently forever
+            """
+            CREATE TABLE skill_runs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL,
+                ts          TEXT NOT NULL,
+                ok          INTEGER NOT NULL CHECK (ok IN (0, 1)),
+                failed_step INTEGER,
+                message     TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            "CREATE INDEX idx_skill_runs_name ON skill_runs (name, id)",
+        ),
+    ),
+    Migration(
+        40,
+        "workflow_parameters",
+        (
+            # named, validated inputs of a saved workflow ("skill"): {"site": {"default": "...", "description": "..."}}
+            """
+            CREATE TABLE workflow_parameters (
+                task_id    TEXT PRIMARY KEY,
+                parameters TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

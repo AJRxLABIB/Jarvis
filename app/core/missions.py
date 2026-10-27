@@ -45,7 +45,7 @@ _log = get_logger("core.missions")
 MAX_STEPS = 12
 NOT_A_STEP = frozenset({
     "start_mission", "resume_mission", "cancel_mission", "mission_status", "mission_history", "rollback_mission", "task_center", "undo_last_action", "set_reminder",
-    "schedule_task", "save_workflow", "teach_workflow", "run_workflow", "manage_automation", "forget_everything", "forget_history",
+    "schedule_task", "save_workflow", "teach_workflow", "experience", "run_workflow", "manage_automation", "forget_everything", "forget_history",
     "change_setting", "jarvis_control", "power_control", "windows_update", "close_all_apps", "end_process",
     "propose_code_change", "test_proposal", "apply_proposal", "rollback_proposal", "restore_workflow",
     "delegate", "run_team",  # never in a mission (orchestration doesn't nest)
@@ -421,12 +421,43 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
         store.set_state(mission, "paused", f"not complete: {note}")
         _publish("MissionPaused", title=mission.title, note=note)
         return Outcome(mission, f"'{mission.title}' is not complete: {note}.", False)
+    verdict, goal_note = _check_goal(mission)
+    if verdict == "contradicted":
+        store.set_state(mission, "paused", f"the goal is contradicted: {goal_note}")
+        _publish("MissionPaused", title=mission.title, note=goal_note)
+        return Outcome(mission, f"'{mission.title}' ran every step but the goal is not met: {goal_note}. "
+                                "Say 'retry the mission' after fixing it, or 'cancel the mission'.", False)
+    if goal_note:
+        note = f"{note}; {goal_note}" if note else goal_note
     store.set_state(mission, "completed", note)
     _publish("MissionCompleted", title=mission.title, steps=len(mission.steps))
     log_event(_log, "mission_completed", mission=mission.id, steps=len(mission.steps))
     done = sum(1 for s in mission.steps if s.state == "done")
     return Outcome(mission, f"Mission '{mission.title}' completed: {done} step(s) done" +
                    (f" ({note})" if note else "") + ".", True)
+
+
+def _check_goal(mission: Mission) -> tuple[str, str]:
+    """Compare what the steps really did with the goal the mission's title states (app/core/goal_contract.py).
+    Returns (verdict, note). verdict: complete | incomplete | contradicted | unverifiable | error. Never raises, never
+    blocks a mission on a heuristic's guess: only a criterion that a step directly contradicted pauses it; 'incomplete'
+    and 'unverifiable' are completed with an honest note that the goal itself could not be confirmed."""
+    try:
+        from app.core import goal_contract as gc
+
+        contract = gc.compile(mission.title)
+        done = gc.evaluate(contract, gc.evidence_from_steps(contract, mission.steps))
+    except Exception:
+        _log.warning("goal check failed; completing on the step results alone", exc_info=True)
+        return "error", ""
+    missing = [r.criterion.text for r in done.results if r.criterion.required and r.status != "verified"]
+    if done.verdict == "contradicted":
+        return done.verdict, "; ".join(r.criterion.text for r in done.results if r.status == "contradicted")
+    if done.verdict == "incomplete":
+        return done.verdict, "all steps finished, but I could not confirm: " + "; ".join(missing)
+    if done.verdict == "unverifiable":
+        return done.verdict, "all steps finished; the goal had no checkable criteria, so only the steps were verified"
+    return done.verdict, ""
 
 
 def approve_checkpoint(mission: Mission, store: MissionStore) -> Step | None:

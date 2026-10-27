@@ -383,6 +383,7 @@ class MobileRegistry:
         with self._db.transaction() as conn:
             clash = conn.execute("SELECT id, trust FROM mobile_devices WHERE fingerprint = ?", (key_print,)).fetchone()
             if clash is not None:
+                session.used = False        # the phone may retry with a NEW key on this same pairing code
                 raise MobileError(409, "already_paired", "This phone's key is already paired"
                                   + (" and was revoked: make a new key on the phone." if clash["trust"] == "revoked"
                                      else "."))

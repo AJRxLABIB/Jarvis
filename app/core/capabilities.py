@@ -18,6 +18,10 @@ CREDENTIALS = "credentials"             # an account / token you configure first
 EXTRA = "hardware / OS permission"      # a GPU, a microphone, Outlook, an Android permission...
 
 FEATURES: tuple[tuple[str, str, str], ...] = (
+    ("Reusable skills: workflows with named inputs, proposed from your repeated routines", OFFLINE, "saving asks you"),
+    ("Measured model comparison (speed, load time, GPU share) with priority-based recommendation", OFFLINE, "Ollama; numbers need your PC"),
+    ("Task debugger: timeline, first divergence, simulation, safe live re-run of read-only calls", OFFLINE, "reads the assistant's own record"),
+    ("Anomaly detection and repeated-routine proposals (from your own history)", OFFLINE, "needs some history; proposals never save themselves"),
     ("Chat and tool use with a local model (Ollama)", OFFLINE_AFTER_SETUP, "Ollama + a downloaded model"),
     ("Wake word, speech recognition", OFFLINE_AFTER_SETUP, "speech models downloaded once; a microphone"),
     ("Spoken replies (Piper / Kokoro voices)", OFFLINE_AFTER_SETUP, "voice files downloaded once"),
@@ -44,6 +48,9 @@ FEATURES: tuple[tuple[str, str, str], ...] = (
      "JARVIS Mobile 1.3; screen/taps need its Accessibility service, location needs Location allowed"),
     ("Phone: lock its screen from the PC; automations when it is plugged in / unplugged / low on battery", LOCAL_NETWORK,
      "JARVIS Mobile 1.4; locking needs YOU to activate it as a device admin on the phone (lock is its only power)"),
+    ("Command center view: left rail, conversation, task timeline, devices, security, automation inspector", OFFLINE, "nothing extra (Ctrl+Shift+C)"),
+    ("Strict offline mode: connections outside this PC and your network are refused at the socket (OFFLINE_MODE=on)", OFFLINE, "nothing extra; a configured web proxy can forward traffic the guard cannot see"),
+    ("Hand a mission to a paired phone as a signed, expiring, single-use package", LOCAL_NETWORK, "JARVIS Mobile; the PC side is built, the phone screen for it is not"),
     ("Hard questions use a bigger installed model when it fits the GPU", OFFLINE_AFTER_SETUP, "a bigger model in Ollama"),
     ("Teach a routine: Jarvis saves what it did as a workflow (never your keys or mouse)", OFFLINE, "nothing extra"),
     ("Encrypted database backup to a USB drive (password, AES-256-GCM)", OFFLINE, "nothing extra; scripts/encrypted_backup.py"),

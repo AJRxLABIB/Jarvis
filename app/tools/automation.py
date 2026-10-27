@@ -51,9 +51,16 @@ def seed_default_workflows(ctx: ToolContext) -> None:
     settings.set(_SEEDED_KEY, True)
 
 
-def _save(ctx: ToolContext, name: str, trigger: Any, steps: list[Step]) -> tuple[AutomationTask, bool]:
-    validate_steps(steps, ctx.get_tool_registry(), ctx)
-    return _store(ctx).save(name, trigger, steps, trigger.next_run(ctx.clock()))
+def _save(ctx: ToolContext, name: str, trigger: Any, steps: list[Step],
+          parameters: dict[str, dict[str, Any]] | None = None) -> tuple[AutomationTask, bool]:
+    from app.automation.tasks import bind, check_parameters, clean_parameters
+
+    parameters = clean_parameters(parameters) if parameters is not None else None
+    if parameters:
+        check_parameters(steps, parameters)
+    # the steps are validated with their defaults filled in, exactly as they would run
+    validate_steps(bind(steps, parameters, {}) if parameters else steps, ctx.get_tool_registry(), ctx)
+    return _store(ctx).save(name, trigger, steps, trigger.next_run(ctx.clock()), parameters)
 
 
 # -------------------------------------------------------------------- reminders
@@ -246,6 +253,9 @@ class NameArgs(ToolArgs):
 
 class RunWorkflowArgs(NameArgs):
     resume: bool = Field(default=False, description="Continue a workflow that stopped, from the step it stopped at")
+    params: dict[str, str] = Field(default_factory=dict,
+                                   description="Values for the workflow's named inputs, e.g. {\"site\": \"github.com\"}. An input "
+                                               "left out uses its saved default")
     on_uncertain: Literal["skip", "repeat"] | None = Field(
         default=None, description="Only with resume: when the stopped step may or may not have happened and it changes "
                                   "something, say 'skip' (it did happen) or 'repeat' (it did not). Without this, such a "
@@ -255,7 +265,8 @@ class RunWorkflowArgs(NameArgs):
 async def run_workflow(args: RunWorkflowArgs, ctx: ToolContext) -> ToolResult:
     task = _store(ctx).find(args.name)
     scheduler = ctx.get_scheduler()
-    report = await scheduler.run(task, manual=True, resume=args.resume, uncertain=args.on_uncertain if args.resume else None)
+    report = await scheduler.run(task, manual=True, resume=args.resume, uncertain=args.on_uncertain if args.resume else None,
+                                 params=args.params or None)
     data = {"steps": report.steps, "failed_step": report.failed_step}
     if report.ok:
         return ToolResult.success(report.message, **data)
@@ -270,8 +281,19 @@ def list_automations(_: NoArgs, ctx: ToolContext) -> ToolResult:
     if not tasks:
         return ToolResult.success("There are no automations or reminders.", automations=[])
     workflows = sum(1 for t in tasks if t.is_workflow)
-    return ToolResult.success(f"{len(tasks) - workflows} scheduled, {workflows} workflow(s).",
-                              automations=[t.to_dict() for t in tasks])
+    from app.automation import reliability
+
+    rows = []
+    for t in tasks:
+        row = t.to_dict()
+        try:
+            stat = reliability.stats(ctx.database, t.name)
+            if stat.runs:
+                row["reliability"] = stat.describe()
+        except Exception:
+            pass
+        rows.append(row)
+    return ToolResult.success(f"{len(tasks) - workflows} scheduled, {workflows} workflow(s).", automations=rows)
 
 
 class ManageArgs(NameArgs):

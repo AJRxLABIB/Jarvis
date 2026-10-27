@@ -171,7 +171,12 @@ def bootstrap(root: Path | None = None, environ: Mapping[str, str] | None = None
     paused = MissionStore(database).mark_interrupted()  # "continue my mission" picks them up
     if paused:
         log_event(log, "missions_interrupted", count=paused)
-    return AppContext(settings=settings, paths=paths, config=config, database=database, log_file=log_file)
+    context = AppContext(settings=settings, paths=paths, config=config, database=database, log_file=log_file)
+    from app.utils import egress
+
+    egress.install(lambda: context.settings.forced_offline,        # OFFLINE_MODE=on: nothing leaves this computer / your network
+                   lambda host: log_event(log, "egress_blocked", host=host))
+    return context
 
 
 # ------------------------------------------------------------------ diagnostics
@@ -632,6 +637,79 @@ def _eval_quality(ctx: AppContext, model: str | None) -> int:
     return EXIT_OK
 
 
+def _benchmark_models(ctx: AppContext, priority: str) -> int:
+    """Measure every installed chat model on THIS PC (speed, load time, GPU share) and recommend one for ``priority``."""
+    from app import quality_eval
+    from app.ai import modelbench as MB
+    from app.ai.base import ChatMessage
+    from app.ai.health import could_ever_fit, total_memory_bytes
+    from app.ai.manager import AIManager
+    from app.ai.switching import load_evidence
+    from app.cli import create_ai_manager
+    from app.memory.settings_store import SettingsStore
+    from app.utils.async_runner import AsyncRunner
+
+    base = create_ai_manager(ctx)
+    runner = AsyncRunner("modelbench").start()
+    data_dir = ctx.paths.data_dir
+    try:
+        models = [m for m in runner.run(base.models(), timeout=30)
+                  if m.can_chat and not m.is_embedding_only and could_ever_fit(m.size_bytes, total_memory_bytes())]
+    except Exception as exc:
+        print(f"Could not list the installed models ({type(exc).__name__}). Is Ollama running?")
+        return EXIT_CHECK_FAILED
+    if not models:
+        print("No installed chat model found. Pull one with Ollama first.")
+        return EXIT_CHECK_FAILED
+    print(f"Measuring {len(models)} model(s) on this PC (each is unloaded first so the load time is real)...\n")
+    gpu = quality_eval._read_gpu()
+    env = quality_eval.environment() | ({"gpu": f"{gpu['total_mb']:.0f} MB total"} if gpu else {})
+    for info in models:
+        pinned = ctx.settings.model_copy(update={"ai_model": info.name, "ai_fast_model": "", "ai_smart_model": "",
+                                                 "ai_coding_model": ""})
+        ai = AIManager.from_settings(pinned, SettingsStore(ctx.database))
+
+        async def chat(model: str, prompt: str, ai=ai):
+            return await ai.chat([ChatMessage.user(prompt)])
+
+        freed = runner.run(MB.unload_all(ai.provider), timeout=60)
+        if freed:
+            print(f"  (unloaded {', '.join(freed)} from GPU memory first so {info.name} gets the whole GPU)")
+        before = quality_eval._read_gpu()
+        if before:
+            print(f"  GPU memory in use by other programs before {info.name} loads: {before['used_mb']:.0f} of "
+                  f"{before['total_mb']:.0f} MB (Windows, browser, games and Jarvis's own window count)")
+        try:
+            speed = runner.run(MB.measure(chat, info.name, unload=ai.provider.unload,
+                                          gpu_share=getattr(ai.provider, "gpu_share", None),
+                                          read_gpu=quality_eval._read_gpu, environment=env), timeout=900)
+        except Exception as exc:
+            print(f"  {info.name}: failed ({type(exc).__name__}: {str(exc)[:80]})")
+            continue
+        finally:
+            try:
+                runner.run(ai.provider.unload(info.name), timeout=30)       # release GPU memory before the next one
+                runner.run(ai.aclose(), timeout=10)
+            except Exception:
+                pass
+        MB.save(data_dir, speed)
+        print(f"  {info.name}: {speed.tokens_per_s or '-'} tok/s, load {speed.load_ms if speed.load_ms is not None else '-'} ms"
+              + (f", {speed.gpu_share:.0%} on GPU" if speed.gpu_share is not None else "")
+              + (f"  [{'; '.join(speed.errors[:2])}]" if speed.errors else ""))
+    table = MB.rows(models, load_evidence(data_dir), MB.load_history(data_dir))
+    vram_gb = gpu["total_mb"] / 1024 if gpu else None
+    print("\n" + MB.table_text(table, vram_gb))
+    rec = MB.recommend(table, priority, vram_gb)
+    print(f"\nRecommendation for '{priority}': {rec.model or 'none yet'} - {rec.reason}")
+    for line in rec.caveats:
+        print("  note: " + line)
+    if rec.unranked:
+        print("  no quality benchmark yet (so not recommendable): " + ", ".join(rec.unranked)
+              + "\n  run: python run.py --eval-quality --model <name>")
+    print("\nNothing was changed. To use a model, set it in Settings (AI_MODEL / AI_FAST_MODEL / AI_SMART_MODEL).")
+    return EXIT_OK
+
+
 def _eval_bangla(ctx: AppContext, model: str | None) -> int:
     from datetime import datetime
 
@@ -854,8 +932,14 @@ def build_parser() -> argparse.ArgumentParser:
                       help="prove a backup can be restored: open it in a throw-away copy and check it (default: the newest)")
     mode.add_argument("--eval-quality", action="store_true",
                       help="score the AI's answers on a reference set (includes 'admit you don't know' questions)")
+    mode.add_argument("--benchmark-models", action="store_true",
+                      help="measure every installed model on this PC (speed, load time, GPU share) and recommend one for "
+                           "--priority; changes nothing")
     mode.add_argument("--perf", action="store_true",
                       help="check that written commands are understood and time the main internal steps")
+    mode.add_argument("--lab", action="store_true",
+                      help="reliability lab: permissions, task recovery, phone replay protection, memory and commands "
+                           "checked with harmless test tools (nothing on your PC or phone is touched)")
     mode.add_argument("--rollback-update", action="store_true",
                       help="restore the database from just before the last update (close Jarvis first; the program "
                            "itself is not reinstalled)")
@@ -889,6 +973,8 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--always-on-off", action="store_true", help="undo --always-on")
     mode.add_argument("--say", metavar="TEXT", help="speak TEXT with the configured voice")
     mode.add_argument("--setup-voice", action="store_true", help="download the speech and voice models")
+    parser.add_argument("--priority", choices=("balanced", "speed", "quality", "low_resource"), default="balanced",
+                        help="with --benchmark-models: what to optimise for")
     parser.add_argument("--root", type=Path, default=None, help="use a different application folder")
     parser.add_argument("--model", default=None, help="with --eval-bangla: the model to test; with --make-jarvis-model: the base")
     parser.add_argument("--restart-after", type=int, default=None, metavar="PID", help=argparse.SUPPRESS)  # wait for PID to exit first
@@ -985,6 +1071,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code = _restart(ctx, args.minimized)
         elif args.always_on or args.always_on_off:
             exit_code = _always_on(ctx, args.always_on)
+        elif args.benchmark_models:
+            exit_code = _benchmark_models(ctx, args.priority)
         elif args.eval_quality:
             exit_code = _eval_quality(ctx, getattr(args, "model", None))
         elif args.perf:
@@ -992,6 +1080,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             result = selfbench.run(ctx.paths.data_dir)
             exit_code = EXIT_OK if not result["suite"]["misses"] else EXIT_CHECK_FAILED
+        elif args.lab:
+            from app.core import reliability_lab
+
+            lab = reliability_lab.run()
+            summary = lab.summary()
+            notes = reliability_lab.compare(reliability_lab.last_run(ctx.paths.data_dir), summary)
+            print("\n".join(reliability_lab.report_lines(lab, notes)))
+            reliability_lab.save(ctx.paths.data_dir, summary)
+            exit_code = EXIT_OK if summary["passed"] == summary["cases"] and not notes else EXIT_CHECK_FAILED
         elif args.rollback_update:
             from app.core import update_guard
 

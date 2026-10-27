@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
 
@@ -23,7 +23,7 @@ _NAME = re.compile(r"^[\w][\w .,:'&()\-]{0,59}$")
 # Automations can't create, change or run automations (no self-replicating schedules).
 FORBIDDEN_STEP_TOOLS = frozenset({"set_reminder", "schedule_task", "save_workflow", "run_workflow", "manage_automation",
                                   "list_automations", "forget_everything", "import_workflow",
-                                  "export_workflow", "background_mode", "simulate_workflow", "teach_workflow"})
+                                  "export_workflow", "background_mode", "simulate_workflow", "teach_workflow", "experience"})
 _TRIGGER = TypeAdapter(Trigger)
 
 
@@ -56,6 +56,7 @@ class AutomationTask:
     last_run_at: str | None
     next_run_at: str | None
     last_status: str | None
+    parameters: dict[str, dict[str, Any]] = field(default_factory=dict)   # name -> {"default": str, "description": str}
 
     @property
     def is_workflow(self) -> bool:
@@ -63,11 +64,104 @@ class AutomationTask:
 
     def describe(self) -> str:
         state = "" if self.enabled else " (paused)"
-        return f"{self.name}: {self.trigger.describe()} -> " + "; ".join(s.describe() for s in self.steps) + state
+        needs = f" (inputs: {', '.join(self.parameters)})" if self.parameters else ""
+        return f"{self.name}{needs}: {self.trigger.describe()} -> " + "; ".join(s.describe() for s in self.steps) + state
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "when": self.trigger.describe(), "steps": [s.describe() for s in self.steps],
-                "enabled": self.enabled, "next_run": self.next_run_at, "last_status": self.last_status}
+                "enabled": self.enabled, "next_run": self.next_run_at, "last_status": self.last_status,
+                "parameters": {k: dict(v) for k, v in self.parameters.items()}}
+
+
+# ------------------------------------------------------------------ parameters (reusable skills)
+
+PLACEHOLDER = re.compile(r"\{\{\s*([a-z][a-z0-9_]{0,29})\s*\}\}")
+MAX_PARAMETERS = 5
+MAX_VALUE = 300
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def clean_parameters(raw: Any) -> dict[str, dict[str, Any]]:
+    """Validate declared parameters: <=5, names like ``site``, a string default (<=300 chars, no control characters)."""
+    if not raw:
+        return {}
+    if not isinstance(raw, dict) or len(raw) > MAX_PARAMETERS:
+        raise ToolError(f"A workflow can have at most {MAX_PARAMETERS} inputs.", "invalid_parameters")
+    out: dict[str, dict[str, Any]] = {}
+    for name, spec in raw.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,29}", name):
+            raise ToolError(f"'{name}' isn't a valid input name (lower-case letters, digits, underscore).", "invalid_parameters")
+        spec = spec if isinstance(spec, dict) else {"default": spec}
+        default = spec.get("default")
+        if default is not None:
+            _check_value(name, default)
+        out[name] = {"default": default, "description": str(spec.get("description") or "")[:200]}
+    return out
+
+
+def _check_value(name: str, value: Any) -> str:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        raise ToolError(f"The input '{name}' must be text or a number.", "invalid_parameters")
+    text = str(value)
+    if len(text) > MAX_VALUE or _CONTROL.search(text) or "{{" in text:
+        raise ToolError(f"The input '{name}' is too long or contains characters that aren't allowed.", "invalid_parameters")
+    return text
+
+
+def placeholders(steps: list[Step]) -> set[str]:
+    found: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            found.update(PLACEHOLDER.findall(value))
+        elif isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+    for step in steps:
+        walk(step.arguments)
+    return found
+
+
+def check_parameters(steps: list[Step], parameters: dict[str, dict[str, Any]]) -> None:
+    """Every ``{{name}}`` in the steps is declared, and every declared input is used (so nothing is silently ignored)."""
+    used = placeholders(steps)
+    if used - set(parameters):
+        raise ToolError("The steps use inputs that were never declared: " + ", ".join(sorted(used - set(parameters))) + ".",
+                        "invalid_parameters")
+    if set(parameters) - used:
+        raise ToolError("These inputs are declared but no step uses them: " + ", ".join(sorted(set(parameters) - used)) + ".",
+                        "invalid_parameters")
+
+
+def bind(steps: list[Step], parameters: dict[str, dict[str, Any]], values: dict[str, Any] | None = None) -> list[Step]:
+    """The steps with each ``{{name}}`` replaced by the supplied value (else the default). Only ARGUMENT text is ever
+    substituted - never a tool name, a step type or a permission - and every step still goes through the normal checks."""
+    values = dict(values or {})
+    unknown = set(values) - set(parameters)
+    if unknown:
+        raise ToolError("This workflow has no input called " + ", ".join(sorted(unknown)) +
+                        (f". Its inputs: {', '.join(parameters)}." if parameters else " (it takes no inputs)."), "unknown_parameter")
+    if not parameters:
+        return steps
+    final: dict[str, str] = {}
+    for name, spec in parameters.items():
+        raw = values.get(name, spec.get("default"))
+        if raw is None or raw == "":
+            raise ToolError(f"Tell me the {name}" + (f" ({spec['description']})" if spec.get("description") else "") + ".", "missing_parameter")
+        final[name] = _check_value(name, raw)
+
+    def sub(value: Any) -> Any:
+        if isinstance(value, str):
+            return PLACEHOLDER.sub(lambda m: final.get(m.group(1), m.group(0)), value)
+        if isinstance(value, dict):
+            return {k: sub(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [sub(v) for v in value]
+        return value
+    return [s.model_copy(update={"arguments": sub(s.arguments)}) for s in steps]
 
 
 def parse_steps(raw: Any) -> list[Step]:
@@ -146,8 +240,10 @@ class AutomationStore:
             last_run_at=row["last_run_at"], next_run_at=row["next_run_at"], last_status=row["last_status"],
         )
 
-    def save(self, name: str, trigger: Any, steps: list[Step], next_run: datetime | None) -> tuple[AutomationTask, bool]:
-        """Create, or replace the one with the same name. Returns (task, replaced)."""
+    def save(self, name: str, trigger: Any, steps: list[Step], next_run: datetime | None,
+             parameters: dict[str, dict[str, Any]] | None = None) -> tuple[AutomationTask, bool]:
+        """Create, or replace the one with the same name. Returns (task, replaced). ``parameters``: the workflow's named inputs
+        (None = keep the existing ones if the new steps still use them)."""
         now = utc_now_iso()
         config = json.dumps(trigger.model_dump(mode="json"))
         actions = json.dumps([s.model_dump(mode="json", exclude_defaults=True) | {"type": s.type} for s in steps])
@@ -169,12 +265,28 @@ class AutomationStore:
                     "created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
                     (task_id, name, trigger.type, config, actions, next_iso, now, now),
                 )
+            used = placeholders(steps)
+            if parameters is None:
+                row = conn.execute("SELECT parameters FROM workflow_parameters WHERE task_id = ?", (task_id,)).fetchone()
+                kept = json.loads(row[0]) if row else {}
+                parameters = kept if used and set(kept) == used else {}
+            check_parameters(steps, parameters)
+            if parameters:
+                conn.execute("INSERT INTO workflow_parameters (task_id, parameters) VALUES (?, ?) "
+                             "ON CONFLICT (task_id) DO UPDATE SET parameters = excluded.parameters",
+                             (task_id, json.dumps(parameters, ensure_ascii=False)))
+            else:
+                conn.execute("DELETE FROM workflow_parameters WHERE task_id = ?", (task_id,))
         return self.get(task_id), replaced  # type: ignore[return-value]
 
     def get(self, task_id: str) -> AutomationTask | None:
         with self._db.connect() as conn:
             row = conn.execute("SELECT * FROM automation_tasks WHERE id = ?", (task_id,)).fetchone()
-        return self._row(row) if row else None
+            params = conn.execute("SELECT parameters FROM workflow_parameters WHERE task_id = ?", (task_id,)).fetchone()
+        if not row:
+            return None
+        task = self._row(row)
+        return replace(task, parameters=json.loads(params[0])) if params else task
 
     def find(self, name: str) -> AutomationTask:
         wanted = " ".join(name.lower().split())
@@ -192,15 +304,23 @@ class AutomationStore:
     def all(self) -> list[AutomationTask]:
         with self._db.connect() as conn:
             rows = conn.execute("SELECT * FROM automation_tasks ORDER BY name").fetchall()
+            params = {r[0]: r[1] for r in conn.execute("SELECT task_id, parameters FROM workflow_parameters").fetchall()}
         tasks = []
         for row in rows:
             try:
-                tasks.append(self._row(row))
+                task = self._row(row)
+                tasks.append(replace(task, parameters=json.loads(params[task.id])) if task.id in params else task)
             except (ValidationError, ValueError, json.JSONDecodeError):
                 continue  # a damaged row never breaks the scheduler
         return tasks
 
     def set_enabled(self, task_id: str, enabled: bool, next_run: datetime | None) -> None:
+        if enabled:       # switched back on (by you): a fixed skill starts with a clean failure streak
+            task = self.get(task_id)
+            if task is not None and not task.enabled:
+                from app.automation import reliability
+
+                reliability.clear(self._db, task.name)
         with self._db.transaction() as conn:
             conn.execute("UPDATE automation_tasks SET enabled=?, next_run_at=?, updated_at=? WHERE id=?",
                          (int(enabled), next_run.isoformat() if next_run else None, utc_now_iso(), task_id))
@@ -240,6 +360,7 @@ class AutomationStore:
     def delete(self, task_id: str) -> None:
         with self._db.transaction() as conn:
             conn.execute("DELETE FROM workflow_progress WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM workflow_parameters WHERE task_id = ?", (task_id,))
             self._keep_revision(conn, task_id, "deleted")
             conn.execute("DELETE FROM automation_tasks WHERE id = ?", (task_id,))
 

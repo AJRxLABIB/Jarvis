@@ -46,9 +46,15 @@ class ConfirmDialog(QDialog):
             heard_label.setWordWrap(True)
             heard_label.setObjectName("muted")
             layout.addWidget(heard_label)
-        tool = QLabel(f"Tool: {request.tool}")
+        from app.ui.command_center.approval import describe
+
+        view = describe(request)                # the target and the risk in words, before you answer
+        tool = QLabel("\n".join([f"Target: {view.target}", f"Risk: {view.risk} - {view.risk_note}",
+                                 *[f"{k}: {v}" for k, v in view.details], f"Tool: {request.tool}"]))
         tool.setObjectName("muted")
+        tool.setWordWrap(True)
         tool.setTextFormat(Qt.TextFormat.PlainText)
+        tool.setAccessibleName("Action details")
         layout.addWidget(tool)
 
         self.countdown = QLabel()

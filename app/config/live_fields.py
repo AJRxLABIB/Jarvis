@@ -11,4 +11,4 @@ POLICY_FIELDS = frozenset({"full_power", "show_sources", "learn_from_use", "auto
                            "taint_lockdown"})
 # the 3D core / dashboard look: applied by the window at once (controller.apply_settings -> display_settings_changed)
 DISPLAY_FIELDS = frozenset({"visual_quality", "core_speed", "glow_intensity", "reduced_motion", "core_hud_rings",
-                            "core_pulses", "core_trails", "hidden_panels", "ui_sounds", "ui_sound_volume"})
+                            "core_pulses", "core_trails", "hidden_panels", "ui_sounds", "ui_sound_volume", "ui_theme", "ui_text_scale"})

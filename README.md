@@ -4,7 +4,7 @@ A local-first personal AI assistant for Windows 11. Voice in, voice out, and eve
 action on your computer goes through a registered tool, a permission check and
 argument validation. The language model never runs shell commands directly.
 
-> Status: **version 1.0**, all 14 phases done. It installs as `JARVIS.exe` (see
+> Status: **version 3.25.0** (see `docs/STATUS.md` for what is verified and what is not). It installs as `JARVIS.exe` (see
 > [Install the app](#install-the-app-jarvisexe)) and runs hands-free ("Jarvis, open YouTube").
 
 ## Install the app (JARVIS.exe)

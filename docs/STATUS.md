@@ -623,6 +623,121 @@ bigger "thinking" model, phone lock from the PC (needs Android device-admin). No
 has run on a real device yet: rebuild JARVIS Mobile 1.3.0 (packaging\build_android.ps1). Excel automation and
 foreground handling are untested on Windows.
 
+## Round 50 - reusable skills with named inputs (`docs/skill-inputs.md`)
+
+Workflows can declare up to 5 named inputs (`{{site}}`) that are filled in when run (`run_workflow params={...}`, else the saved
+default). Values are validated (text/number, <=300 chars, no control characters, no template text); only ARGUMENT text is
+substituted - never a tool name, step type or permission - and every step still goes through the normal permission checks. The
+Experience Compiler now turns text that changed between your repeated runs into inputs (numbers, lists and secret-looking text stay
+fixed and are reported). Migration 40 `workflow_parameters`; replacing a workflow keeps its inputs if the steps still use them; deleting
+removes them. 9 tests + 3 lab cases. NOT built: editing inputs in the UI panel, typed (number/choice) inputs, inputs for scheduled
+automations' notify messages, and none of it has run against real apps on your PC.
+
+## Round 49 - measured model comparison (`docs/model-benchmark.md`)
+
+You chose "stronger local model, measured" and "learn from its own history". Audit: both were mostly built already
+(`--eval-quality` with latency percentiles and GPU sampling, personal test set from real use in `growth.cases()`, `self_improve`,
+LoRA export). Real gaps found and built: no tokens/second, load-time or first-response measurement, no priority (speed / quality /
+low resource / balanced), and model choice never looked at GPU fit. New `app/ai/modelbench.py` + `python run.py --benchmark-models
+[--priority ...]`: unloads each installed model, measures Ollama's own timings, GPU share (`/api/ps`) and GPU memory peak, stores them,
+and recommends per priority - never a model without a quality benchmark; each failed safety question costs 5 points and is always shown; models only partly on the GPU are left out of speed / balanced / low-resource picks; unmeasured values are '-' not zero.
+10 tests + 2 lab cases. NOT done: it has never run against a real Ollama/GPU (needs your PC); no fine-tuning was run (needs a GPU
+and your accumulated history); quality of any model on YOUR requests is only known after `--eval-quality`.
+
+## Round 48 - gap map and the time-travel task debugger (`docs/FEATURE_GAP_MAP.md`, `docs/replay.md`)
+
+Feature-by-feature gap map (A-G) from repository evidence; the top genuinely missing feature, the task debugger, is built:
+structured per-call timeline from the existing audit trail, recorded/reconstructed/not-recorded labelling, earliest divergence,
+minimal recovery plan, simulation replay (real mission engine + mock executor), live re-run of read-only calls only, hidden-tool
+list, `task_replay` tool and panel. 16 tests + 3 lab cases. NOT built (see the map): tool foundry (generation from a request),
+workspace objects, retrieval source adapters, performance optimizer (needs your hardware), multilingual dataset, more diagnostic
+hypothesis sets. Nothing run on real hardware.
+
+## Round 47 - goal-verified missions and skill reliability (`docs/goal-verified-missions.md`)
+
+Audit against the "Jarvis 4.0" prompt: nearly everything it lists exists already (policy engine, handoff, offline guard,
+world model, lab, command center, experience compiler). Two confirmed gaps built: (1) goal contracts were not used by
+mission execution - a mission was "completed" once its steps finished. Now the title's contract is checked against what the
+steps really did: a directly contradicted goal pauses the mission, an unconfirmable one completes with an explicit note, and a
+plan that breaks what you said ("don't delete anything", "offline") is refused before it starts; (2) saved workflows had no
+reliability history: migration 39 `skill_runs`, 3 failures in a row suspend (never delete) a skill with the reason, refusals and
+emergency stops don't count, re-enabling resets the streak, the listing shows the success rate. 10 tests + 4 lab cases.
+Still NOT built: parameterised skills (varying arguments are reported, not templated), the Android handoff screen, anything on
+real hardware; the goal check relies on the heuristic criteria in goal_contract.py, so it can say "could not confirm" for goals it cannot parse.
+
+## Round 46 - anomaly detection and the Experience Compiler (`docs/anomaly-and-experience.md`)
+
+Built the two items round 45 listed as not built: (1) statistical anomaly detection (median/MAD, binomial tail) over tool
+latency and failures, PC load and spending, feeding the radar and a read-only `anomalies` tool; (2) an Experience Compiler that
+mines routines you repeat (3+ runs, 2+ days) from Jarvis's own audit trail and proposes workflows - never saved without an
+on-screen confirmation, never including risky, failed, secret or forbidden calls. Audit rows now record `elapsed_ms`.
+17 tests + 6 lab cases + two Intelligence panels. NOT built: the phone-side screen for handoffs (needs an APK release);
+anything run on real hardware; latency anomalies only exist for calls made after this version.
+
+## Round 45 - strict offline guard and task handoff (`docs/offline-and-handoff.md`)
+
+Audit against the "personal AI ecosystem" spec: nearly everything already exists (see earlier rounds). Real gaps built: (1) strict
+offline is now enforced at the socket (no connection or DNS query leaves the PC/LAN with OFFLINE_MODE=on), shown in the Security
+view with a proxy warning - the first test run found that a configured proxy forwards traffic past it, so that limit is stated;
+(2) cross-device task handoff: signed, expiring, single-use, device-bound, checked against the mission's real state, secret-free,
+migration 38. NOT built: the phone-side screen for handoffs; a Personal Experience Compiler beyond the existing safe
+teach-by-showing; per-step statistical anomaly detection; a second implementation of anything that already exists. Nothing here
+was run on a real phone or Windows PC.
+
+## Round 44 - the rest of the intelligence list (`docs/intelligence.md`)
+
+Built: decision records + option comparison, preference learning with profiles and precedence, active information gathering
+(model-failure investigation), knowledge synthesis (sourced offline briefs, gaps, proposed links), long-horizon goal review,
+radar signals + feedback, capability discovery, 7 tools, DB migration 37, and an Intelligence page in the command center (11th
+rail section, concise / full-detail). Found and fixed while testing: the "never ask me" refusal missed "stop asking me". NOT
+built or only partial: nothing records observed preference corrections yet (the API exists); only one investigation topic;
+no semantic search in briefs; not seen on your screen; no model is used anywhere in this round.
+
+## Round 43 - goal contracts (`docs/goal-contract.md`)
+
+Audit against the intelligence spec: there was no code that states what would count as "done" for a request, no evidence
+ledger and no decision records. Built the first: `goal_contract.py` (compile -> constraints, criteria, assumptions, material
+questions, conflicts; check_plan; evidence-based evaluate) + read-only tool `goal_check` + 7 Reliability-Lab cases. Whole suite
+passes in chunks (Linux, Python 3.10, offscreen). NOT built (not started, not claimed): counterfactual/decision records,
+preference learning engine, active information gathering, knowledge synthesis, long-horizon goals, problem radar,
+capability discovery, resource scheduler beyond what exists, digital simulation (the automation simulator exists), Intelligence
+Center page. It is not yet applied automatically to every request or mission; no model is involved.
+
+## Round 42 - reliability lab (`run.py --lab`, `docs/reliability-lab.md`)
+
+Chosen after inspecting the code: task recovery, model evaluation (`--eval-quality`), goals, health signals and teach-by-showing
+already exist; what was missing was one place that checks permissions, recovery, phone replay protection, memory recall and
+command matching together, counts incorrect actions, tracks regressions, and labels simulated vs hardware. 20 cases pass here;
+sabotage tests prove it fails when a rule is broken. Not built (already covered or needs hardware): cross-device mission
+resume, a digital twin, predictive health, a new demonstration recorder. The CLI path was only checked through the argument
+parser (the sandbox has Python 3.10; run `python run.py --lab` on your PC).
+
+## Round 41 - the command-center view (app/ui/command_center/)
+
+A new main working view BESIDE the 3D core (nothing removed): MENU > Command center, Ctrl+Shift+C (back: Core view,
+Ctrl+Shift+H), also in Workspaces. Built on first use, replays the chat, and uses the same controller, so both views show
+the same conversation. Pure view-models (testable without a screen) + thin widgets:
+
+| Part | What it does | Where |
+|---|---|---|
+| Left rail | Chat, Dashboard, Tasks, Devices, Memory, Knowledge, Automations, Developer Tools, Settings, Security; Alt+1..0 | widgets.py |
+| Ten states | Idle, Listening, Thinking, Executing, Needs approval, Verifying, Completed, Failed, Offline, Emergency stop - each a shape + a word + a colour; fixed priority; Verifying is real (`app/core/activity.py`, set while a tool's check runs) | states.py |
+| Status area | state, local model, CPU / RAM / GPU (a dash when not measured, never 0), mic, network mode, devices connected | widgets.py, view.py |
+| Command bar | type / Talk / Send / Stop, Ctrl+L, execution status line | widgets.py |
+| Context panel | Task timeline (done / running / waiting / failed, device per step, errors) with Pause / Cancel / Retry / Undo / Review shown ONLY when the task supports them; what the last answer used; devices; execution details | timeline.py, context_panel.py |
+| Approvals | the confirm dialog now shows target + risk in words + the real arguments before you answer | approval.py, confirm_dialog.py |
+| Devices | PC + phones: connection (connected / recently seen / offline / waiting for Trust), battery only if reported, permissions, per-capability available / needs action / unknown with the missing step, last check-in | devices.py |
+| Security | phones and permissions, mic / screen state, local-data settings, standing approvals, blocked + sensitive action history, backup health, activity-log check, Emergency stop button | security.py |
+| Automations | Trigger, Conditions, Actions, Approvals, If it fails, warnings (private data / changes the PC / runs by itself); Test (dry run, nothing runs); Simulate what-if; Enable refused with problems, needs a tick with warnings | automations.py |
+| Look | dark / light (`UI_THEME`), text size 0.8-1.6 (`UI_TEXT_SCALE`), reduced motion (existing), focus ring, tooltips, accessible names; contrast of both palettes tested | style.py |
+
+Knowledge page (added after the audit, `graph_view.py` + `KnowledgePage`): browse the knowledge graph by kind, search, see each item's
+connections with their evidence, and ask graph questions; the graph is read from data already on this PC in a background thread.
+
+Honest limits: not seen on a real screen or with a screen reader (checked offscreen + the accessibility audit); the chat
+bubbles stay dark in the light theme (ChatView paints them); editing steps still opens the Workflow studio; the HUD's
+look is unchanged. The timeline reads missions; one-off requests show in Details.
+
 ## Round 40 - the four "not built" items, JARVIS Mobile 1.4
 
 | Built | Where | Tests |

@@ -129,6 +129,12 @@ async def start_mission(args: MissionArgs, ctx: ToolContext) -> ToolResult:
     from app.core import runs
 
     steps, highest, summary = _plan(args, ctx)
+    from app.core import goal_contract as gc
+
+    broken = gc.check_plan(gc.compile(args.title), [s.tool for s in steps])
+    if broken:       # what you said ("don't delete anything", "offline") beats the plan, and nothing has run yet
+        return ToolResult.failure("goal_conflict", "Not started - " + "; ".join(c.text for c in broken) +
+                                  ". Change the plan or the request.", conflicts=[c.text for c in broken])
     goal_id = GoalStore(_db(ctx), ctx.clock).find(args.goal).id if args.goal else None
     current = runs.current()
     store = MissionStore(_db(ctx))
@@ -255,6 +261,63 @@ async def rollback_mission(_: NoArgs, ctx: ToolContext) -> ToolResult:
         ToolResult.failure("rollback_incomplete", outcome.message, **data)
 
 
+class GoalCheckArgs(ToolArgs):
+    request: str | None = Field(default=None, max_length=400,
+                                description="What you want done, in your own words. Empty = check the most recent mission against its goal.")
+
+
+def _active_items(ctx: ToolContext):
+    """What is already on your plate, for duplicate / busy-day detection (read-only)."""
+    from datetime import date as _date
+
+    from app.core.goal_contract import Active
+
+    items = []
+    try:
+        with _db(ctx).connect() as conn:
+            for row in conn.execute("SELECT text, due FROM todos WHERE done = 0 LIMIT 200"):
+                try:
+                    due = _date.fromisoformat((row["due"] or "")[:10]) if row["due"] else None
+                except ValueError:
+                    due = None
+                items.append(Active("to-do", row["text"], due))
+        for mission in MissionStore(_db(ctx)).recent(10):
+            if mission.state not in ("completed", "cancelled", "rolled_back"):
+                items.append(Active("mission", mission.title))
+    except Exception:
+        pass
+    return items
+
+
+def goal_check(args: GoalCheckArgs, ctx: ToolContext) -> ToolResult:
+    """Read-only. Says what a request means, what would count as done, what is assumed and what really needs asking;
+    with no request it compares the latest mission's real results against its goal."""
+    from app.core import goal_contract as gc
+    from app.tools.applications import known_application
+
+    try:
+        from app.core.projects import known_project_folders
+
+        projects = [p.name for p in known_project_folders(ctx)]
+    except Exception:
+        projects = []
+    if args.request and args.request.strip():
+        contract = gc.compile(args.request, projects=projects, active=_active_items(ctx),
+                              known_app=lambda name: known_application(name, ctx))
+        return ToolResult.success(contract.describe(), proceed=contract.can_proceed,
+                                  questions=[q.text for q in contract.questions],
+                                  criteria=[c.text for c in contract.criteria],
+                                  conflicts=[c.text for c in contract.conflicts])
+    recent = MissionStore(_db(ctx)).recent(1)
+    if not recent:
+        raise ToolError("There is no mission to check yet.", "not_found")
+    mission = MissionStore(_db(ctx)).get(recent[0].id)
+    contract = gc.compile(mission.title, projects=projects, known_app=lambda name: known_application(name, ctx))
+    done = gc.evaluate(contract, gc.evidence_from_steps(contract, mission.steps))
+    return ToolResult.success(f"Mission '{mission.title}' ({mission.state}). " + done.describe(), verdict=done.verdict,
+                              criteria=[{"criterion": r.criterion.text, "status": r.status} for r in done.results])
+
+
 class TaskCenterArgs(ToolArgs):
     show: Literal["active", "all"] = Field(default="active", description="active = running/queued/waiting only")
 
@@ -291,6 +354,9 @@ TOOLS: tuple[Tool, ...] = (
     Tool("rollback_mission", "Undo the finished steps of the most recent mission, newest first, where each can be "
          "undone; steps that can't be undone are reported, not faked. Always asks first.", rollback_mission, NoArgs,
          RiskLevel.DANGEROUS, "automation", timeout=600, confirmation=_rollback_question),
+    Tool("goal_check", "Read-only: what a request means, what would count as done, what is being assumed and what "
+         "really needs asking first; with no request, whether the latest mission actually met its goal, judged from "
+         "its real step results.", goal_check, GoalCheckArgs, RiskLevel.SAFE, "automation", timeout=15),
     Tool("task_center", "Background task center: missions, scheduled automations, self-improvement tests and "
          "requests still running, each with a status (queued, running, waiting for approval, paused, completed, "
          "failed, cancelled, rolled back).", task_center, TaskCenterArgs, RiskLevel.SAFE, "automation"),

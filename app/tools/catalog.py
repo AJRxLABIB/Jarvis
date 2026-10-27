@@ -12,7 +12,7 @@ from app.tools import (
     memory, outlook, phone, productivity, screen_agent, smart_home, system, vision, voice_control, windows, windows_settings,
     code_tools, device_tools, device_toggles, evolution_tools, research, session_tools, context_tools, proactive_tools, file_tools, goals_missions, ui_elements, layouts, messages, undo_tools, youtube,
     agents_tools, diagnostics_tools, github, profiles_tool, google, routines_tool, history_tool, clipboard_tool, approvals_tool,
-    file_batch, finance_tool, phone_link_tool, personal_tools, local_home_tool, growth_tools, speech_data_tool, power_tools,
+    file_batch, finance_tool, phone_link_tool, personal_tools, local_home_tool, growth_tools, speech_data_tool, power_tools, intelligence, replay_tool,
 )
 
 TOOL_MODULES = (basic, assistant, applications, filesystem, documents, productivity, focus, housekeeping, knowledge, outlook,
@@ -20,7 +20,7 @@ TOOL_MODULES = (basic, assistant, applications, filesystem, documents, productiv
                 phone, screen_agent, smart_home, developer, memory, activity, browser, automation, vision, voice_control,
                 youtube, layouts, messages, undo_tools, goals_missions, device_toggles, file_tools, ui_elements, code_tools, proactive_tools, device_tools,
                 evolution_tools, research, session_tools, context_tools, agents_tools, diagnostics_tools, github, profiles_tool, google, routines_tool, history_tool, clipboard_tool, approvals_tool,
-                file_batch, finance_tool, phone_link_tool, personal_tools, local_home_tool, growth_tools, speech_data_tool, power_tools)
+                file_batch, finance_tool, phone_link_tool, personal_tools, local_home_tool, growth_tools, speech_data_tool, power_tools, intelligence, replay_tool)
 
 
 def build_default_registry() -> ToolRegistry:

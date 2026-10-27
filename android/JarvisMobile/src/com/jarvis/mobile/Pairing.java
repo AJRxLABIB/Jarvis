@@ -43,6 +43,10 @@ public final class Pairing {
             pc.certFingerprint = fp;
             pc.name = pcName == null || pcName.isEmpty() ? host : pcName;
 
+            // A phone with no computer paired has nothing that depends on its old keys: make fresh ones. (A key the PC
+            // revoked can never be paired again - re-pairing with the same key was refused forever.)
+            boolean alone = store.pcs().isEmpty();
+            if (alone) Crypto.deleteAll();
             Crypto.ensureBaseKey();
             boolean authOk = Crypto.ensureAuthKey();
             String name = Build.MANUFACTURER + " " + Build.MODEL;
@@ -50,7 +54,20 @@ public final class Pairing {
                     "Android " + Build.VERSION.RELEASE, appVersion, isHardwareBacked(), authOk);
             Api.Result result = Api.post(pc, false, "/api/mobile/pair", body);
             Map<String, Object> json = result.json();
+            if (!result.ok() && result.status == 409 && alone) {      // still "already paired": try once more, new keys
+                Crypto.deleteAll();
+                Crypto.ensureBaseKey();
+                authOk = Crypto.ensureAuthKey();
+                body = Protocol.pairingBody(pid, secret, name, "android",
+                        "Android " + Build.VERSION.RELEASE, appVersion, isHardwareBacked(), authOk);
+                result = Api.post(pc, false, "/api/mobile/pair", body);
+                json = result.json();
+            }
             if (!result.ok()) {
+                if (result.status == 409 && !alone) {
+                    return new Outcome(false, Json.str(json, "message", "This key is already paired.")
+                            + "\nRemove the other computer in this app first (Devices), then pair again - that makes a new key.", null);
+                }
                 return new Outcome(false, Json.str(json, "message", "Pairing was refused (" + result.status + ")."), null);
             }
             pc.id = Json.str(json, "device_id", "");

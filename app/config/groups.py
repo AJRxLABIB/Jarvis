@@ -36,7 +36,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "window": ("mini_orb_size", "mini_orb", "start_minimized", "start_with_windows", "intro_animation",
                "step_aside", "always_on_top", "start_fullscreen", "animations", "monitor_interval",
                "metrics_history", "auto_backup", "core_renderer", "visual_quality", "core_speed", "glow_intensity", "reduced_motion", "core_hud_rings",
-               "core_pulses", "core_trails", "ui_sounds", "ui_sound_volume", "hud_scale", "hidden_panels",
+               "core_pulses", "core_trails", "ui_sounds", "ui_sound_volume", "hud_scale", "ui_theme", "ui_text_scale", "hidden_panels",
                "memory_event_retention_days", "metrics_retention_days",
                "process_history"),
     "browser_and_web": ("browser_enabled", "browser_channel", "browser_headless", "browser_idle_minutes",

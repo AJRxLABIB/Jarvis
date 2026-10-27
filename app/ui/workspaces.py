@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QDialog, QGridLayout, QGroupBox, QLabel, QLineEdi
 # workspace -> [(title, what it's for, MainWindow method)]
 WORKSPACES: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
     ("Today", (
+        ("Command center", "the new main view: rail, chat, tasks, devices", "show_command_center"),
         ("My day", "to-dos, plan, history", "open_my_day"),
         ("Life log", "journal, habits, expenses, schedule", "open_life_log"),
         ("Notifications", "what Jarvis told you", "open_notifications"),

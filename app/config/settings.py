@@ -94,6 +94,8 @@ class Settings(BaseModel):
     core_trails: bool = True                                      # sparks with fading trails circling the core
     ui_sounds: bool = False                                       # short interface sounds (tick / attention / done / error)
     ui_sound_volume: float = Field(default=0.5, ge=0.0, le=1.0)
+    ui_theme: Literal["dark", "light"] = "dark"                   # the command-center view (the HUD is always dark)
+    ui_text_scale: float = Field(default=1.0, ge=0.8, le=1.6)     # text size in the command-center view
     hud_scale: float = Field(default=1.0, ge=0.75, le=1.5)        # the whole window's size (applies at the next start)
     hidden_panels: str = ""                                       # dashboard panels to hide, comma separated titles
     taint_lockdown: bool = False  # after reading web/email/documents, the model is not even offered send/save tools
