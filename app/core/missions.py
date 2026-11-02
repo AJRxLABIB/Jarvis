@@ -382,7 +382,7 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
                 step.state, step.attempts = "running", step.attempts + 1
                 store.save_step(mission, step)
                 call = ToolCall(step.tool, dict(step.arguments))
-                execution = await executor.execute(call, preapproved=approved)
+                execution = await executor.execute(call, preapproved=approved, mission=str(getattr(mission, "id", "") or ""))
                 result = execution.result
                 step.result = result.message or (result.error or "")
                 if result.ok:

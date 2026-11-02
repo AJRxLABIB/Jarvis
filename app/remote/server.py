@@ -317,9 +317,18 @@ class RemoteServer:
                     app_name = redact_codes(str(arguments.get("app", "")))[:40] or "Phone"
                     title = redact_codes(str(arguments.get("title", "")))[:150]
                     text = redact_codes(str(arguments.get("text", "")))[:500]
-                    center.add(f"{app_name}: {title}" if title else app_name, text, source=f"phone:{device.name}"[:40],
-                               category="phone", priority="low")
-                    return {"ok": True}
+                    from app.core import notification_intel
+
+                    verdict = notification_intel.CLASSIFIER.classify(app_name, title, text)
+                    if verdict.duplicate or verdict.label == notification_intel.PROMO:      # repeats and promotions are not worth the centre's attention
+                        return {"ok": True, "filtered": verdict.label if not verdict.duplicate else "duplicate"}
+                    hint = notification_intel.reminder_hint(verdict)
+                    body = (text + (f"\n{hint}" if hint else ""))[:1000]
+                    why = f"\n({verdict.explain()})" if verdict.label == notification_intel.SUSPICIOUS else ""
+                    center.add(f"{verdict.tag()}{app_name}: {title}" if title else f"{verdict.tag()}{app_name}", body + why, source=f"phone:{device.name}"[:40],
+                               category="security" if verdict.label in (notification_intel.CRITICAL, notification_intel.SUSPICIOUS) else "phone",
+                               priority=notification_intel.PRIORITY[verdict.label])
+                    return {"ok": True, "label": verdict.label}
                 text = redact_codes(str(arguments.get("text", "")))[:2000].strip()
                 if not text:
                     raise MobileError(400, "bad_request", "text")

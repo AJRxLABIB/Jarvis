@@ -50,7 +50,7 @@ def test_verifying_flag_is_real():
 # ------------------------------------------------------------------ contrast
 
 
-@pytest.mark.parametrize("theme", ["dark", "light"])
+@pytest.mark.parametrize("theme", ["dark", "light", "forest"])
 def test_both_themes_meet_contrast(theme):
     p = style.palette(theme)
     bad = [(a, b, round(a11y.contrast(p[a], p[b]), 2)) for a, b in style.CONTRAST_PAIRS if a11y.contrast(p[a], p[b]) < 4.5]

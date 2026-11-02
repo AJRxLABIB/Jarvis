@@ -40,9 +40,16 @@ class BackgroundMixin:
 
         _threading.Thread(target=work, name="bangla-voice", daemon=True).start()
 
+    def attach_camera_indicator(self) -> None:
+        """CAMERA ACTIVE follows the real webcam (presence detection and gesture control share it)."""
+        from app.gesture.camera import shared_broker
+
+        shared_broker(on_active=self.camera_active.emit)
+
     def start_presence(self) -> None:
         """Opt-in (PRESENCE_DETECTION): lock the PC when you leave, greet you when you're back."""
         s = self.ctx.settings
+        self.attach_camera_indicator()          # always: gesture control may use the camera even when presence detection is off
         if not s.presence_detection or self.presence is not None:
             return
         from app.vision.presence import PresenceMonitor
@@ -60,8 +67,7 @@ class BackgroundMixin:
                 self.notice.emit(message)
                 self.tts.speak(message)
 
-        self.presence = PresenceMonitor(away_minutes=s.presence_away_minutes, on_away=away, on_return=back,
-                                        on_camera=self.camera_active.emit)
+        self.presence = PresenceMonitor(away_minutes=s.presence_away_minutes, on_away=away, on_return=back)
         self.presence.start()
 
     def stop_presence(self) -> None:

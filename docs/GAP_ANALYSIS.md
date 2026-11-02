@@ -17,7 +17,7 @@ your GPU. Statements are therefore "verified by automated tests" or "unverified 
 
 ## Confirmed defects found and fixed in this pass
 
-1. **Secrets tracked in git.** `android/signing/jarvis-wake.jks`, `android/signing/password.txt`, `.env.bak` and a
+1. **Secrets tracked in git (DECISION 28 Oct: repo always private, key kept - see STATUS.md).** `android/signing/jarvis-wake.jks`, `android/signing/password.txt`, `.env.bak` and a
    `Jarvis-updated.zip` were in the git index (first commit onward). They are now untracked and ignored; the files are
    still on disk. They **remain in git history**. If `origin` (GitHub) is or was public, treat the signing key as exposed.
    Replacing it means a new key, and phones with the old signature must uninstall before installing - your decision.

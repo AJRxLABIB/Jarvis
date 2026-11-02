@@ -108,6 +108,12 @@ def bootstrap(root: Path | None = None, environ: Mapping[str, str] | None = None
     except OSError:
         pass
     settings = load_settings(root / ".env", environ)
+    try:
+        from app.utils import gpu_pref
+
+        gpu_pref.apply(settings.gpu_preference)          # before any speech / model library loads
+    except Exception:
+        pass
     paths = AppPaths.build(root, settings.data_dir)
     paths.ensure_dirs()
     setup_repaired = _repair_forgotten_setup(paths, settings)
@@ -786,6 +792,64 @@ def _selftest(ctx: AppContext) -> int:
     return EXIT_CHECK_FAILED if any(r.status == "fail" for r in results) else EXIT_OK
 
 
+def _setup_hand_model(ctx) -> int:
+    from app.gesture import detector
+
+    ok, why = detector.availability(ctx.paths.models_dir)
+    if ok:
+        print("Hand tracking is already set up.")
+        return 0
+    if "mediapipe package" in why:
+        print("Missing: " + why.split(";")[0] + ".")
+    print(f"Downloading the hand model once from {detector.MODEL_URL} ...")
+    try:
+        path = detector.download_model(ctx.paths.models_dir)
+    except Exception as exc:
+        print(f"Could not download it ({exc}). Nothing was changed.")
+        return 1
+    print(f"Saved {path}. Detection itself never uses the network.")
+    return 0
+
+
+def _validate(ctx: AppContext, area: str, *, launch: bool, full: bool) -> int:
+    """Hardware validation (app/validation): real checks on this PC, saved to data\\validation. Pending is never reported as passed."""
+    from app.validation import report as vr
+
+    if area == "status":
+        print(vr.status_text(ctx.paths.data_dir))
+        return EXIT_OK
+    reports = []
+    for name in (("windows", "voice", "phone", "gesture") if area == "all" else (area,)):
+        print(f"\n=== {name} ===", flush=True)
+        if name == "windows":
+            from app.validation import windows_checks as wc
+
+            rep = wc.run(wc.RealEnv(), launch=launch)
+        elif name == "voice":
+            from app.cli_voice import create_tts
+            from app.validation import voice_checks as vc
+
+            tts = create_tts(ctx)
+            try:
+                tts.start()
+                tts.wait_ready(20)
+            except Exception:
+                tts = None
+            rep = vc.run(vc.RealVoiceEnv(ctx, tts), ctx.paths.data_dir)
+        elif name == "gesture":
+            from app.validation import gesture_checks as gc
+
+            rep = gc.run(gc.RealGestureEnv(ctx))
+        else:
+            from app.validation import phone_checks as pc
+
+            rep = pc.run(pc.RealPhoneEnv(ctx), full=full)
+        print(rep.describe())
+        print(f"Saved: {vr.save(ctx.paths.data_dir, rep)}")
+        reports.append(rep)
+    return EXIT_CHECK_FAILED if any(r.verdict == "FAILED" for r in reports) else EXIT_OK
+
+
 def _benchmark(ctx: AppContext, *, record: bool, train: bool = False) -> int:
     from app import benchmark
     from app.cli_voice import create_stt
@@ -932,6 +996,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="prove a backup can be restored: open it in a throw-away copy and check it (default: the newest)")
     mode.add_argument("--eval-quality", action="store_true",
                       help="score the AI's answers on a reference set (includes 'admit you don't know' questions)")
+    mode.add_argument("--validate", choices=("windows", "voice", "phone", "gesture", "all", "status"), metavar="AREA",
+                      help="run checks on THIS PC's real hardware and record the result: windows | voice | phone | gesture | all | status")
     mode.add_argument("--benchmark-models", action="store_true",
                       help="measure every installed model on this PC (speed, load time, GPU share) and recommend one for "
                            "--priority; changes nothing")
@@ -972,7 +1038,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="run as a background personal assistant: start with Windows, live in the tray, listen hands-free")
     mode.add_argument("--always-on-off", action="store_true", help="undo --always-on")
     mode.add_argument("--say", metavar="TEXT", help="speak TEXT with the configured voice")
+    mode.add_argument("--setup-hand-model", action="store_true", help="one-time, on request: download the local hand-landmark model for gesture control")
     mode.add_argument("--setup-voice", action="store_true", help="download the speech and voice models")
+    parser.add_argument("--launch", action="store_true", help="with --validate windows: open Notepad to test real windows, then close it")
+    parser.add_argument("--full", action="store_true", help="with --validate phone: also ring the phone and test reconnecting")
     parser.add_argument("--priority", choices=("balanced", "speed", "quality", "low_resource"), default="balanced",
                         help="with --benchmark-models: what to optimise for")
     parser.add_argument("--root", type=Path, default=None, help="use a different application folder")
@@ -1133,6 +1202,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code = _database_backup(ctx, args.restore_db)
         elif args.make_jarvis_model:
             exit_code = _make_jarvis_model(ctx, getattr(args, "model", None))
+        elif args.validate:
+            exit_code = _validate(ctx, args.validate, launch=args.launch, full=args.full)
         elif args.record_benchmark or args.benchmark or args.train_voice:
             exit_code = _benchmark(ctx, record=args.record_benchmark, train=args.train_voice)
         elif args.doctor:
@@ -1173,6 +1244,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             from app.cli import run_find_app
 
             exit_code = run_find_app(ctx, args.find_app)
+        elif args.setup_hand_model:
+            exit_code = _setup_hand_model(ctx)
         elif args.chat:
             from app.cli import run_chat
 

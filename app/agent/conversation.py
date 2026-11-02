@@ -461,14 +461,26 @@ class ConversationManager:
                 parts.append(line)
         except Exception:
             _log.warning("context engine failed", exc_info=True)
-        try:
-            from app.core.world import compile_context
+        try:  # one merged, evidence-labelled view of everything relevant (app/core/request_context.py)
+            from app.core import request_context
 
-            compiled = compile_context(self.tools.context, self._current_text)
-            if compiled:
-                parts.append(compiled)
+            unified = request_context.for_request(self.tools.context, self._current_text)
+            block = unified.render()
+            if block:
+                parts.append(block)
+            question = request_context.clarify(self._current_text, unified)
+            if question:
+                parts.append(f"If the user is asking you to ACT on something they only pointed at, and you cannot resolve it from what I know, ask exactly this instead of guessing: \"{question}\"")
         except Exception:
-            _log.warning("context compiler failed", exc_info=True)
+            _log.warning("unified context failed", exc_info=True)
+            try:
+                from app.core.world import compile_context
+
+                compiled = compile_context(self.tools.context, self._current_text)
+                if compiled:
+                    parts.append(compiled)
+            except Exception:
+                _log.warning("context compiler failed", exc_info=True)
         return "\n".join(parts)
 
     async def _record(self, model: str, user_text: str, messages_added: int = 2) -> None:
@@ -1197,7 +1209,28 @@ class ConversationManager:
         text = self._current_text
         decision = route(text, simple=is_simple_request(text), hard=is_hard_request(text), task=is_task(text),
                          in_editor=in_editor, private_mode=not modes.STATE.current.remember)
+        decision = self._apply_performance(decision)
         self.last_route = decision
+        return decision
+
+    def _apply_performance(self, decision):
+        """Performance mode (app/core/perf.py): one step toward a smaller / larger model role, only among roles that are configured."""
+        from dataclasses import replace
+
+        from app.core import perf
+
+        try:
+            if perf.normalise(getattr(self.settings, "performance_mode", "balanced")) == "balanced":
+                return decision                      # nothing to shift: do not even measure
+            plan = perf.current_plan(self.settings)
+            if plan.route_shift == 0:
+                return decision
+            configured = {k for k, name in (("fast", "ai_fast_model"), ("smart", "ai_smart_model")) if getattr(self.settings, name, "")}
+            kind, note = perf.shift_route(decision.kind, plan, configured)
+            if kind != decision.kind:
+                return replace(decision, kind=kind, reason=f"{decision.reason} ({note})")
+        except Exception:
+            _log.warning("performance mode could not be applied to the model choice", exc_info=True)
         return decision
 
     last_route = None

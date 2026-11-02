@@ -23,6 +23,17 @@ if TYPE_CHECKING:
     from app.ui.controller import PendingConfirmation  # noqa: F401
 
 
+
+def _short_question(text: str, limit: int = 110) -> str:
+    """The first sentence (or the first ~110 characters) of a confirmation question, for speaking aloud; the dialog keeps the full text."""
+    text = " ".join((text or "").split())
+    for end in ("? ", ". ", "! "):
+        cut = text.find(end)
+        if 0 < cut < limit:
+            return text[: cut + 1]
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "..."
+
+
 class VoiceMixin:
     @Slot()
     def toggle_listening(self) -> None:
@@ -105,7 +116,7 @@ class VoiceMixin:
         from app.agent.language import classify_answer, detect_language
 
         bangla = self.conversation.reply_language == "bn" or detect_language(pending.heard or "") == "bn"
-        question = pending.request.summary
+        question = _short_question(pending.request.summary)     # a long question was read for 15 s and "yes" said meanwhile was lost
         self.tts.speak(f"{question} হ্যাঁ বা না বলুন।" if bangla else f"{question} Say yes or no.")
 
         def on_answer(text: str) -> bool:
@@ -118,7 +129,7 @@ class VoiceMixin:
                 self.confirmation_answered.emit(pending, answer)
             return True
 
-        listener.ask(on_answer)
+        listener.ask(on_answer, timeout=40.0)      # starts counting when the question is asked: leave time to hear it and answer
 
     def _spoken_text(self) -> str:
         return self.tts.current_text if self.tts.is_speaking else ""

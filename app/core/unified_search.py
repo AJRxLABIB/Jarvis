@@ -52,11 +52,15 @@ def rank(query: str, memories: Sequence[Any], documents: Sequence[Hit], history:
     for hit in history:
         found.append(Result("conversation", hit.text, hit.score * HISTORY_FACTOR, (hit.created_at or "")[:10],
                             {}))
+    from app.memory.sources import similarity
+
     seen: set[str] = set()
     ranked: list[Result] = []
     for item in sorted(found, key=lambda r: r.score, reverse=True):
         key = " ".join(item.text.lower().split())[:160]
         if item.score < MIN_SCORE or key in seen:
+            continue
+        if any(similarity(item.text, r.text) >= 0.85 for r in ranked):      # the same text again (a copy or a light edit)
             continue
         seen.add(key)
         ranked.append(item)

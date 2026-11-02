@@ -20,14 +20,15 @@ class PhoneArgs(ToolArgs):
     action: Literal["status", "flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "show_text",
                     "open_gallery", "open_camera", "open_messages", "open_dialer", "share_screen",
                     "call", "end_call", "send_sms", "read_messages", "find_contact", "cancel_pending",
-                    "read_screen", "tap_text", "set_clipboard", "locate", "received_files", "lock_phone"] = Field(
+                    "read_screen", "tap_text", "set_clipboard", "locate", "received_files", "lock_phone", "capabilities"] = Field(
         description="status = battery/connection; ring = find my phone; open_app needs app; open_link needs url; "
                     "share_screen = ask the phone to start sharing its screen; call / send_sms need number (a contact "
                     "name or a number); send_sms needs text; read_messages = latest SMS (count, optional from); "
                     "find_contact needs name; cancel_pending = withdraw requests the phone hasn't taken yet; "
                     "read_screen = the text on the phone's screen now; tap_text = tap the button/item with that "
                     "text (text); set_clipboard = put text on the phone's clipboard; locate = where the phone is; "
-                    "received_files = files the phone sent to this PC; lock_phone = lock the phone's screen")
+                    "received_files = files the phone sent to this PC; lock_phone = lock the phone's screen; capabilities = what the phone can do "
+                    "right now: allowed, proven, blocked and why")
     number: str = Field(default="", max_length=60, description="Who to call / text: a contact name or a phone number")
     count: int = Field(default=5, ge=1, le=10, description="How many messages to read")
     sender: str = Field(default="", max_length=60, description="read_messages: only from this contact / number")
@@ -68,6 +69,16 @@ async def phone_control(args: PhoneArgs, ctx: ToolContext) -> ToolResult:
         if not state.get("control"):
             parts.append("control from the PC is OFF on the phone")
         return ToolResult.success(f"{device.name}: " + ", ".join(parts) + ".", phone=device.name, state=state)
+    if args.action == "capabilities":
+        from app.core import device_capabilities as dc
+        from app.remote.phone_link import ACTIONS
+
+        rows = dc.build(ACTIONS, state, dc.history_from_db(ctx.database, device.id))
+        notes = [dc.explain(r) for r in rows if r.verdict in ("blocked", "unsupported", "failing", "needs_you")]
+        text = f"{device.name}: {dc.summary(rows)}." + ("\n" + "\n".join(notes[:6]) if notes else "")
+        return ToolResult.success(text, phone=device.name,
+                                  capabilities=[{"action": r.action, "verdict": r.verdict, "declared": r.declared,
+                                                 "granted": r.granted, "demonstrated": r.demonstrated} for r in rows])
     if args.action == "received_files":
         from app.remote.phone_inbox import PhoneInbox
 

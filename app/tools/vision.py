@@ -47,9 +47,13 @@ class ScreenArgs(ToolArgs):
     @classmethod
     def _loose_target(cls, data: Any) -> Any:
         """Models write target='full screen', 'active window' or target='chrome'."""
-        if not isinstance(data, dict) or not isinstance(data.get("target"), str):
+        if not isinstance(data, dict):
             return data
         data = dict(data)
+        if data.get("monitor") in (0, "0", "", "none", "null", "all"):
+            data["monitor"] = None          # models write monitor=0 for "no particular monitor": that used to fail the whole call
+        if not isinstance(data.get("target"), str):
+            return data
         value = " ".join(data["target"].lower().split())
         if value in ("window", "screen"):
             return data

@@ -353,14 +353,13 @@ _UNSAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 
 def screenshot_folder(ctx: "ToolContext") -> Path:
-    """SCREENSHOT_DIR, or Pictures\\Screenshots\\Jarvis. Never a protected folder."""
+    """SCREENSHOT_DIR, or your Downloads folder. Never a protected folder."""
     from app.security.validator import Zone
 
     policy = ctx.get_path_policy()
     folder = ctx.settings.screenshot_dir
     if folder is None:
-        pictures = policy.known.get("PICTURES") or Path.home() / "Pictures"
-        folder = pictures / "Screenshots" / ctx.settings.assistant_name
+        folder = policy.known.get("DOWNLOADS") or Path.home() / "Downloads"
     folder = Path(os.path.realpath(folder))
     if policy.zone(folder) == Zone.PROTECTED:
         raise ToolError(f"Screenshots can't be saved in {folder} (a protected folder). Change SCREENSHOT_DIR.",

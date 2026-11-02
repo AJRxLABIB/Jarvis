@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><title>JARVIS forest command center (mockup)</title>
+<style>
+:root{--bg:#0a1510;--rail:#0d1b14;--surface:#112219;--raised:#173022;--edge:#2c4a3a;--text:#e8f3ec;--dim:#a6c2b1;--accent:#5fd18c;--warn:#f2c14e;--bad:#ff8f8f}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Segoe UI,sans-serif;display:flex;height:100vh}
+nav{width:190px;background:var(--rail);padding:12px;display:flex;flex-direction:column;gap:4px;border-right:1px solid var(--edge)}
+nav b{padding:6px 8px;color:var(--accent)}nav a{padding:8px;border-radius:8px;color:var(--text)}nav a.on{background:var(--raised);outline:1px solid var(--accent)}
+main{flex:1;padding:16px;display:flex;flex-direction:column;gap:12px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.card{background:var(--surface);border:1px solid var(--edge);border-radius:10px;padding:12px}
+.card small{color:var(--dim)}.card h3{margin:4px 0;font-size:18px}.warn{border-color:var(--warn)}.bad{border-color:var(--bad)}
+footer{background:var(--rail);padding:8px 12px;color:var(--dim);border-top:1px solid var(--edge)}
+</style>
+<nav><b>JARVIS</b><a>Chat</a><a class="on">Dashboard</a><a>Tasks</a><a>Devices</a><a>Memory</a><a>Handoff</a><a>Security</a><a>Settings</a></nav>
+<main><h2 style="margin:0">Dashboard</h2><div class="grid">
+<div class="card"><small>Jarvis</small><h3>Ready</h3>Mode: Balanced</div>
+<div class="card"><small>Local model</small><h3>llama3.2:3b</h3>CPU 12% RAM 41% GPU 8%</div>
+<div class="card"><small>Devices</small><h3>2 devices connected</h3>Pixel: connected</div>
+<div class="card warn"><small>Current mission</small><h3>Prepare submission</h3>Steps 1/3 · Uncertain: Send file</div>
+<div class="card"><small>Needs your approval</small><h3>nothing waiting</h3></div>
+<div class="card bad"><small>Recent actions</small><h3>2 since Jarvis started</h3>phone_link: UNCERTAIN - check it</div>
+</div><footer>Mic: push to talk · Network: online · state is always shown as words, colour only reinforces</footer></main>

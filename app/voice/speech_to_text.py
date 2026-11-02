@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from app.utils.logging_setup import get_logger, log_event
-from app.voice.audio import SAMPLE_RATE
+from app.voice.audio import SAMPLE_RATE, remove_rumble
 
 if TYPE_CHECKING:
     from app.voice.stt_select import ModelChoice
@@ -162,6 +162,9 @@ TARGET_PEAK = 0.6
 def normalize_level(audio: np.ndarray, target: float = TARGET_PEAK, max_gain: float = MAX_GAIN) -> np.ndarray:
     """Bring quiet speech up to a normal level (Whisper is noticeably worse on very quiet input)."""
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    if peak > 1e-4 and audio.size > 1600:
+        # a single click or pop must not decide the gain: use the 99.5th percentile of the loudness as the "peak"
+        peak = max(float(np.percentile(np.abs(audio), 99.5)) * 1.5, 1e-4) if peak > 3 * float(np.percentile(np.abs(audio), 99.5)) else peak
     if peak <= 1e-4 or peak >= target:
         return audio
     gain = min(max_gain, target / peak)
@@ -430,8 +433,8 @@ class FasterWhisperSTT(SpeechToText):
             return Transcript("", language, 0.0, 1.0, seconds, 0)
         if float(np.max(np.abs(audio))) < SILENCE_PEAK:  # nothing but silence: Whisper would invent "Thank you."
             return Transcript("", language, 0.0, 1.0, seconds, 0)
-        raw = audio
-        audio = normalize_level(audio)
+        raw = remove_rumble(audio)
+        audio = normalize_level(raw)
         lang = None if language in (None, "", "auto") else language
         with self._lock:
             for attempt in (1, 2):

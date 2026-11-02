@@ -28,7 +28,7 @@ PROFILE_FIELDS: tuple[str, ...] = (
     "metrics_history",
     "screen_capture_enabled", "presence_detection", "context_window_titles", "process_history", "offline_mode",
 )
-WIDENS_PRIVACY = frozenset({"screen_capture_enabled", "presence_detection", "context_window_titles", "process_history"})
+WIDENS_PRIVACY = frozenset({"screen_capture_enabled", "presence_detection", "gesture_control", "context_window_titles", "process_history", "cyber_guardian"})
 
 BUILTIN: dict[str, dict[str, str]] = {
     "meeting": {"tts_enabled": "false", "wake_sound": "false", "proactive_level": "minimal", "hands_free": "false",

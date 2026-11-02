@@ -127,16 +127,95 @@ def peak_dbfs(samples: np.ndarray) -> float:
     return 20 * math.log10(peak) if peak > 1e-5 else -100.0
 
 
+def _lowpass_taps(cutoff: float, count: int = 161) -> np.ndarray:
+    """Windowed-sinc low-pass FIR; ``cutoff`` is a fraction of the sample rate (0..0.5)."""
+    n = np.arange(count) - (count - 1) / 2
+    taps = 2 * cutoff * np.sinc(2 * cutoff * n) * np.blackman(count)
+    return (taps / taps.sum()).astype(np.float32)
+
+
+class StreamResampler:
+    """Anti-aliased sample-rate conversion that works chunk by chunk (filter and position carried over).
+
+    The old version averaged blocks or interpolated linearly with no low-pass filter, so everything above the new
+    Nyquist (8 kHz for 16 kHz) folded back into the speech band as noise (typical for 44.1 kHz microphones), and
+    every chunk was converted separately, leaving a click at each seam. This low-passes first, then interpolates.
+    """
+
+    def __init__(self, source_rate: int, target_rate: int = SAMPLE_RATE) -> None:
+        self.source_rate, self.target_rate = int(source_rate), int(target_rate)
+        self._same = self.source_rate == self.target_rate
+        self._step = self.source_rate / self.target_rate
+        self._taps = _lowpass_taps(min(0.5, 0.46 * self.target_rate / self.source_rate)) if self.source_rate > self.target_rate else None
+        self._history = np.zeros(0, dtype=np.float32)   # last samples of the filtered signal
+        self._tail = np.zeros(0, dtype=np.float32)      # raw samples the filter still needs
+        self._pos = 0.0                                  # position of the next output sample inside ``_history``
+
+    def process(self, samples: np.ndarray) -> np.ndarray:
+        samples = np.asarray(samples, dtype=np.float32).ravel()
+        if self._same or samples.size == 0:
+            return samples
+        if self._taps is not None:
+            keep = self._taps.size - 1
+            data = np.concatenate((self._tail, samples))
+            if data.size <= keep:
+                self._tail = data
+                return np.zeros(0, dtype=np.float32)
+            filtered = np.convolve(data, self._taps, mode="valid").astype(np.float32)
+            self._tail = data[-keep:]
+        else:
+            filtered = samples                           # upsampling: nothing to remove first
+        signal = np.concatenate((self._history, filtered))
+        count = int(np.floor((signal.size - 1 - self._pos) / self._step)) + 1
+        if count <= 0:
+            self._history = signal
+            return np.zeros(0, dtype=np.float32)
+        positions = self._pos + self._step * np.arange(count)
+        out = np.interp(positions, np.arange(signal.size), signal).astype(np.float32)
+        next_pos = self._pos + self._step * count
+        drop = int(np.floor(next_pos))
+        self._history = signal[drop:]
+        self._pos = next_pos - drop
+        return out
+
+
 def resample(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
-    """Mono resampling. Integer down-sampling uses block averaging (cheap anti-aliasing)."""
+    """Convert a whole clip to ``target_rate`` (anti-aliased)."""
     samples = np.asarray(samples, dtype=np.float32)
     if source_rate == target_rate or samples.size == 0:
         return samples
-    if source_rate > target_rate and source_rate % target_rate == 0:
-        factor = source_rate // target_rate
-        usable = samples.size - samples.size % factor
-        return samples[:usable].reshape(-1, factor).mean(axis=1).astype(np.float32)
-    duration = samples.size / source_rate
-    target_len = max(1, int(round(duration * target_rate)))
-    positions = np.linspace(0, samples.size - 1, target_len)
-    return np.interp(positions, np.arange(samples.size), samples).astype(np.float32)
+    r = StreamResampler(source_rate, target_rate)
+    pad = np.zeros(r._taps.size // 2 if r._taps is not None else 0, dtype=np.float32)   # keep timing and length exact
+    out = r.process(np.concatenate((pad, samples, pad)))
+    want = int(round(samples.size * target_rate / source_rate))
+    return out[:want] if out.size >= want else np.pad(out, (0, want - out.size))
+
+
+def remove_rumble(samples: np.ndarray, cutoff_hz: float = 80.0, rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Remove DC offset and low-frequency rumble (desk thumps, fans, AC hum) that carry no speech.
+
+    A 2nd-order Butterworth high-pass applied forwards and backwards (zero phase), so speech timing is untouched.
+    Speech starts around 85 Hz (male fundamental), so 80 Hz is safe.
+    """
+    x = np.asarray(samples, dtype=np.float32)
+    if x.size < 64:
+        return x
+    k = np.tan(np.pi * cutoff_hz / rate)
+    q = np.sqrt(2.0)
+    norm = 1.0 / (1.0 + q * k + k * k)
+    b = np.array([norm, -2 * norm, norm])
+    a = np.array([1.0, 2 * (k * k - 1) * norm, (1.0 - q * k + k * k) * norm])
+
+    def run(v: np.ndarray) -> np.ndarray:
+        out = np.empty_like(v, dtype=np.float64)
+        z1 = z2 = 0.0
+        b0, b1, b2, a1, a2 = b[0], b[1], b[2], a[1], a[2]
+        for i, xi in enumerate(v.tolist()):
+            y = b0 * xi + z1
+            z1 = b1 * xi - a1 * y + z2
+            z2 = b2 * xi - a2 * y
+            out[i] = y
+        return out
+
+    centred = x.astype(np.float64) - float(np.mean(x))
+    return run(run(centred)[::-1])[::-1].astype(np.float32)

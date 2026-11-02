@@ -7,6 +7,6 @@ cd "$(dirname "$0")/.."
 OUT="$(mktemp -d)"
 S=src/com/jarvis/mobile
 javac -d "$OUT" $S/Json.java $S/SyncClient.java $S/AppSync.java $S/SyncJob.java $S/Store.java $S/Pc.java \
-  $S/PhoneActions.java $S/NotifyForward.java $S/LiveEvents.java \
+  $S/PhoneActions.java $S/LockAdmin.java $S/NotifyForward.java $S/LiveEvents.java \
   $(find test/android_api test/stubs/com -name '*.java') test/SyncClientTest.java
 java -cp "$OUT" com.jarvis.mobile.SyncClientTest

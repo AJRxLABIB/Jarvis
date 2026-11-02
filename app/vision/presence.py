@@ -49,6 +49,15 @@ class Camera:
         self._capture = cv2.VideoCapture(index, backend)
         if not self._capture.isOpened():
             raise RuntimeError("no webcam could be opened")
+        # Ask for 640x480 MJPG at 30 fps: many webcams default to slow uncompressed YUY2 (about 15 fps). Drivers may ignore any of these.
+        for prop, value in ((getattr(cv2, "CAP_PROP_FOURCC", None), cv2.VideoWriter_fourcc(*"MJPG")), (getattr(cv2, "CAP_PROP_FRAME_WIDTH", None), 640),
+                            (getattr(cv2, "CAP_PROP_FRAME_HEIGHT", None), 480), (getattr(cv2, "CAP_PROP_FPS", None), 30),
+                            (getattr(cv2, "CAP_PROP_BUFFERSIZE", None), 1)):
+            try:
+                if prop is not None:
+                    self._capture.set(prop, value)
+            except Exception:
+                pass
 
     def frame(self):
         ok, frame = self._capture.read()
@@ -58,13 +67,20 @@ class Camera:
         self._capture.release()
 
 
+def _shared_lease():
+    """Presence shares the webcam with gesture control through the broker (one device, ref-counted)."""
+    from app.gesture.camera import shared_broker
+
+    return shared_broker().lease()
+
+
 class PresenceMonitor:
     def __init__(self, *, away_minutes: float, on_away: Callable[[], None], on_return: Callable[[float], None],
-                 on_camera: Callable[[bool], None] | None = None, camera_factory=Camera, detector_factory=FaceDetector,
+                 on_camera: Callable[[bool], None] | None = None, camera_factory=None, detector_factory=FaceDetector,
                  clock: Callable[[], float] = time.monotonic, check_seconds: float = CHECK_SECONDS) -> None:
         self.away_seconds = away_minutes * 60
         self.on_away, self.on_return, self.on_camera = on_away, on_return, on_camera
-        self._camera_factory, self._detector_factory = camera_factory, detector_factory
+        self._camera_factory, self._detector_factory = camera_factory or _shared_lease, detector_factory
         self._clock = clock
         self.check_seconds = check_seconds
         self._stop = threading.Event()

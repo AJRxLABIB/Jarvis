@@ -220,7 +220,7 @@ def compile(request: str, *, projects: Iterable[str] = (), active: Iterable[Acti
 
     _criteria(contract, text, known_app)
     _clarify(contract, text)
-    _conflicts(contract, active)
+    _conflicts(contract, active, today)
     return contract
 
 
@@ -258,11 +258,9 @@ def _clarify(contract: GoalContract, text: str) -> None:
         contract.questions.append(Question("Who should it go to?", "privacy"))
     if _REMIND.search(text) and not _TIME.search(text):
         contract.questions.append(Question("When should I remind you?", "correctness"))
-    if contract.deadline and contract.deadline < datetime.now().date() and "deadline" not in contract.constraints:
-        pass                                                    # a past date is reported by conflicts, not guessed away
 
 
-def _conflicts(contract: GoalContract, active: Iterable[Active]) -> None:
+def _conflicts(contract: GoalContract, active: Iterable[Active], today: date) -> None:
     mine = tokens(contract.outcome)
     same_day = 0
     for item in active:
@@ -275,7 +273,7 @@ def _conflicts(contract: GoalContract, active: Iterable[Active]) -> None:
             same_day += 1
     if same_day >= 3:
         contract.conflicts.append(Conflict("busy_day", f"{same_day} other things are already due on {contract.deadline}"))
-    if contract.deadline and contract.deadline < datetime.now().date():
+    if contract.deadline and contract.deadline < today:
         contract.conflicts.append(Conflict("busy_day", f"{contract.deadline} is already in the past"))
 
 

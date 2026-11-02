@@ -123,10 +123,10 @@ def test_play_music_twice_uses_one_tab(pc, monkeypatch) -> None:
     monkeypatch.setattr(assistant, "TRANSPORT", httpx.MockTransport(
         lambda r: httpx.Response(200, text='"videoId":"abcDEF12345"')))
     first = asyncio.run(play_music(PlayMusicArgs(query="Imran Hashmi"), ctx()))
-    assert len(pc.programs) == 1 and "Your Chrome profile" in first.message
+    assert len(pc.programs) == 1 and "Your Chrome profile" in first.data["browser"]
     tabs.tabs[1].append("Imran Hashmi song - YouTube")  # Chrome opened it
     second = asyncio.run(play_music(PlayMusicArgs(query="Arijit Singh"), ctx()))
-    assert len(pc.programs) == 1 and "same tab" in second.message
+    assert len(pc.programs) == 1 and "same tab" in second.data["browser"]
     assert tabs.selected == ["Imran Hashmi song - YouTube"]
 
 

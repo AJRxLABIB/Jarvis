@@ -94,7 +94,7 @@ class Settings(BaseModel):
     core_trails: bool = True                                      # sparks with fading trails circling the core
     ui_sounds: bool = False                                       # short interface sounds (tick / attention / done / error)
     ui_sound_volume: float = Field(default=0.5, ge=0.0, le=1.0)
-    ui_theme: Literal["dark", "light"] = "dark"                   # the command-center view (the HUD is always dark)
+    ui_theme: Literal["dark", "light", "forest"] = "dark"                   # the command-center view (the HUD is always dark)
     ui_text_scale: float = Field(default=1.0, ge=0.8, le=1.6)     # text size in the command-center view
     hud_scale: float = Field(default=1.0, ge=0.75, le=1.5)        # the whole window's size (applies at the next start)
     hidden_panels: str = ""                                       # dashboard panels to hide, comma separated titles
@@ -155,6 +155,7 @@ class Settings(BaseModel):
     mini_orb_size: int = Field(default=64, ge=40, le=200)  # pixels
     mini_orb: bool = True  # small always-on-top orb in the screen corner while the window is hidden
     presence_detection: bool = False  # opt-in: the webcam notices when you sit down / walk away
+    gesture_control: bool = False  # opt-in: allow hand-gesture mouse control (the camera still opens only when you turn it on)
     presence_lock: bool = True  # with presence detection: lock the PC when you've been away
     presence_away_minutes: float = Field(default=3.0, ge=0.5, le=60)
     setup_done: bool = False  # the first-run setup wizard has been completed
@@ -177,7 +178,7 @@ class Settings(BaseModel):
     context_window_titles: bool = True  # context engine: read the foreground window's title (never the screen)
     screen_capture_enabled: bool = False  # opt-in: allow screenshots, reading text on screen, describing it
     speech_dataset: Literal["off", "corrections", "all"] = "off"  # keep your voice commands to train the recognizer
-    screenshot_dir: Path | None = None  # empty = Pictures\\Screenshots\\<assistant name>
+    screenshot_dir: Path | None = None  # empty = your Downloads folder
     screen_blocked_windows: str = Field(default=DEFAULT_BLOCKED_WINDOWS, max_length=1000)
     ocr_engine: str = "auto"  # auto | windows | tesseract
     ocr_language: str = ""  # empty = your Windows languages; e.g. en-US, bn
@@ -209,11 +210,13 @@ class Settings(BaseModel):
     animations: bool = True  # HUD motion: panels drawing in, gliding meters, the background scan
     weekly_health_check: bool = True  # once a week while you're away: health report; speaks only if worse
     ollama_fast_memory: bool = True  # Ollama started by Jarvis: flash attention + 8-bit KV cache (fits small GPUs)
+    gpu_preference: Literal["auto", "integrated", "nvidia"] = "auto"   # laptops with two GPUs: integrated = keep JARVIS off the NVIDIA card (app/utils/gpu_pref.py)
     gpu_memory_saver: bool = True  # small GPU (<= 8 GB) with speech on it: smaller AI context so both fit
     home_assistant_url: str = Field(default="", max_length=200)  # e.g. http://192.168.1.10:8123
     home_assistant_token: str = Field(default="", max_length=400, repr=False)  # long-lived access token (secret)
     remote_enabled: bool = False  # phone remote: a private web page on your home network
     remote_port: int = Field(default=8765, ge=1024, le=65535)
+    local_discovery: bool = False  # announce this PC on the local network (mDNS) so other JARVIS devices can find it; finding is never trusting
     wake_public_address: str = Field(default="", max_length=253)  # router's public IP / DDNS name, for waking from outside
     wake_public_port: int = Field(default=9, ge=1, le=65535)  # the UDP port your router forwards to this PC
     remote_allow_tailscale: bool = False  # also answer phones on your own Tailscale network (away from home)
@@ -221,6 +224,7 @@ class Settings(BaseModel):
     barge_in: bool = True  # "Hey Jarvis" while it's speaking stops the speech and listens
     voice_interrupt: bool = True  # talk over it ("stop", or a new command) while it speaks (needs a GPU)
     voice_confirm: bool = True  # answer "yes"/"no" (হ্যাঁ/না) out loud to its questions
+    performance_mode: Literal["auto", "fast", "balanced", "quality", "battery"] = "balanced"   # app/core/perf.py (measured limits)
     autonomy: Literal["observe", "suggest", "routine", "approval"] = "routine"   # how much Jarvis may do by itself
     full_power: bool = False   # nothing is off-limits: CRITICAL actions ask you ON SCREEN instead of being blocked
     autonomy_remote: Literal["observe", "suggest", "routine", "approval"] = "routine"  # requests from a phone
@@ -239,6 +243,8 @@ class Settings(BaseModel):
     github_token: str = Field(default="", max_length=400, repr=False)  # read-only GitHub access token (secret)
     google_client_id: str = Field(default="", max_length=200)  # your own Google OAuth "Desktop app" client (Calendar / Drive)
     google_client_secret: str = Field(default="", max_length=200, repr=False)  # its secret (secret setting)
+    cyber_guardian: bool = False  # OFF by default: watch for unusual file bursts, startup changes, new listeners and stale backups (names/times only; never stops anything)
+    guardian_folders: str = ""  # folders the guardian watches, separated by ';' (empty = Documents, Desktop, Pictures)
     process_history: bool = False  # OFF by default: also record the top programs' names with CPU / memory numbers (for per-program baselines)
     metrics_history: bool = True  # a light record of CPU / memory / disk / battery (once a minute, 14 days) for trends
 

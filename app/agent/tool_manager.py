@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from app.ai.base import ToolCall, ToolSpec
 from app.memory.audit import AuditLog
+from app.core.action_record import State
 from app.security.confirmations import ConfirmationRequest, Confirmer, DenyConfirmer
 from app.security.permissions import Decision, PermissionEngine, RiskLevel
 from app.security.rate_limit import RateLimiter
@@ -118,6 +119,7 @@ class ToolExecution:
     level: RiskLevel | None = None
     decision: Decision | None = None
     elapsed_ms: int = 0
+    action_id: str | None = None             # app/core/action_record.py: the lifecycle record of this call
 
 
 def _repair(tool: Tool, call: ToolCall, error: ValidationError, context: ToolContext):
@@ -161,6 +163,9 @@ class _Gate:
     once_key: str | None = None
     taint_reason: str | None = None
     strict: bool = False                      # autonomy: everything that changes something asks
+    approved_by: str = "policy"               # who/what allowed it without asking (recorded on the action)
+    note: str = ""                            # extra words for the confirmation (e.g. an earlier uncertain attempt)
+    record: Any = None                        # the ActionRecord (app/core/action_record.py)
 
     def end(self, result: ToolResult) -> "_Gate":
         self.result = result
@@ -188,6 +193,7 @@ class ToolExecutor:
         self.confirmer = confirmer or DenyConfirmer()
         self.audit = audit
         self.confirm_timeout = confirm_timeout
+        self.approval_ttl_s = 120.0          # an approval covers its exact action for this long (app/core/action_record.py)
 
     def _full_power_allows(self) -> bool:
         """Full power applies only to requests from you at this PC (typed or spoken) - never to a phone, an automation,
@@ -232,7 +238,8 @@ class ToolExecutor:
             details = {"arguments": dict(call.arguments), **kwargs.pop("details", {})}
             self.audit.record(event, tool=call.name, details=details, **kwargs)
 
-    async def execute(self, call: ToolCall, *, user_command: bool = False, preapproved: bool = False) -> ToolExecution:
+    async def execute(self, call: ToolCall, *, user_command: bool = False, preapproved: bool = False,
+                      mission: str = "") -> ToolExecution:
         """Run one tool call through every check. ``user_command`` = the call was matched directly from
         the user's own words (a direct command), not chosen by the model. ``preapproved`` = a mission step the
         user approved as part of an exact plan (app/core/missions.py): MODERATE steps then don't ask again;
@@ -247,9 +254,12 @@ class ToolExecutor:
         4. ``_ask``      - the confirmation, when one is still needed;
         5. ``_run_checked`` - run with a timeout, verify, record undo / taint / once-per-run."""
         started = time.perf_counter()
+        record: Any = None
 
         def done(result: ToolResult, level: RiskLevel | None = None, decision: Decision | None = None) -> ToolExecution:
             elapsed = int((time.perf_counter() - started) * 1000)
+            if record is not None:
+                self._finish_record(record, result)
             log_event(
                 _log, "tool_call", tool=call.name, ok=result.ok, error=result.error,
                 risk_level=int(level) if level is not None else None,
@@ -260,12 +270,13 @@ class ToolExecutor:
                 decision=decision.value if decision else None,
                 details={"ok": result.ok, "error": result.error, "message": result.message, "elapsed_ms": elapsed},
             )
-            return ToolExecution(call, result, level, decision, elapsed)
+            return ToolExecution(call, result, level, decision, elapsed, record.id if record is not None else None)
 
         prepared = self._prepare(call)
         if isinstance(prepared, ToolResult):
             return done(prepared)
         tool, call, args = prepared
+        record = self._new_record(tool, call, args, mission)
 
         if tool.needs_network:
             from app.utils import network
@@ -277,10 +288,20 @@ class ToolExecutor:
         gate = self._gate(tool, call, args, user_command=user_command, preapproved=preapproved)
         if gate.result is not None:
             return done(gate.result, gate.level, gate.decision)
+        gate.record = record
+        record.level = int(gate.level) if gate.level is not None else 0     # the real, argument-based risk
+        self._guard_uncertain_retry(tool, record, gate)
         if gate.decision == Decision.CONFIRM:
+            record.to(State.AWAITING_APPROVAL, "asking")
             refused = await self._ask(tool, call, args, gate)
             if refused is not None:
                 return done(refused, gate.level, gate.decision)
+            record.approve("user", self.approval_ttl_s)
+        else:
+            record.approve(gate.approved_by, self.approval_ttl_s)
+        stale = self._stale_approval(record, args)
+        if stale is not None:
+            return done(stale, gate.level, gate.decision)
         outcome = await self._run_checked(tool, call, args, gate)
         return done(outcome, gate.level, gate.decision)
 
@@ -428,16 +449,16 @@ class ToolExecutor:
         if (gate.decision == Decision.CONFIRM and user_command and level < RiskLevel.CRITICAL and not strict
                 and tool.direct_without_confirmation is not None and tool.direct_without_confirmation(args, self.context)):
             self._audit("confirmation_skipped", call, level=int(level), decision="user_command")
-            gate.decision = Decision.ALLOW
+            gate.decision, gate.approved_by = Decision.ALLOW, "direct_command"
         if gate.decision == Decision.CONFIRM and preapproved and level == RiskLevel.MODERATE and not strict:
             self._audit("confirmation_preapproved", call, level=int(level), decision="approved_plan")
-            gate.decision = Decision.ALLOW
+            gate.decision, gate.approved_by = Decision.ALLOW, "approved_plan"
         if gate.decision == Decision.CONFIRM and level == RiskLevel.MODERATE and gate.taint_reason is None and not strict:
             grant = self._standing_grant(tool, args)
             if grant is not None:
                 self._audit("confirmation_skipped", call, level=int(level), decision="standing_approval",
                             details={"grant": grant.id})
-                gate.decision = Decision.ALLOW
+                gate.decision, gate.approved_by = Decision.ALLOW, "standing_grant"
 
     async def _ask(self, tool: Tool, call: ToolCall, args, gate: "_Gate") -> ToolResult | None:
         """Ask the user. None = approved; else the result that ends the call."""
@@ -445,6 +466,8 @@ class ToolExecutor:
         summary = tool.confirmation_text(args, self.context)
         if taint_reason is not None:
             summary = f"{summary} (I'm asking because {taint_reason}.)"
+        if gate.note:
+            summary = f"{summary} ({gate.note})"
         if level == RiskLevel.CRITICAL:
             summary = f"CRITICAL (normally refused - full power is on): {summary}"
         request = ConfirmationRequest(tool.name, level, summary, args.model_dump())
@@ -476,10 +499,13 @@ class ToolExecutor:
         run = gate.run
         if run is not None:
             run.confirmed_after_untrusted = gate.taint_reason is not None  # the handler records it (memory provenance)
+        if gate.record is not None:
+            gate.record.to(State.RUNNING)
         try:
             outcome = await asyncio.wait_for(self._run(tool, args), tool.timeout)
         except asyncio.TimeoutError:
-            return ToolResult.failure("timeout", f"'{tool.name}' took too long and was stopped.")
+            return ToolResult.failure("timeout", f"'{tool.name}' took too long and was stopped. It may or may not have "
+                                      "finished - check before trying again.", uncertain=True)
         except ToolError as exc:
             return ToolResult.failure(exc.code, str(exc), **getattr(exc, "data", {}))
         except asyncio.CancelledError:
@@ -488,6 +514,8 @@ class ToolExecutor:
             _log.exception("tool %s crashed", tool.name, extra={"event": "tool_crashed"})
             return ToolResult.failure("internal", "The action failed unexpectedly. The details are in the log.")
         if outcome.ok and tool.verify is not None:
+            if gate.record is not None:
+                gate.record.to(State.VERIFYING)
             outcome = await self._verify(tool, args, outcome, call)
         if outcome.ok:
             self._teach(tool, args)
@@ -502,6 +530,79 @@ class ToolExecutor:
                 except Exception:
                     _log.warning("taint tracking failed", exc_info=True)
         return outcome
+
+    # ---- the action record (app/core/action_record.py) -------------------------------------------------------------
+    def _new_record(self, tool: Tool, call: ToolCall, args: Any, mission: str = ""):
+        from app.core import runs
+        from app.core.action_record import LEDGER, ActionRecord
+
+        run = runs.current()
+        source = run.source if run is not None else "text"
+        record = ActionRecord(
+            tool=tool.name, arguments=args.model_dump(mode="json"), level=0,
+            origin_device="phone" if source == "phone" else "pc", input_method=str(source),
+            target_device="phone" if tool.category == "phone" else "pc", capability=tool.category,
+            mission=mission)
+        record.on_change = self._mirror
+        LEDGER.add(record)
+        record.to(State.VALIDATED)
+        return record
+
+    def _mirror(self, record: Any, state: State, note: str) -> None:
+        """Only the moments that matter go to the audit log: asking, approving, and every way an action can end."""
+        if self.audit is None or state in (State.VALIDATED, State.RUNNING, State.VERIFYING):
+            return
+        self.audit.record("action_state", tool=record.tool, level=record.level, decision=state.value,
+                          details={"action": record.id, "state": state.value, "note": note, "input": record.input_method,
+                                   "device": record.target_device, "key": record.idempotency_key})
+
+    def _guard_uncertain_retry(self, tool: Tool, record: Any, gate: "_Gate") -> None:
+        """The same change attempted before and left UNCERTAIN (timeout, lost answer): repeating it blindly could do it twice,
+        so a retry always asks - and says why."""
+        from app.core.action_record import LEDGER, State as S
+
+        if gate.level is None or int(gate.level) < int(RiskLevel.MODERATE):
+            return
+        prior = LEDGER.duplicate_of(record)
+        if prior is not None and prior.state == S.UNCERTAIN:
+            gate.note = "the same action was tried before and I could not confirm whether it happened"
+            if gate.decision == Decision.ALLOW:
+                gate.decision = Decision.CONFIRM
+
+    def _stale_approval(self, record: Any, args: Any) -> ToolResult | None:
+        """Last check before running: the approval must still cover exactly what is about to run."""
+        from app.core.action_record import digest
+
+        approval = record.approval
+        now_digest = digest(record.tool, args.model_dump(mode="json"), target_device=record.target_device,
+                            target_app=record.target_app, mission=record.mission, level=record.level)
+        ok, why = approval.covers(now_digest) if approval is not None else (False, "no approval")
+        if ok:
+            return None
+        record.to(State.REJECTED, why)
+        return ToolResult.failure("approval_stale", f"Not done: {why}. Ask again.")
+
+    def _finish_record(self, record: Any, result: ToolResult) -> None:
+        if record.finished:
+            return
+        if result.ok:
+            if record.state in (State.RUNNING, State.VERIFYING):
+                if result.data.get("pending"):                    # queued for a device that has not answered: may still happen
+                    record.recovery = "check the device (status), or withdraw the request, before sending it again"
+                    record.to(State.UNCERTAIN, "queued, no answer yet")
+                else:
+                    record.to(State.SUCCEEDED, "ok")
+            return
+        running = record.state in (State.RUNNING, State.VERIFYING)
+        if running and (result.error == "timeout" or result.data.get("uncertain")):
+            record.recovery = "inspect the real state before retrying"
+            record.to(State.UNCERTAIN, result.error or "")
+        elif running:
+            record.to(State.FAILED, result.error or "")
+        elif result.error == "timeout":
+            record.to(State.EXPIRED, "no answer in time")
+        else:
+            record.to(State.REJECTED, result.error or "")
 
     def _teach(self, tool: Tool, args: Any) -> None:
         """A teach session (app/automation/teach.py) remembers the tools Jarvis really ran - nothing else."""

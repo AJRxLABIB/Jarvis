@@ -815,6 +815,196 @@ def _skill_inputs(tmp: Path) -> list[tuple[str, Callable[[], tuple[bool, str, bo
             ("an undeclared input is refused", an_unknown_input_is_refused)]
 
 
+def _twin(tmp: Path) -> list[tuple[str, Callable[[], tuple[bool, str, bool]]]]:
+    from datetime import datetime, timedelta, timezone
+
+    from app.core import twin
+    from app.memory.database import Database
+
+    db = Database(tmp / "twin.db")
+    db.initialize()
+
+    def an_old_reading_is_marked_stale():
+        now = datetime.now(timezone.utc)
+        twin.observe(db, "device", "Phone", {"state": "online"}, "device registry", at=now - timedelta(hours=3))
+        state = twin.snapshot(db, now)[0].state
+        return (state == "stale", f"3 hour old device reading is {state}", state != "stale")
+
+    def an_unobserved_twin_is_unknown_not_fine():
+        twin.forget(db)
+        text = twin.describe(db)
+        return ("UNKNOWN" in text, text[:60], "UNKNOWN" not in text)
+
+    return [("an old reading is marked stale", an_old_reading_is_marked_stale),
+            ("an empty twin says unknown, not fine", an_unobserved_twin_is_unknown_not_fine)]
+
+
+def _multilingual(tmp: Path) -> list[tuple[str, Callable[[], tuple[bool, str, bool]]]]:
+    from app.agent import multilingual_eval as M
+
+    stats = M.evaluate()
+
+    def nothing_unsafe_is_rewritten():
+        bad = [x for s in stats.values() for x in s.unsafe_rewrites]
+        return (not bad, "; ".join(bad) or f"{sum(s.mustnot for s in stats.values())} must-not-rewrite cases left alone", bool(bad))
+
+    def negation_is_not_turned_into_the_command():
+        from app.agent.language import to_english_command
+
+        got = to_english_command("ক্রোম বন্ধ করো না")
+        return (got is None, f"'do not close Chrome' -> {got!r}", got is not None)
+
+    def labelled_commands_are_understood():
+        missed = [x for s in stats.values() for x in s.missed]
+        return (not missed, "; ".join(missed[:3]) or f"{sum(s.commands_right for s in stats.values())} labelled commands understood", False)
+
+    return [("no unsafe or vague text is rewritten into a command", nothing_unsafe_is_rewritten),
+            ("a negated Bangla command is never turned into the command", negation_is_not_turned_into_the_command),
+            ("every labelled Bangla/Banglish command is understood", labelled_commands_are_understood)]
+
+
+def _faults(tmp: Path) -> list[tuple[str, Callable[[], tuple[bool, str, bool]]]]:
+    """Injected failures against the real executor + action lifecycle (app/core/action_record.py). Everything is simulated: the tools are
+    canaries that only record that they ran, so a case that shows a forbidden or repeated run is an incorrect action, never a real one."""
+    import time as _time
+
+    from pydantic import Field
+
+    from app.agent.tool_manager import ToolExecutor, ToolRegistry
+    from app.config.files import PermissionsConfig
+    from app.config.settings import Settings
+    from app.core import emergency
+    from app.core.action_record import LEDGER, State
+    from app.memory.database import Database
+    from app.security.permissions import PermissionEngine, RiskLevel
+    from app.tools.base import Tool, ToolArgs, ToolContext, ToolError, ToolResult
+
+    class NameArgs(ToolArgs):
+        name: str = Field(default="x", max_length=20)
+
+    def build(sub: str, answer: bool = True, *, tools: list | None = None, perms: dict | None = None, delay: float = 0.0):
+        db = Database(tmp / sub / "f.db") if (tmp / sub).mkdir(parents=True, exist_ok=True) is None else None
+        db.initialize()
+        ran: list[str] = []
+
+        def run(name):
+            def handler(args, ctx):
+                ran.append(f"{name}:{args.name}")
+                return ToolResult.success(f"{name} ran")
+            return handler
+
+        def slow(args, ctx):                       # answers after the deadline: the work may have been done
+            ran.append(f"slow:{args.name}")
+            _time.sleep(0.4)
+            return ToolResult.success("late")
+
+        def explode(args, ctx):
+            ran.append(f"explode:{args.name}")
+            raise ToolError("the target application crashed", "app_crashed")
+
+        def queued(args, ctx):                     # a phone that never answered: queued, not confirmed
+            ran.append(f"queued:{args.name}")
+            return ToolResult.success("sent; no answer yet", pending=True)
+
+        base = [Tool("f_move", "moderate", run("move"), NameArgs, RiskLevel.MODERATE),
+                Tool("f_read", "safe", run("read"), NameArgs, RiskLevel.SAFE),
+                Tool("f_slow", "slow", slow, NameArgs, RiskLevel.MODERATE, timeout=0.1),
+                Tool("f_crash", "crashes", explode, NameArgs, RiskLevel.MODERATE),
+                Tool("f_phone", "phone", queued, NameArgs, RiskLevel.MODERATE)]
+        confirmer = _Confirmer(answer)
+        if delay:
+            inner = confirmer
+
+            class Slow:
+                async def confirm(self, request):
+                    await asyncio.sleep(delay)
+                    return await inner.confirm(request)
+
+            confirmer = Slow()
+        ex = ToolExecutor(ToolRegistry(tools or base), PermissionEngine(PermissionsConfig.model_validate(perms or {})),
+                          ToolContext(Settings(data_dir=tmp / sub), database=db), confirmer=confirmer)
+        return ex, ran, confirmer
+
+    def state_of(execution):
+        record = LEDGER.get(execution.action_id)
+        return record.state if record else None
+
+    def lost_response_is_uncertain_and_retry_asks():
+        ex, ran, confirmer = build("f1")
+        first = _call(ex, "f_slow", name="a")
+        uncertain = state_of(first) == State.UNCERTAIN
+        before = confirmer.asked
+        _call(ex, "f_slow", name="a")
+        return (uncertain and confirmer.asked == before + 1 and ran.count("slow:a") == 2,
+                f"state={state_of(first)} asked_again={confirmer.asked - before}", False)
+
+    def stale_approval_does_not_authorize():
+        ex, ran, _ = build("f2", delay=0.05)
+        ex.approval_ttl_s = 0.0                                 # the approval expires before the call can start
+        result = _call(ex, "f_move", name="a")
+        return (result.result.error == "approval_stale" and not ran and state_of(result) == State.REJECTED,
+                f"error={result.result.error} ran={ran}", bool(ran))
+
+    def revoked_permission_blocks_the_next_step():
+        ex, ran, confirmer = build("f3", perms={"confirm_moderate": True})
+        first = _call(ex, "f_move", name="a")
+        ex.permissions = PermissionEngine(PermissionsConfig.model_validate({"tool_levels": {"f_move": 3}}))     # raised to critical
+        second = _call(ex, "f_move", name="b")
+        return (first.result.ok and not second.result.ok and ran == ["move:a"] and state_of(second) == State.REJECTED,
+                f"ran={ran} second={second.result.error}", "move:b" in ran)
+
+    def emergency_lock_stops_new_actions_but_not_reads():
+        ex, ran, _ = build("f4")
+        before = dict(emergency.STATE.flags)
+        try:
+            emergency.STATE.flags["locked"] = True
+            blocked = _call(ex, "f_move", name="a")
+            read = _call(ex, "f_read", name="a")
+        finally:
+            emergency.STATE.flags.update(before)
+        return (not blocked.result.ok and read.result.ok and ran == ["read:a"] and state_of(blocked) == State.REJECTED,
+                f"ran={ran}", "move:a" in ran)
+
+    def crash_is_reported_as_failed_not_success():
+        ex, ran, _ = build("f5")
+        result = _call(ex, "f_crash", name="a")
+        return (not result.result.ok and state_of(result) == State.FAILED and result.result.error == "app_crashed",
+                f"state={state_of(result)} error={result.result.error}", False)
+
+    def unanswered_device_request_is_uncertain():
+        ex, ran, _ = build("f6")
+        result = _call(ex, "f_phone", name="a")
+        record = LEDGER.get(result.action_id)
+        return (state_of(result) == State.UNCERTAIN and "check the device" in record.recovery,
+                f"state={state_of(result)} recovery={record.recovery!r}", False)
+
+    def declined_request_runs_nothing():
+        ex, ran, _ = build("f7", answer=False)
+        result = _call(ex, "f_move", name="a")
+        return (not ran and state_of(result) == State.REJECTED, f"ran={ran}", bool(ran))
+
+    def invalid_arguments_never_reach_the_tool():
+        ex, ran, _ = build("f8")
+        result = _call(ex, "f_move", name="x" * 50)
+        return (not result.result.ok and not ran and result.action_id is None, f"ran={ran} error={result.result.error}", bool(ran))
+
+    def a_successful_repeat_is_allowed_but_each_call_has_its_own_record():
+        ex, ran, _ = build("f9")
+        a, b = _call(ex, "f_read", name="a"), _call(ex, "f_read", name="a")
+        return (a.action_id != b.action_id and state_of(a) == state_of(b) == State.SUCCEEDED and ran == ["read:a", "read:a"],
+                f"ran={ran}", False)
+
+    return [("lost response -> uncertain, and the retry asks first", lost_response_is_uncertain_and_retry_asks),
+            ("an expired approval cannot authorize the action", stale_approval_does_not_authorize),
+            ("permission revoked mid-task blocks the next step", revoked_permission_blocks_the_next_step),
+            ("emergency lock stops new changes, reads still work", emergency_lock_stops_new_actions_but_not_reads),
+            ("a crashed target is a failure, not a success", crash_is_reported_as_failed_not_success),
+            ("a device that never answered is uncertain with a recovery hint", unanswered_device_request_is_uncertain),
+            ("a refused request runs nothing", declined_request_runs_nothing),
+            ("malformed arguments never reach the tool", invalid_arguments_never_reach_the_tool),
+            ("a repeated safe call is allowed and recorded separately", a_successful_repeat_is_allowed_but_each_call_has_its_own_record)]
+
+
 SUITES: dict[str, Callable[[Path], list[tuple[str, Callable[[], tuple[bool, str, bool]]]]]] = {
     "permissions": _permissions, "task recovery": _recovery, "phone protocol": _phone, "memory": _memory,
     "commands": _commands, "goal contracts": _goals,
@@ -825,6 +1015,9 @@ SUITES: dict[str, Callable[[Path], list[tuple[str, Callable[[], tuple[bool, str,
     "task replay": _replay,
     "model choice": _model_choice,
     "skill inputs": _skill_inputs,
+    "digital twin": _twin,
+    "multilingual": _multilingual,
+    "injected faults": _faults,
 }
 
 HARDWARE = (

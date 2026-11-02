@@ -1,0 +1,3 @@
+# Optional: hand-gesture control (local, Apache-2.0). mediapipe 1.x has a single py3 win_amd64 wheel (works on Python 3.14).
+# It depends on opencv-contrib-python; if the camera or face detection misbehave afterwards: pip install --force-reinstall opencv-contrib-python
+mediapipe>=1.2,<2

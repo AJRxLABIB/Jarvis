@@ -29,7 +29,7 @@ _log = get_logger("semantic")
 Embedder = Callable[[Sequence[str]], Awaitable[list[list[float]]]]
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".py", ".js", ".ts", ".html", ".css", ".java", ".c",
                    ".cpp", ".cs", ".php", ".sql", ".yml", ".yaml", ".xml", ".ini", ".rst"}
-DOC_EXTENSIONS = TEXT_EXTENSIONS | {".pdf", ".docx"}
+DOC_EXTENSIONS = TEXT_EXTENSIONS | {".pdf", ".docx", ".ics", ".htm"}
 MAX_FILE_BYTES = 30_000_000
 MAX_CHUNKS_PER_FILE = 400
 CHUNK_CHARS, CHUNK_OVERLAP = 900, 150
@@ -133,6 +133,11 @@ def is_sensitive(path: Path) -> bool:
 
 def read_document(path: Path) -> str:
     ext = path.suffix.lower()
+    from app.memory.sources import read_adapter
+
+    adapted = read_adapter(path)           # notes exports, saved pages, calendar files (see app/memory/sources.py)
+    if adapted is not None:
+        return adapted
     if ext == ".pdf":
         return read_pdf(path)
     if ext == ".docx":
@@ -227,7 +232,14 @@ class SemanticIndex:
                 "SELECT source, MAX(mtime) FROM semantic_items WHERE kind='document' GROUP BY source")}
         stats = {"indexed": 0, "unchanged": 0, "skipped": 0, "passages": 0, "removed": 0}
         stats["removed"] = self._purge_missing(folder, known)
+        from app.memory.sources import exclusions, is_excluded
+
+        excluded = exclusions(self.database)
+        stats["excluded"] = 0
         for path in sorted(folder.rglob("*")):
+            if excluded and path.is_file() and is_excluded(path, excluded):
+                stats["excluded"] += 1
+                continue
             if not path.is_file() or path.suffix.lower() not in DOC_EXTENSIONS or any(
                     part.startswith(".") or part in ("node_modules", "__pycache__", ".git") for part in path.parts) \
                     or is_sensitive(path.relative_to(folder) if path.is_relative_to(folder) else path):
@@ -279,6 +291,12 @@ class SemanticIndex:
         with self.database.connect() as conn:
             rows = conn.execute("SELECT kind, source, chunk, text, embedding, created_at FROM semantic_items "
                                 "WHERE kind=? AND embedding IS NOT NULL", (kind,)).fetchall()
+        if kind == "document":
+            from app.memory.sources import exclusions, is_excluded
+
+            excluded = exclusions(self.database)
+            if excluded:
+                rows = [r for r in rows if not is_excluded(r[1], excluded)]
         if not rows:
             return []
         terms = query_terms(query)

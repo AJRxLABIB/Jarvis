@@ -759,3 +759,108 @@ stored (lose it, lose the file). `open` decrypts to a new .db, checks it, never 
 `python scripts\encrypted_backup.py save E:\` / `open E:\jarvis-....jbk restored.db`; then restore with the existing
 restore path. Tests: tests/test_encrypted_backup.py (round trip, wrong password, tampering). Not done: a button or voice
 command for it, and only the database is covered (not `.env` or phone keys, deliberately).
+
+
+## Round 51 - hearing quality
+Audit of the voice-input path. Fixed: no anti-alias filter when the mic is not at 16 kHz (new `StreamResampler`), per-chunk resampling
+seams in hands-free streaming, DC/rumble reaching the recogniser (`remove_rumble`, 80 Hz zero-phase high-pass), click-dominated level
+gain (percentile-based), short pre-roll (0.3 -> 0.45 s). Tests: `tests/test_hearing_quality.py` (7) plus the existing voice suites pass
+(2 env-only failures here: Qt/OpenGL). NOT verified on a real microphone: compare `--benchmark` before/after on your PC. See docs/voice.md.
+
+## Round 52 - digital twin and what-if (master prompt section 12)
+Audit result: of the master prompt's sections, missions/state machine, memory, model routing, computer control, Android/WoL (staged
+wake), security kernel, events, backup, self-improvement lab, replay, anomaly detection and the command center already exist and are
+tested; the genuine gap was the digital twin with staleness and the pre-run what-if preview. Added migration 41 `twin_observations`,
+`app/core/twin.py`, tool `digital_twin` (+1 tool), Intelligence page "Digital twin", lab suite, `docs/digital-twin.md`,
+`tests/test_twin.py` (10). Still open (unchanged): tool foundry, workspace objects, retrieval adapters, Windows/phone/GPU/mic
+verification on real hardware, rebuilt APK, leaked-key decision.
+
+
+## Round 53 - foundry, workspaces, retrieval sources, multilingual set, APK/key helpers
+New tools `build_tool`, `workspace`, `retrieval_sources`. New: `app/core/foundry.py`, `app/core/workspaces.py`, `app/memory/sources.py`,
+`app/agent/multilingual_eval.py`, `app/remote/apk_check.py`, `scripts/signing_key.py`. Fixed in `language.py`: negated Bangla commands were rewritten into the
+command (safety), "অ্যাপ" inside app names (WhatsApp), Unicode normalisation. Combined search now skips near-copies. Tests: foundry 9, workspaces 7, sources 8,
+multilingual 6, apk 7; lab suite "multilingual". Not verified on real hardware: workspace restore on Windows, Bangla speech recognition. APK: bundled 1.4.0 matches
+source (not rebuilt here - no Android SDK); signing key still in two history commits, decision left to you (`python scripts/signing_key.py plan`).
+
+
+## Round 54 - screen watch + master-prompt audit
+Audit table in `docs/MASTER_AUDIT.md`. Built the one missing capability: `core/screen_watch.py` + tool `screen_watch` (watch a window/screen for a change or a phrase:
+explicit and asks first, <=3 watches, 30 min default / 4 h max, blocked-window list applied on every look, capture indicator on while running, adaptive backoff,
+OCR only after a change, alert cooldown, stops on emergency lock / `stop_all`). Tests `tests/test_screen_watch.py` (11, injected observations). The real capture path
+(`tools/screen_watch_tool.py::_observer`) is Windows-only and HARDWARE-UNVERIFIED. Not measured (pending hardware): end-of-speech and interruption latency.
+
+## Round 55 - on-PC hardware validation
+`python run.py --validate windows|voice|phone|all|status` (`app/validation/*`, `docs/hardware-validation.md`): Windows UIA / DPI / monitors / focus, voice detector reaction +
+end-of-speech + speaker-stop + self-hearing, phone real actions confirmed by you; PENDING is never a pass. Benchmark now reports word/character error per language (Bangla, mixed,
+English) with a no-claim rule under 8 recordings, plus 14 recognition-only prompts. 25 tests with fake hardware. NOT run on real hardware by me: RealEnv / RealVoiceEnv / RealPhoneEnv.
+
+## Signing-key decision (28 Oct 2026)
+Decision by the owner: the GitHub repository has always been private, so the existing Android signing key is KEPT (no rotation, no history rewrite). Residual risk, accepted:
+two commits (`79d7065`, `c90b319`) still contain the key and `password.txt`; anyone who ever had read access, a fork or a clone has them. Revisit (`python scripts/signing_key.py plan`,
+`new-key --yes`) if the repository is ever made public, shared, or a copy leaves your control. Keep `android/signing` and `*.jks` out of git (already in `.gitignore`).
+
+## Round 56: hand-gesture control (28 Oct 2026)
+`app/gesture/*`, `app/tools/gesture_tool.py`, `docs/gestures.md`, 42 tests. Shared camera broker (presence now leases it). Off by default; camera only on explicit enable; fail-closed safety controller; emergency stop wired into the existing stop.
+NOT verified on real hardware: MediaPipe detection, real mouse injection under DPI/multi-monitor. UI dashboard/preview/calibration wizard and Android gestures not built.
+
+Round 56b: right click (thumb+middle pinch, off by default), cursor over the whole monitor, voice shortcuts, Gestures page (panels, skeleton preview, calibration wizard, tutorial, STOP),
+`--validate gesture` (wheel/model/DPI/pointer round-trip/camera/real detection). 54 tests. Qt page and all real-hardware checks still need to be run by you.
+
+Round 56d: "what are you seeing in my screen?" (any wording, filler or swearing) now LOOKS (describe_screen) instead of going to the chat model; a screenshot file is made only for "screenshot".
+New screen-assist mode: `screen_watch` condition=assist ("watch my screen and help me", "stop watching my screen"): a local vision model looks only after the screen settles (cooldown 45 s), speaks only when
+it has a useful tip, visible capture indicator, blocked windows skipped, stops by itself after 30 min. Needs a vision model (`ollama pull qwen2.5vl:3b`). Not run against a real vision model here.
+Gesture commands also accept speech mishearings ("jaster control on", "J star control on"); command words added to the recognizer hints.
+
+Round 56e: two-hand detection, two-hand pinch zoom (Ctrl+wheel), open-palm swipe (opt-in actions), dwell click (opt-in), Midas-touch guard, pointer-hand continuity, new settings/tool/page options, tutorial steps. 73 gesture tests. Hardware feel not verified.
+
+Round 57: audio output switching (`audio_output`): speakers / headphones / Bluetooth / connected / named device, PC-speaker fallback, loud option, result verified by reading Windows back. `app/core/audio_route.py` (tested with fake devices), `app/tools/audio_win.py` (IPolicyConfig via comtypes - NOT run on real devices).
+
+## Round 58 - master-prompt audit and first implementation slice (29 Oct 2026)
+
+Audit result: most of the master prompt already existed (single ToolExecutor path, approvals, replay protection, phone protocol versioning,
+twin, foundry, workspaces, memory provenance, offline guard). Baseline in the Linux sandbox: only the Qt/libEGL tests cannot run
+(about 30, same set before and after); no JDK here, so the Android JVM tests were NOT run.
+
+Fixed / built (all unit-tested):
+| Item | What |
+|---|---|
+| Android test harness | `test/run.sh` did not compile `LockAdmin.java` (needed by `PhoneActions`); added + `tests/test_android_harness.py` guards it. Still needs a real `javac` run. |
+| goal_contract clock bug | past-date check used the real clock, not the `today` given: fixed |
+| Action lifecycle | `app/core/action_record.py`: validated states, approval bound to a digest of tool+args+target+mission+risk with expiry, UNCERTAIN end state, idempotency key; driven by `ToolExecutor`, mirrored to the audit log (`action_state`) |
+| Retry after uncertain | an identical MODERATE+ action that ended UNCERTAIN always asks again; queued-but-unanswered device requests end UNCERTAIN |
+| Phone capabilities | `app/core/device_capabilities.py` + `phone_control capabilities`: declared vs granted vs demonstrated, with the exact fix and an alternative |
+| Gesture bugs | mapped gestures never ran (called from the camera thread); one noisy frame could click (`pinch_confirm=2`) |
+| Gesture profiles / macros / metrics | `profiles.py` (6 profiles, app suggestion, opt-in auto), `macros.py` (persisted, profile-scoped, triggers SWIPE_LEFT/RIGHT/FIST only, risk cap), `metrics.py` (seeded synthetic benchmark: old rule 3 false activations, new 0) |
+| Performance modes | `app/core/perf.py` + `performance_mode` tool: Fast/Balanced/High quality/Battery saver/Auto from measured RAM/CPU/GPU/battery; drives model-role choice, auto bigger-model swap, backup/research deferral (max 3 days), gesture fps/hands; `fit` explains with numbers |
+| Fault injection | reliability-lab suite "injected faults" (9 cases) |
+
+NOT verified: anything on real hardware (Windows, phone, camera, GPU); Android JVM tests; the Gestures-page profile selector (Qt, syntax-checked only).
+Not built yet: unified cross-device mission handoff UI, work-state snapshots/resume screen, personal data refinery, finance/wellness workspaces, command-center redesign, TLS/pairing review.
+
+
+## Round 59 (command center, handoff, snapshots, personal data)
+- Built and unit-tested (pure logic): work_snapshot (save/resume without replaying uncertain steps), finance_plan, data_refinery (nothing trusted until confirmed), wellness (opt-in, off by default), dashboard_data, handoff_data. TLS key at rest is now encrypted with a DPAPI-protected passphrase (migrates existing keys). GPU preference setting (`GPU_PREFERENCE=nvidia`).
+- Written but NOT run here (needs Qt + a display): Dashboard cards page, Handoff page, `forest` theme (contrast verified by test; look not seen), mockup `docs/command_center_forest_mockup.html`.
+- Not verified: real devices, Android JVM tests (no JDK), the ~30 pre-existing Qt tests that cannot start in the sandbox.
+
+
+## Round 60 (Stage 3: unified personal intelligence core)
+- Built and unit-tested: `core/request_context.py` (evidence-labelled, budgeted, fresh-aware context for every request, plus ask-instead-of-guess), `core/blackboard.py` (shared per-request agent record; blocks repeated side effects, collisions, delegation loops), tool `request_context`, wired into the conversation prompt and the orchestrator.
+- Also this round: fixed the audio switch (wrong COM class id; verified from your own saved error), "put it back", tolerant spoken output phrases.
+- Not built yet (found by audit): secure local device discovery (mDNS / DNS-SD; no code exists), parallel-plan blackboard use, Skill Studio page, Android-side notification categories beyond forwarding. Everything needing Windows, the phone or the GPU is still unverified here.
+
+
+## Round 61 (device mesh and the rest of Stage 4-6 that could be built here)
+- Built and unit-tested: `remote/discovery.py` (mDNS announce/scan, hostile-packet safe, never trusts), `core/device_mesh.py` + tool `device_mesh`, setting `LOCAL_DISCOVERY` (off), strict-offline allows link-local multicast, `core/notification_intel.py` wired into phone notifications + `notifications digest`, `automation/skill_card.py` + tool `skill_card`, parallel-plan blackboard, modes deep work / study / travel / sleep.
+- NOT built: phone-side discovery (Android NsdManager, no JDK), a visual Skill Studio page beyond the existing Workflow Studio, VS Code / Office adapters, Windows UI Automation beyond what exists, the fuller security-dashboard panels, retention controls UI. Real-network discovery and everything on Windows / the phone remains unverified.
+
+
+## Round 62 (verified start + cyber guardian)
+- Built and unit-tested: tool `dev_session` (start / status / logs / stop; verified-up only when a port answers; crash causes from the log), `CommandExecutor.start_captured / exit_code / stop`, tool `guardian` + `core/guardian.py` (file bursts, startup changes, network listeners / destinations, backup checks, incident store with audit + notifications, upkeep hook, off by default).
+- Unverified: both on your real PC (registry, connections, I/O counters, your projects). Not built: VS Code UI adapter beyond the existing open / edit / check tools, a guardian panel in the command center, per-process attribution of file changes (Windows needs auditing for that).
+
+## Round 63 (coordination)
+- Built and unit-tested (`tests/test_round63.py`, 25 tests): cross-device transactions (+ tool `transaction`), event intelligence (+ `situations`, event `BuildFailed`), attention firewall and mode-driven scheduling (+ `attention`; modes quiet / power saving / offline; gaming / presentation / meeting now hold work), what-changed-while-away (+ `what_changed`), dependency-aware health (+ `service_impact`). See `docs/round63-coordination.md`.
+- Unverified: all of it on your real PC / phone; the Windows full-screen reader; real folder scans on large trees.
+- Not built: a real meeting detector, git / history readers for the event diagnosis, a command-center panel for transactions and situations, Android NSD discovery (no JDK here).

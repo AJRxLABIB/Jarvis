@@ -147,6 +147,7 @@ class MainWindow(QMainWindow):
         self.mute_mic_action.toggled.connect(lambda on: self.controller.set_mic_muted(on))
         self.menu.addSeparator()
         self.menu.addAction("Command center (Ctrl+Shift+C)", lambda: self.show_command_center())
+        self.menu.addAction("Gesture control...", self.open_gestures)
         self.menu.addAction("Core view (Ctrl+Shift+H)", lambda: self.show_page(0))
         self.menu.addAction("Workspaces (every screen, Ctrl+K)...", self.open_workspaces)
         self.menu.addAction("Settings...", self.open_settings)
@@ -1667,6 +1668,10 @@ class MainWindow(QMainWindow):
         if self.controller.ctx.database is None:
             return
         MyDayDialog(self.controller.executor.context, self.controller.send_text, parent=self).exec()
+
+    def open_gestures(self) -> None:
+        """Hand-gesture control page (command center > Gestures)."""
+        self.show_command_center("gestures")
 
     def open_security_center(self) -> None:
         from app.ui.security_center import SecurityCenterDialog

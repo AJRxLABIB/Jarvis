@@ -488,3 +488,20 @@ def test_updates_check_the_signature(tmp_path: Path, monkeypatch) -> None:
             with pytest.raises(updates.UpdateError, match="refused"):
                 updates.download(updates.UpdateInfo(**target), folder, require_signature=required)
             assert not any(folder.iterdir())  # deleted
+
+
+def test_tls_key_is_encrypted_at_rest_and_an_old_plain_key_is_migrated(tmp_path):
+    from cryptography.hazmat.primitives import serialization
+
+    from app.remote.tls import ensure_certificate, fingerprint, server_context
+
+    cert, key = ensure_certificate(tmp_path, "192.168.1.30")
+    assert b"ENCRYPTED" in key.read_bytes()[:60] and (tmp_path / "remote-key.pass").is_file()
+    server_context(cert, key)
+    before = fingerprint(cert)
+    plain = serialization.load_pem_private_key(key.read_bytes(), password=(tmp_path / "remote-key.pass").read_bytes())
+    key.write_bytes(plain.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    assert b"ENCRYPTED" not in key.read_bytes()[:60]                      # what an older version left on disk
+    ensure_certificate(tmp_path, "192.168.1.30")
+    assert b"ENCRYPTED" in key.read_bytes()[:60] and fingerprint(cert) == before   # migrated, same certificate (phone pin still valid)
+    server_context(cert, key)

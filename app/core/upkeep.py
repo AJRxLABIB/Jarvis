@@ -35,6 +35,25 @@ class Upkeep:
     def _on(self, name: str) -> bool:
         return bool(getattr(self.settings, name, True)) if self.settings is not None else True
 
+    def _defer(self, now: datetime) -> bool:
+        """A busy PC or a low battery postpones the daily backup - but never for more than three days: a backup must still happen."""
+        try:
+            from app.core import attention, perf
+
+            plan = perf.current_plan(self.settings)
+            if attention.allow("background", plan=plan)[0]:       # the current mode (gaming, presentation, power saving) and the PC load
+                return False
+        except Exception:
+            return False
+        existing = backup.list_backups(self.backup_folder)
+        if not existing:
+            return False
+        try:
+            last = datetime.strptime(existing[0].stem.removeprefix(backup.PREFIX)[:15], "%Y%m%d-%H%M%S")
+        except ValueError:
+            return False
+        return now - last < timedelta(days=3)
+
     def backup_due(self, now: datetime) -> bool:
         existing = backup.list_backups(self.backup_folder)
         if not existing:
@@ -61,7 +80,7 @@ class Upkeep:
             except Exception as exc:
                 self.last_error = f"metrics: {exc}"
                 _log.warning("could not record the health history", exc_info=True)
-        if self._on("auto_backup") and self.backup_due(now):
+        if self._on("auto_backup") and self.backup_due(now) and not self._defer(now):
             try:
                 path = backup.create_backup(self.db_path, self.backup_folder, now=now)
                 did["backed_up"] = True
@@ -70,6 +89,17 @@ class Upkeep:
             except Exception as exc:
                 self.last_error = f"backup: {exc}"
                 _log.warning("the automatic backup failed", exc_info=True)
+        if bool(getattr(self.settings, "cyber_guardian", False)) and self._guardian_due(now):
+            try:
+                from app.core import guardian
+
+                found = guardian.instance(self.settings, self.database, self.backup_folder).scan()
+                self._last_guardian = now
+                did["guardian"] = len(found)
+                if found:
+                    guardian.notify(self.database, found)
+            except Exception:
+                _log.warning("the guardian scan failed", exc_info=True)
         days = int(getattr(self.settings, "memory_event_retention_days", 0) or 0)
         if days > 0 and self._retention_due(now):  # at most once an hour
             try:
@@ -85,6 +115,10 @@ class Upkeep:
         return did
 
     _last_retention: datetime | None = None
+    _last_guardian: datetime | None = None
+
+    def _guardian_due(self, now: datetime) -> bool:
+        return self._last_guardian is None or now - self._last_guardian >= timedelta(minutes=3)
 
     def _test_restore(self, path: Path, now: datetime) -> None:
         """A backup is only trusted once it was restored somewhere harmless: do that for every new daily backup."""
@@ -112,8 +146,14 @@ class Upkeep:
         Only addresses already saved as sources are fetched (public pages only). Claims whose page changed are marked
         'needs recheck'; nothing else is touched. Returns the names of projects that had changes.
         """
+        from app.core import perf
         from app.core.research_store import ResearchStore
 
+        try:
+            if perf.current_plan(self.settings).defer_background:
+                return []                                     # watched research waits while the PC is busy / on a low battery
+        except Exception:
+            pass
         store = ResearchStore(self.database)
         due = await asyncio.to_thread(store.due)
         if not due:
@@ -146,7 +186,9 @@ class Upkeep:
         except Exception:
             _log.debug("clipboard purge failed", exc_info=True)
         try:
-            if self._research_check_due():
+            from app.core import attention
+
+            if self._research_check_due() and attention.allow("network")[0] and attention.allow("background")[0]:
                 await self.watch_research()
         except Exception:
             _log.warning("research monitoring failed", exc_info=True)

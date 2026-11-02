@@ -143,6 +143,7 @@ class RemoteMixin:
             self.notice.emit(f"The phone remote could not start: {exc}")
             return None
         self.remote, self.remote_hub = server, hub
+        self._start_discovery(fingerprint)
         self.notice.emit(f"Phone remote is on: open {server.url} on your phone (same Wi-Fi). Menu -> Phone remote "
                          "shows the pairing code.")
         return server.url
@@ -314,7 +315,39 @@ class RemoteMixin:
         except Exception as exc:
             self.notice.emit(f"The phone remote could not start: {exc}")
 
+    def _start_discovery(self, fingerprint: str) -> None:
+        """Announce this PC on the local network (opt-in: LOCAL_DISCOVERY). It only says "a JARVIS is here"; it grants nothing."""
+        self._stop_discovery()
+        if not getattr(self.ctx.settings, "local_discovery", False):
+            return
+        try:
+            import socket
+
+            from app.remote import discovery
+
+            address = discovery.local_address()
+            if not address:
+                return
+            host = (socket.gethostname().split(".")[0] or "jarvis-pc")[:40]
+            ident = (fingerprint or "").replace(":", "").lower()[:12]
+            mine = discovery.Announcement(f"Jarvis-{ident[:8] or host}", f"{host}.local.", address, self.ctx.settings.remote_port,
+                                          (("v", "1"), ("id", ident), ("name", host)))
+            announcer = discovery.Announcer(mine)
+            if announcer.start():
+                self._announcer = announcer
+            else:
+                self.notice.emit(f"Local discovery is off: {announcer.error}")
+        except Exception:
+            _log.warning("could not start local discovery", exc_info=True)
+
+    def _stop_discovery(self) -> None:
+        announcer = getattr(self, "_announcer", None)
+        if announcer is not None:
+            announcer.stop()
+            self._announcer = None
+
     def stop_remote(self) -> None:
+        self._stop_discovery()
         if self.remote is not None:
             try:
                 self.runner.run(self.remote.stop(), timeout=5)

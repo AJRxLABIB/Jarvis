@@ -11,6 +11,14 @@
 from __future__ import annotations
 
 import re
+import unicodedata
+
+
+def _n(text: str) -> str:
+    """Unicode NFC: the same Bangla word can be typed or recognised as different code point sequences (e.g. য় as one or two
+    characters); everything is compared in one form."""
+    return unicodedata.normalize("NFC", text)
+
 
 BENGALI = re.compile(r"[ঀ-৿]")
 _BANGLISH_WORDS = re.compile(
@@ -32,16 +40,17 @@ APP_NAMES_BN = {
     "ফটোস": "photos", "জুম": "zoom", "টিমস": "teams", "আউটলুক": "outlook", "নেটফ্লিক্স": "netflix",
     "চ্যাটজিপিটি": "chatgpt", "ডাউনলোডস": "downloads", "ডেস্কটপ": "desktop",
 }
-_DEVICE_BN = r"(?:পিসি|কম্পিউটার|ল্যাপটপ|সিস্টেম|pc|computer|laptop|system)"
-_POLITE_BN = r"(?:\s*(?:প্লিজ|দয়া\s*করে|please|to|তো|একটু|ekটু|ektu|na|না)\s*)*"
+APP_NAMES_BN = {_n(k): v for k, v in APP_NAMES_BN.items()}
+_DEVICE_BN = _n(r"(?:পিসি|কম্পিউটার|ল্যাপটপ|সিস্টেম|pc|computer|laptop|system)")
+_POLITE_BN = _n(r"(?:\s*(?:প্লিজ|দয়া\s*করে|please|to|তো|একটু|ekটু|ektu|na|না)\s*)*")
 _END = r"[\s।.!?]*$"
 _AND = re.compile(r"\s+(?:আর|এবং|ও|and|ar|abong)\s+|\s*,\s*", re.I)
 
-_OPEN = r"(?:খোলো|খুলো|খোল|খুলে\s*দাও|খুলুন|চালু\s*করো|চালু\s*কর|ওপেন\s*করো|ওপেন\s*কর|kholo|khulo|khol|khule\s*dao|open\s*koro|chalu\s*koro)"
-_CLOSE = r"(?:বন্ধ\s*করো|বন্ধ\s*কর|বন্ধ\s*করে\s*দাও|বন্ধ\s*করুন|ক্লোজ\s*করো|ক্লোজ\s*কর|bondho\s*koro|bondo\s*koro|bondho\s*kore\s*dao|close\s*koro)"
-_MIN = r"(?:মিনিমাইজ\s*করো|ছোট\s*করো|minimize\s*koro)"
+_OPEN = _n(r"(?:খোলো|খুলো|খোল|খুলে\s*দাও|খুলুন|চালু\s*করো|চালু\s*কর|ওপেন\s*করো|ওপেন\s*কর|kholo|khulo|khol|khule\s*dao|open\s*koro|chalu\s*koro)")
+_CLOSE = _n(r"(?:বন্ধ\s*করো|বন্ধ\s*কর|বন্ধ\s*করে\s*দাও|বন্ধ\s*করুন|ক্লোজ\s*করো|ক্লোজ\s*কর|bondho\s*koro|bondo\s*koro|bondho\s*kore\s*dao|close\s*koro)")
+_MIN = _n(r"(?:মিনিমাইজ\s*করো|ছোট\s*করো|minimize\s*koro)")
 
-_FIXED: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(p, re.I), en) for p, en in (
+_FIXED: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(_n(p), re.I), en) for p, en in (
     (rf"^{_POLITE_BN}(?:এখন\s*)?(?:কয়টা|কটা)\s*বাজে{_POLITE_BN}{_END}|^(?:ekhon\s*)?(?:koyta|kota)\s*baje{_END}|^সময়\s*কত{_END}",
      "what time is it"),
     (rf"^(?:আজ|আজকে)\s*(?:কত|কতো)\s*তারিখ{_END}|^আজ\s*কী\s*বার{_END}|^aj(?:ke)?\s*koto\s*tarikh{_END}", "what's the date"),
@@ -51,13 +60,13 @@ _FIXED: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(p, re.I), en
      "what's the weather"),
     (rf"^(?:কাল|আগামীকাল)(?:কের)?\s*আবহাওয়া\s*(?:কেমন)?{_END}|^(?:কাল|আগামীকাল)\s*কি\s*বৃষ্টি\s*হবে{_END}",
      "weather tomorrow"),
-    (rf"^{_POLITE_BN}(?:{_DEVICE_BN}\s*)?লক\s*(?:করো|কর|করে\s*দাও|করুন){_POLITE_BN}{_END}|^(?:pc\s*)?lock\s*koro{_END}",
+    (rf"^{_POLITE_BN}(?:আমার\s*)?(?:{_DEVICE_BN}(?:টা|টি)?\s*)?লক\s*(?:করো|কর|করে\s*দাও|করুন){_POLITE_BN}{_END}|^(?:pc\s*)?lock\s*koro{_END}",
      "lock my pc"),
     (rf"^(?:{_DEVICE_BN}\s*)?(?:রিস্টার্ট|restart)\s*(?:করো|কর|করে\s*দাও|dao|koro){_END}", "restart my pc"),
-    (rf"^(?:{_DEVICE_BN}\s*)(?:শাটডাউন\s*করো|শাট\s*ডাউন\s*করো|বন্ধ\s*করো|বন্ধ\s*করে\s*দাও|bondho\s*koro|shutdown\s*koro){_END}"
+    (rf"^(?:আমার\s*)?(?:{_DEVICE_BN}(?:টা|টি)?\s*)(?:শাটডাউন\s*করো|শাট\s*ডাউন\s*করো|বন্ধ\s*করো|বন্ধ\s*করে\s*দাও|bondho\s*koro|shutdown\s*koro){_END}"
      rf"|^শাটডাউন\s*(?:করো|কর|করে\s*দাও){_END}", "shut down my pc"),
-    (rf"^(?:ভলিউম|সাউন্ড|আওয়াজ|volume|sound)\s*(?:বাড়াও|বাড়িয়ে\s*দাও|বাড়াও|barao|bariye\s*dao){_END}", "volume up"),
-    (rf"^(?:ভলিউম|সাউন্ড|আওয়াজ|volume|sound)\s*(?:কমাও|কমিয়ে\s*দাও|komao|komiye\s*dao){_END}", "volume down"),
+    (rf"^(?:ভলিউম|সাউন্ড|আওয়াজ|volume|sound)\s*(?:একটু\s*)?(?:বাড়াও|বাড়িয়ে\s*দাও|বাড়াও|barao|bariye\s*dao){_END}", "volume up"),
+    (rf"^(?:ভলিউম|সাউন্ড|আওয়াজ|volume|sound)\s*(?:একটু\s*)?(?:কমাও|কমিয়ে\s*দাও|komao|komiye\s*dao){_END}", "volume down"),
     (rf"^(?:সাউন্ড\s*)?মিউট\s*(?:করো|কর|করে\s*দাও){_END}|^mute\s*koro{_END}", "mute"),
     (rf"^(?:গান|মিউজিক|ভিডিও|gaan|gan|music)\s*(?:থামাও|বন্ধ\s*করো|পজ\s*করো|thamao|pause\s*koro){_END}", "pause"),
     (rf"^(?:গান|মিউজিক|gaan|gan|music)\s*(?:চালাও|চালু\s*করো|বাজাও|chalao|chalu\s*koro){_END}", "play some music"),
@@ -98,16 +107,18 @@ def _app_name(name: str) -> str:
 
 
 def _one(text: str) -> str | None:
-    cleaned = re.sub(r"^(?:হে\s*)?(?:জার্ভিস|জারভিস|জার্বিস)[\s,।]*", "", " ".join(text.split()))
+    cleaned = re.sub(r"^(?:হে\s*)?(?:জার্ভিস|জারভিস|জার্বিস)[\s,।]*", "", _n(" ".join(text.split())))
     for pattern, english in _FIXED:
         if pattern.match(cleaned):
             return english
     for verb_re, verb in ((_OPEN, "open"), (_CLOSE, "close"), (_MIN, "minimize")):
-        match = re.match(rf"^{_POLITE_BN}(?P<name>.+?)\s*(?:অ্যাপ(?:টা)?\s*)?{verb_re}{_POLITE_BN}{_END}", cleaned, re.I)
+        match = re.match(rf"^{_POLITE_BN}(?P<name>.+?)(?P<app>\s+অ্যাপ(?:টা)?)?\s*{verb_re}{_POLITE_BN}{_END}", cleaned, re.I)
         if match:
-            name = _app_name(match.group("name"))
-            if name and not BENGALI.search(name) and len(name.split()) <= 4:
-                return f"{verb} {name}"
+            # "ক্রোম অ্যাপ খোলো" (the word 'app' is dropped) but "হোয়াটস অ্যাপ খোলো" (it is part of the name): try both
+            for candidate in (match.group("name") + (match.group("app") or ""), match.group("name")):
+                name = _app_name(candidate)
+                if name and not BENGALI.search(name) and len(name.split()) <= 4:
+                    return f"{verb} {name}"
             return None
     return None
 
@@ -131,10 +142,15 @@ def misheard_bangla_command(text: str) -> str | None:
     return None
 
 
+# "ক্রোম বন্ধ করো না" = "do NOT close Chrome": a trailing না / na after a bare imperative is a negation. (After "দাও" it is only a softener:
+# "খুলে দাও না" = "please open it".) A negated command is never turned into the command - it passes on unchanged.
+_NEGATED = re.compile(_n(r"(?:করো|কর|কোরো|খোলো|খুলো|খোল|চালাও|থামাও|বাড়াও|কমাও|kholo|khulo|khol|koro|kor|korо|chalao|thamao|barao|komao)\s*(?:না|na|nah)[\s।.!?]*$"), re.I)
+
+
 def to_english_command(text: str) -> str | None:
-    """A Bangla/Banglish command as the English command, or None if it isn't a simple command."""
-    text = " ".join((text or "").split())
-    if not text or len(text) > 120:
+    """A Bangla/Banglish command as the English command, or None if it isn't a simple command (or says NOT to do it)."""
+    text = _n(" ".join((text or "").split()))
+    if not text or len(text) > 120 or _NEGATED.search(text):
         return None
     single = _one(text)
     if single is not None:
@@ -292,7 +308,8 @@ def is_echo(heard: str, speaking: str) -> bool:
     return overlap >= 0.6
 
 
-_YES = re.compile(r"^(?:(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|confirm|confirmed|please do|of course|"
+_YES = re.compile(r"^(?:(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|confirm|confirmed|please do|of course|proceed|approve|approved|alright|all right|"
+                  r"go on|continue|start it|turn it on|enable it|confirm it|do that|that's right|yes please|"
                   r"absolutely|affirmative|right|correct|হ্যাঁ|হা|হাঁ|জি|জ্বি|ঠিক আছে|করো|করুন|হ্যাঁ করো|অবশ্যই|আচ্ছা|ha|haa|hya)"
                   r"[\s,.!।]*)+(?:please|sir|স্যার)?[\s.!।]*$", re.I)
 _NO = re.compile(r"^(?:(?:no|nope|nah|don't|do not|cancel|stop|never mind|negative|not now|wait|না|নাহ|না থাক|থাক|"

@@ -130,6 +130,8 @@ def rules(event: events.Event) -> tuple[str, str, str, str, str] | None:
         return ("Security", str(data.get("message", "")), "security", str(data.get("priority", "high")), "")
     if name == events.EMERGENCY:
         return ("Emergency controls", str(data.get("message", "")), "security", "urgent", "")
+    if name == events.BUILD_FAILED:
+        return (f"{data.get('project', 'Project')} crashed", str(data.get("log", ""))[:300], "alert", "high", "show the log")
     if name == events.JARVIS_UPDATED:
         return (f"Jarvis updated to {data.get('version', '')}", str(data.get("previous", "")), "system", "low", "")
     return None

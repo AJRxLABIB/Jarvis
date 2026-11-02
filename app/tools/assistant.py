@@ -195,6 +195,9 @@ _VIDEO_ID = re.compile(r'"videoId":"([A-Za-z0-9_-]{11})"')
 class PlayMusicArgs(ToolArgs):
     query: str | None = Field(default=None, max_length=120,
                               description="Song, artist or kind of music, e.g. 'Arijit Singh', 'lofi'. Omit for any music.")
+    output: str = Field(default="", max_length=60,
+                        description="Where the sound should play, if the user said: speakers | headphones | bluetooth | connected | a device name. "
+                                    "Empty = leave the current output alone.")
 
 
 async def first_youtube_video(query: str) -> str | None:
@@ -228,21 +231,54 @@ def _remember_song(url: str, query: str, ctx: ToolContext) -> None:
 
 async def play_music(args: PlayMusicArgs, ctx: ToolContext) -> ToolResult:
     """Actually starts music: the best YouTube match plays in your browser (it keeps playing more)."""
+    from app.core.audio_route import split_output
+
+    query, said = split_output((args.query or "").strip())
+    if re.fullmatch(r"(?:a |an |some |any )?(?:music|songs?|tune|tunes)(?: for me)?(?: please)?", query.lower().strip()):
+        query = ""                                           # "a song for me" is not a search term
+    query = (query or ctx.settings.music_default_query).strip()
+    wanted = (args.output or said).strip()
+    routed = await _route_sound(wanted, ctx) if wanted else ""
+    result = await _play(query, args, ctx)
+    if routed and result.ok:
+        result = ToolResult.success(f"{result.message} {routed}", **(result.data or {}))
+    elif routed:
+        result = ToolResult(result.ok, f"{result.message} {routed}", result.data, result.error)
+    return result
+
+
+async def _route_sound(wanted: str, ctx: ToolContext) -> str:
+    """Move Windows' default output BEFORE the song starts; say honestly if that did not work (the song still plays)."""
+    from app.tools import audio_output_tool as A
+
+    try:
+        r = await A.audio_output(A.AudioArgs(action="switch", target=wanted), ctx)
+    except Exception as exc:
+        return f"I could not change the sound output ({exc}); it plays on the current one."
+    if not r.ok:
+        return f"I could not move the sound to {wanted}: {r.message}"
+    if r.data.get("fallback") or not r.data.get("device"):
+        return r.message
+    kind = r.data.get("kind", "")
+    place = {"speakers": "your speakers", "headphones": "your headphones", "bluetooth": "your Bluetooth device"}.get(kind, r.data["device"])
+    return f"On {place}." + (" Say 'put it back' to undo." if not r.data.get("already") else "")
+
+
+async def _play(query: str, args: PlayMusicArgs, ctx: ToolContext) -> ToolResult:
     from urllib.parse import quote_plus
 
     from app.tools.applications import open_url
 
-    query = (args.query or ctx.settings.music_default_query).strip()
     video = await first_youtube_video(f"{query} song" if args.query and len(query.split()) <= 3 else query)
     if video:
         url = f"https://www.youtube.com/watch?v={video}"
         where = open_url(url, ctx, same_tab="youtube")  # songs always play in the same YouTube tab
         _remember_song(url, query, ctx)
         log_event(_log, "music_started", source="youtube")
-        return ToolResult.success(f"Playing {query} on YouTube in {where}.", url=url, query=query)
+        return ToolResult.success(f"Playing {query} on YouTube.", url=url, query=query, browser=where)
     url = f"{YOUTUBE_SEARCH}?search_query={quote_plus(query)}"
     where = open_url(url, ctx, same_tab="youtube")
-    return ToolResult.success(f"Opened YouTube results for {query} in {where}; pick one to play.", url=url, query=query)
+    return ToolResult.success(f"Opened YouTube results for {query}; pick one to play.", url=url, query=query, browser=where)
 
 
 # ------------------------------------------------------------------ briefing

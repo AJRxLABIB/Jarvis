@@ -91,7 +91,9 @@ class ProactiveMixin:
             log_event(_log, "alert_held_for_focus")
             return
         self.notice.emit(message)
-        if modes.STATE.speaks(priority):
+        from app.core import attention
+
+        if modes.STATE.speaks(priority) and attention.may_speak(priority, str(data.get("category", ""))):   # a full-screen app in front keeps it quiet
             self.tts.speak(message)
 
     # -------------------------------------------------------------- modes
@@ -127,6 +129,14 @@ class ProactiveMixin:
 
             if getattr(self.ctx, "database", None) is not None and PhoneLink(self.ctx.database).cancel():
                 stopped.append("waiting phone requests")
+        except Exception:
+            pass
+        try:                                                      # hand-gesture control: release buttons, camera off
+            from app.gesture.service import SERVICE as _gestures
+
+            if _gestures.running:
+                _gestures.emergency_stop()
+                stopped.append("hand-gesture control")
         except Exception:
             pass
         screens = getattr(self, "_phone_screens", None)

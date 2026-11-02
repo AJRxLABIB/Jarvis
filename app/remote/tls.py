@@ -14,13 +14,43 @@ import ssl
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-CERT, KEY = "remote-cert.pem", "remote-key.pem"
+CERT, KEY, PASS = "remote-cert.pem", "remote-key.pem", "remote-key.pass"
+
+
+def _passphrase(key_path: Path) -> bytes:
+    """The random passphrase of the encrypted key; kept next to it, protected for this Windows account (DPAPI) like the pairing file."""
+    from app.security.protect import read_bytes, write_bytes
+
+    path = Path(key_path).with_name(PASS)
+    if path.is_file():
+        return read_bytes(path)
+    import secrets
+
+    value = secrets.token_urlsafe(32).encode("ascii")
+    write_bytes(path, value)
+    return value
+
+
+def _protect_existing_key(key_path: Path) -> None:
+    """A key written by an older version is plain text on disk: encrypt it in place (same key, same certificate, the phone's pin still matches)."""
+    from cryptography.hazmat.primitives import serialization
+
+    raw = Path(key_path).read_bytes()
+    if b"ENCRYPTED" in raw[:60]:
+        return
+    key = serialization.load_pem_private_key(raw, password=None)
+    Path(key_path).write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                 serialization.BestAvailableEncryption(_passphrase(key_path))))
 
 
 def ensure_certificate(data_dir: Path, address: str) -> tuple[Path, Path]:
     """The certificate and key for ``address`` (made again if missing, expired or for another address)."""
     cert_path, key_path = Path(data_dir) / CERT, Path(data_dir) / KEY
     if cert_path.is_file() and key_path.is_file() and _valid_for(cert_path, address):
+        try:
+            _protect_existing_key(key_path)
+        except Exception:
+            pass                                     # still usable; it is tried again next start
         return cert_path, key_path
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -43,7 +73,7 @@ def ensure_certificate(data_dir: Path, address: str) -> tuple[Path, Path]:
             .sign(key, hashes.SHA256()))
     cert_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                           serialization.NoEncryption()))
+                                           serialization.BestAvailableEncryption(_passphrase(key_path))))
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     return cert_path, key_path
 
@@ -71,5 +101,6 @@ def fingerprint(cert_path: Path) -> str:
 def server_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(str(cert_path), str(key_path))
+    encrypted = b"ENCRYPTED" in Path(key_path).read_bytes()[:60]
+    context.load_cert_chain(str(cert_path), str(key_path), password=_passphrase(key_path) if encrypted else None)
     return context

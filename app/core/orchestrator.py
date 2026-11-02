@@ -13,6 +13,7 @@ jobs, use a mission (app/core/missions.py); missions and agents share the same e
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import time
 from contextlib import contextmanager
@@ -20,12 +21,16 @@ from dataclasses import dataclass
 from typing import Any, Iterator
 
 from app.ai.base import ToolCall
+from app.core import blackboard
 from app.core.agents import AgentContract, contract_for, estimate_tokens
 from app.security.permissions import RiskLevel
 from app.tools.base import ToolError
 
 MAX_STEPS = 12
 DEFAULT_BUDGET_SECONDS = 600.0  # the whole plan; each step also has its tool's own timeout
+
+
+_CHAIN: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("jarvis_agent_chain", default=())
 
 
 @dataclass
@@ -108,6 +113,23 @@ def validate_plan(raw_steps: Any, registry: Any) -> list[AgentStep]:
     return steps
 
 
+def _board_begin(executor: Any, step: AgentStep) -> "blackboard.Ticket":
+    """Ask the request's shared blackboard whether this step may start (duplicate / busy / loop / failed-before)."""
+    try:
+        tool = executor.registry.get(step.tool)
+        mutating = bool(tool is not None and tool.level > RiskLevel.SAFE)
+        return blackboard.for_run().begin(step.agent, step.tool, step.arguments, mutating=mutating, chain=_CHAIN.get())
+    except Exception:
+        return blackboard.Ticket(blackboard.GO)          # the shared view is a safety net, never a reason to stop working
+
+
+def _board_finish(ticket: "blackboard.Ticket", ok: bool, summary: str) -> None:
+    try:
+        blackboard.for_run().finish(ticket, ok, summary)
+    except Exception:
+        pass
+
+
 def can_run_in_parallel(executor: Any, steps: list[AgentStep]) -> bool:
     """Only independent, read-only steps of ONE agent may run together: the agent's contract is set on the shared
     context for the whole batch, and a state-changing step must never race another one."""
@@ -128,7 +150,17 @@ async def _run_parallel(executor: Any, goal: str, steps: list[AgentStep], limit:
 
     def job_for(step: AgentStep) -> parallel.Job:
         async def run() -> Any:
-            execution = await executor.execute(ToolCall(step.tool, dict(step.arguments)), preapproved=approved)
+            from app.tools.base import ToolResult
+
+            ticket = _board_begin(executor, step)
+            if not ticket.go:                               # the shared blackboard says: failed twice already / busy / loop
+                return ToolResult.failure("refused", f"not run: {ticket.reason}")
+            try:
+                execution = await executor.execute(ToolCall(step.tool, dict(step.arguments)), preapproved=approved)
+            except BaseException:
+                _board_finish(ticket, False, "crashed or cancelled")
+                raise
+            _board_finish(ticket, execution.result.ok, execution.result.message or (execution.result.error or ""))
             return execution.result
 
         return parallel.Job(str(id(step)), run)
@@ -188,18 +220,39 @@ async def run_plan(executor: Any, goal: str, steps: list[AgentStep], *, approved
             return TeamOutcome(goal, steps, False, f"Stopped: the {int(budget_seconds)} s time budget ran out "
                                                    f"after {done}/{len(steps)} step(s).")
         contract = contract_for(step.agent)
+        ticket = _board_begin(executor, step)
+        if not ticket.go:
+            if ticket.verdict == blackboard.DONE:           # a side effect that already happened in this request is never repeated
+                step.state, step.result = "done", f"(not repeated) {ticket.reason}"
+                done += 1
+                continue
+            step.state, step.result = "failed", f"not run: {ticket.reason}"
+            if stop_on_error:
+                for rest in steps:
+                    if rest.state == "pending":
+                        rest.state, rest.result = "not_run", "an earlier step was refused"
+                return TeamOutcome(goal, steps, False, f"Stopped at '{step.title}' ({step.agent}): {step.result}")
+            continue
         step.state = "running"
         began = time.monotonic()
+        token = _CHAIN.set(ticket.chain)
         try:
             with under_contract(context, contract):
                 execution = await executor.execute(ToolCall(step.tool, dict(step.arguments)), preapproved=approved)
             spent[step.agent] = spent.get(step.agent, 0.0) + (time.monotonic() - began)
         except asyncio.CancelledError:
+            _board_finish(ticket, False, "cancelled")
             for rest in steps:
                 if rest.state in ("pending", "running"):
                     rest.state, rest.result = "not_run", "cancelled"
             raise
+        except BaseException:
+            _board_finish(ticket, False, "crashed")
+            raise
+        finally:
+            _CHAIN.reset(token)
         result = execution.result
+        _board_finish(ticket, result.ok, result.message or (result.error or ""))
         step.result = result.message or (result.error or "")
         if own is not None:
             room = max(own.max_tokens - tokens.get(step.agent, 0), 0) * 4

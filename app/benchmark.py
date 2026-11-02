@@ -11,6 +11,7 @@ report there too (report-<date>.txt), so results can be compared over time.
 from __future__ import annotations
 
 import json
+import re
 import time
 import wave
 from dataclasses import dataclass
@@ -45,6 +46,22 @@ PROMPTS: tuple[tuple[str, str, str], ...] = (
     ("Google Chrome খোলো", "open_application", "chrome"),
     ("আজকের খবর শোনাও", "get_news", ""),
     ("ব্যাটারি কত আছে?", "system_status", "battery"),
+    # recognition-only prompts (tool "" = scored by word / character error, no command expected): numbers, dates, technical words,
+    # names and code-switching - what the plain commands above do not test
+    ("আজ ছাব্বিশে অক্টোবর", "", ""),
+    ("আমার নম্বর শূন্য এক সাত এক দুই তিন চার পাঁচ ছয় সাত আট", "", ""),
+    ("তাপমাত্রা পঁচিশ ডিগ্রি সেলসিয়াস", "", ""),
+    ("পাইথন কোড চালাও", "", ""),
+    ("আমার মিটিং কাল সকাল দশটায়", "", ""),
+    ("রহিমকে রিপোর্টটা পাঠাও", "", ""),
+    ("Open Chrome আর YouTube খোলো", "", ""),
+    ("VS Code এ নতুন ফাইল বানাও", "", ""),
+    ("আমার meeting কাল সকাল ten o'clock এ", "", ""),
+    ("Send the report to রহিম", "", ""),
+    ("Run the unit tests for the database module", "", ""),
+    ("Set a timer for twenty five minutes", "", ""),
+    ("Call Arijit Singh at nine thirty", "", ""),
+    ("What is two hundred plus three hundred forty", "", ""),
 )
 
 
@@ -54,6 +71,12 @@ ROMANIZED = {
     "গান থামাও": "gaan thamao", "পিসি লক করো": "PC lock koro", "আবহাওয়া কেমন?": "abohawa kemon?",
     "ইউটিউব খুলে দাও": "YouTube khule dao", "Google Chrome খোলো": "Google Chrome kholo",
     "আজকের খবর শোনাও": "ajker khobor shonao", "ব্যাটারি কত আছে?": "battery koto ache?",
+    "আজ ছাব্বিশে অক্টোবর": "aj chabbishe october", "আমার নম্বর শূন্য এক সাত এক দুই তিন চার পাঁচ ছয় সাত আট":
+        "amar nombor shunno ek sat ek dui tin char panch choy sat at", "তাপমাত্রা পঁচিশ ডিগ্রি সেলসিয়াস": "tapmatra pochish degree celsius",
+    "পাইথন কোড চালাও": "python code chalao", "আমার মিটিং কাল সকাল দশটায়": "amar meeting kal shokal doshtay",
+    "রহিমকে রিপোর্টটা পাঠাও": "Rahimke reportta pathao", "Open Chrome আর YouTube খোলো": "Open Chrome ar YouTube kholo",
+    "VS Code এ নতুন ফাইল বানাও": "VS Code e notun file banao", "আমার meeting কাল সকাল ten o'clock এ": "amar meeting kal shokal ten o'clock e",
+    "Send the report to রহিম": "Send the report to Rahim",
 }
 
 
@@ -179,6 +202,70 @@ def understood(text: str, known_app: Callable[[str], str | None]):
         call = match_shortcut(misheard_bangla_command(text), known_app)
     return call
 
+_PUNCT = re.compile(r"[\s.,!?;:।'\"()\[\]{}\-]+")
+
+
+def _norm_text(text: str) -> str:
+    return " ".join(_PUNCT.sub(" ", (text or "").lower()).split())
+
+
+def _edit_distance(a: list, b: list) -> int:
+    previous = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        current = [i]
+        for j, y in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != y)))
+        previous = current
+    return previous[-1]
+
+
+def error_rates(reference: str, heard: str) -> tuple[float, float]:
+    """(word error rate, character error rate) of ``heard`` against ``reference`` after lower-casing and dropping punctuation."""
+    ref, hyp = _norm_text(reference), _norm_text(heard)
+    if not ref:
+        return (0.0, 0.0) if not hyp else (1.0, 1.0)
+    wer = _edit_distance(ref.split(), hyp.split()) / max(1, len(ref.split()))
+    cer = _edit_distance(list(ref), list(hyp)) / max(1, len(ref))
+    return min(wer, 1.0), min(cer, 1.0)
+
+
+def language_of(say: str) -> str:
+    """'bn' (Bangla script only), 'mixed' (Bangla and English words) or 'en'."""
+    bengali = bool(re.search(r"[\u0980-\u09FF]", say))
+    latin_words = len(re.findall(r"[A-Za-z]{2,}", say))
+    if bengali and latin_words:
+        return "mixed"
+    return "bn" if bengali else "en"
+
+
+MIN_ITEMS_FOR_A_CLAIM = 8
+
+
+def language_verdict(items: int, cer: float, command_accuracy: float | None) -> str:
+    """What the measured numbers justify saying - never more. Fewer than MIN_ITEMS_FOR_A_CLAIM recordings = no claim."""
+    if items < MIN_ITEMS_FOR_A_CLAIM:
+        return f"not enough recordings to say anything (have {items}, need {MIN_ITEMS_FOR_A_CLAIM}) - NO CLAIM"
+    commands_ok = command_accuracy is None or command_accuracy >= 90
+    if cer <= 0.12 and commands_ok:
+        return "reliable on your voice and microphone (small sample)"
+    if cer <= 0.25 and (command_accuracy is None or command_accuracy >= 70):
+        return "usable but error-prone - expect to repeat yourself"
+    return "NOT reliable yet - do not rely on it for this language"
+
+
+def by_language(rows: list[dict]) -> dict[str, dict]:
+    """rows: {"say", "heard", "ok" (True/False/None for recognition-only)} -> per-language metrics."""
+    out: dict[str, dict] = {}
+    for lang in sorted({language_of(r["say"]) for r in rows}):
+        mine = [r for r in rows if language_of(r["say"]) == lang]
+        rates = [error_rates(r["say"], r["heard"]) for r in mine]
+        commands = [r for r in mine if r["ok"] is not None]
+        accuracy = round(100 * sum(1 for r in commands if r["ok"]) / len(commands), 1) if commands else None
+        wer, cer = float(np.mean([r[0] for r in rates])), float(np.mean([r[1] for r in rates]))
+        out[lang] = {"items": len(mine), "wer": round(100 * wer, 1), "cer": round(100 * cer, 1), "command_accuracy": accuracy,
+                     "verdict": language_verdict(len(mine), cer, accuracy)}
+    return out
+
 
 def run(data_dir: Path, transcribe: Callable[[np.ndarray], object], known_app: Callable[[str], str | None],
         out: Callable[[str], None] = print) -> dict:
@@ -187,7 +274,7 @@ def run(data_dir: Path, transcribe: Callable[[np.ndarray], object], known_app: C
         out("No recordings yet: run --record-benchmark first.")
         return {}
     matched, similarity, times, missing = 0, [], [], 0
-    lines = []
+    lines, rows = [], []
     per_item: dict[str, bool] = {}
     try:
         from app.voice.corrections import Corrections
@@ -206,13 +293,19 @@ def run(data_dir: Path, transcribe: Callable[[np.ndarray], object], known_app: C
         transcript = transcribe(audio)
         ms = int((time.perf_counter() - started) * 1000)
         text = getattr(transcript, "text", "")
+        score = SequenceMatcher(None, item.say.lower(), text.lower()).ratio()
+        similarity.append(score)
+        times.append(ms)
+        if not item.tool:                       # recognition-only prompt: word / character error, no command expected
+            wer, cer = error_rates(item.say, text)
+            rows.append({"say": item.say, "heard": text, "ok": None})
+            lines.append(f"TEXT {item.say!r:34} heard {text!r:40} {ms:5d} ms  word error {100 * wer:.0f}%  character error {100 * cer:.0f}%")
+            continue
         call = understood(fixes.apply(text) if fixes is not None else text, known_app)
         ok = call is not None and call.name == item.tool and (
             not item.contains or item.contains in json.dumps(dict(call.arguments), ensure_ascii=False).lower())
-        score = SequenceMatcher(None, item.say.lower(), text.lower()).ratio()
         matched += ok
-        similarity.append(score)
-        times.append(ms)
+        rows.append({"say": item.say, "heard": text, "ok": bool(ok)})
         lines.append(f"{'OK  ' if ok else 'MISS'} {item.say!r:34} heard {text!r:40} {ms:5d} ms  "
                      f"{call.name if call else '-'}")
         per_item[item.say] = bool(ok)
@@ -221,15 +314,23 @@ def run(data_dir: Path, transcribe: Callable[[np.ndarray], object], known_app: C
         out("\n".join(lines))
         out("No usable recordings: run --record-benchmark again (speak after 'Speak now').")
         return {}
-    result = {"items": tested, "missing": missing, "commands_ok": matched, "accuracy": round(100 * matched / tested, 1),
+    commands_tested = sum(1 for r in rows if r["ok"] is not None)
+    result = {"items": tested, "missing": missing, "commands_ok": matched,
+              "accuracy": round(100 * matched / commands_tested, 1) if commands_tested else 0.0, "commands": commands_tested,
+              "by_language": by_language(rows),
               "text_similarity": round(100 * float(np.mean(similarity)), 1), "avg_ms": int(np.mean(times)),
               "max_ms": int(np.max(times))}
     lines.append("")
     if missing:
         lines.append(f"{missing} recording(s) had no usable audio and were skipped.")
-    lines.append(f"Commands understood: {matched}/{tested} ({result['accuracy']}%)   "
+    lines.append(f"Commands understood: {matched}/{commands_tested} ({result['accuracy']}%)   "
                  f"text similarity {result['text_similarity']}%   recognition {result['avg_ms']} ms average, "
                  f"{result['max_ms']} ms slowest")
+    lines.append("By language (word / character error; what the numbers justify saying):")
+    for lang, m in result["by_language"].items():
+        name = {"bn": "Bangla", "mixed": "mixed Bangla-English", "en": "English"}[lang]
+        acc = f", commands {m['command_accuracy']}%" if m["command_accuracy"] is not None else ""
+        lines.append(f"  {name}: {m['items']} recording(s), word error {m['wer']}%, character error {m['cer']}%{acc} -> {m['verdict']}")
     lines += compare_with_last(data_dir, result, per_item)
     save_history(data_dir, result, per_item)
     report = "\n".join(lines)
@@ -347,7 +448,7 @@ def train(data_dir: Path, transcribe: Callable[[np.ndarray], object], known_app:
     A fix is kept only if it makes that command work and breaks none that worked before."""
     from app.voice.corrections import Corrections
 
-    items = [i for i in load_items(data_dir) if audio_ok(load_wav(folder(data_dir) / i.file))]
+    items = [i for i in load_items(data_dir) if i.tool and audio_ok(load_wav(folder(data_dir) / i.file))]
     if not items:
         out("No recordings yet: run --record-benchmark first.")
         return {}

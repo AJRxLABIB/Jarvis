@@ -28,8 +28,9 @@ BATTERY_LOW, PC_PROBLEM, DOWNLOAD_COMPLETED = "BatteryLow", "PcProblem", "Downlo
 REMINDER, SUGGESTION = "Reminder", "Suggestion"
 SECURITY_EVENT, EMERGENCY = "SecurityEvent", "Emergency"
 JARVIS_UPDATED, MODE_CHANGED = "JarvisUpdated", "ModeChanged"
+BUILD_FAILED = "BuildFailed"       # a project Jarvis started crashed (dev_session); event_intel groups it with what changed
 KNOWN = frozenset({RUN_FINISHED, MISSION_COMPLETED, MISSION_PAUSED, BATTERY_LOW, PC_PROBLEM, DOWNLOAD_COMPLETED,
-                   REMINDER, SUGGESTION, SECURITY_EVENT, EMERGENCY, JARVIS_UPDATED, MODE_CHANGED})
+                   REMINDER, SUGGESTION, SECURITY_EVENT, EMERGENCY, JARVIS_UPDATED, MODE_CHANGED, BUILD_FAILED})
 
 
 @dataclass(frozen=True)

@@ -1142,6 +1142,23 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        41,
+        "twin_observations",
+        (
+            # the digital twin: what Jarvis last SAW about your environment, where from, and when (staleness is computed)
+            """
+            CREATE TABLE twin_observations (
+                kind        TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY (kind, key)
+            )
+            """,
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

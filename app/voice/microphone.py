@@ -19,6 +19,7 @@ import numpy as np
 from app.utils.logging_setup import get_logger, log_event
 from app.voice.audio import (
     SAMPLE_RATE,
+    StreamResampler,
     AudioDeviceError,
     AudioError,
     import_sounddevice,
@@ -31,7 +32,7 @@ from app.voice.vad import EnergyVAD
 
 _log = get_logger("microphone")
 FRAME_SECONDS = 0.03
-PREROLL_SECONDS = 0.3
+PREROLL_SECONDS = 0.45  # soft word beginnings (s, f, th) are quieter than the detector's trigger
 TRAILING_KEEP_SECONDS = 0.25
 
 StopReason = Literal["silence", "max_length", "stopped", "no_speech"]
@@ -272,6 +273,7 @@ class MicrophoneStream:
         self.rate = rate
         self.frame_samples = frame_samples
         self._pending = np.zeros(0, dtype=np.float32)
+        self._resampler = StreamResampler(rate, SAMPLE_RATE)
         self._closed = False
         self.last_audio = time.monotonic()
 
@@ -287,7 +289,7 @@ class MicrophoneStream:
             except queue.Empty:
                 continue
             self.last_audio = time.monotonic()
-            self._pending = np.concatenate((self._pending, resample(chunk, self.rate, SAMPLE_RATE)))
+            self._pending = np.concatenate((self._pending, self._resampler.process(chunk)))
         frame, self._pending = self._pending[: self.frame_samples], self._pending[self.frame_samples:]
         return frame.astype(np.float32)
 

@@ -32,7 +32,7 @@ class SettingsQuick(QWidget):
         title.setObjectName("h1")
         self.theme = QComboBox()
         self.theme.setAccessibleName("Theme")
-        self.theme.addItems(["dark", "light"])
+        self.theme.addItems(["dark", "light", "forest"])
         self.theme.setCurrentText(getattr(settings, "ui_theme", "dark"))
         self.size = QComboBox()
         self.size.setAccessibleName("Text size")
@@ -94,7 +94,9 @@ class CommandCenterView(QWidget):
         chat_page.setStretchFactor(1, 1)
         chat_page.setChildrenCollapsible(False)
         self._add("chat", chat_page)
-        self.dashboard = pages.LauncherPage("Dashboard", self._dashboard_text, [
+        from app.ui.command_center.dashboard_page import DashboardPage
+
+        self.dashboard = DashboardPage(self._dashboard_cards, [
             ("Core view", "The 3D core", self.core_requested.emit),
             ("Notifications...", "What Jarvis told you", self._w("open_notifications")),
             ("My day...", "To-dos, plan, history", self._w("open_my_day")),
@@ -133,6 +135,14 @@ class CommandCenterView(QWidget):
         self._add("security", self.security)
         self.intelligence = pages.IntelligencePage(self._run_tool)
         self._add("intelligence", self.intelligence)
+        from app.ui.command_center.handoff_page import HandoffPage
+
+        self.handoff = HandoffPage(self._handoff_rows, self._trusted_phones, self._run_tool)
+        self._add("handoff", self.handoff)
+        from app.ui.command_center.gesture_page import GesturePage
+
+        self.gestures = GesturePage(self._run_tool, lambda: self.controller.ctx)
+        self._add("gestures", self.gestures)
 
         right = QVBoxLayout()
         right.setContentsMargins(12, 12, 12, 8)
@@ -308,6 +318,75 @@ class CommandCenterView(QWidget):
                 return int(conn.execute(sql, params).fetchone()[0])
         except Exception:
             return None
+
+    def _dashboard_cards(self) -> list:
+        from app.ui.command_center import dashboard_data
+
+        c = self.controller
+        info = states.STATES[self.current_state().key]
+        db = c.ctx.database
+        perf_plan = gest = mission = pending = None
+        try:
+            from app.core import perf
+
+            perf_plan = perf.current_plan(c.ctx.settings)
+        except Exception:
+            pass
+        try:
+            from app.gesture.service import SERVICE
+
+            gest = SERVICE.status()
+        except Exception:
+            pass
+        unfinished = self._count("SELECT COUNT(*) FROM missions WHERE state IN ('planned','running','paused','verifying','waiting')")
+        try:
+            from app.core.missions import MissionStore
+
+            m = MissionStore(db).unfinished() if db is not None else None
+            if m is not None and m.state in ("running", "verifying"):
+                mission = {"title": m.title, "progress": m.progress(), "uncertain": [s.title for s in m.steps if s.state == "uncertain"]}
+        except Exception:
+            pass
+        try:
+            req = getattr(c, "_pending_confirmation", None)
+            view = describe_approval(req.request) if req is not None else None
+            pending = f"{view.action} ({view.risk} risk)" if view is not None else ""
+        except Exception:
+            pending = ""
+        try:
+            from app.core.action_record import LEDGER
+
+            actions = [r.public() for r in LEDGER.recent(10)]
+        except Exception:
+            actions = []
+        labels = self.status.labels
+        cards = self._cards_cache or None
+        return dashboard_data.build(
+            state_text=info.text, model=labels["model"].text(), mic=labels["mic"].text(), network=labels["network"].text(),
+            resources=f"{labels['cpu'].text()}   {labels['ram'].text()}   {labels['gpu'].text()}", gesture=gest, perf=perf_plan,
+            mission=mission, unfinished=unfinished, pending_approval=pending or "", actions=actions, devices=cards,
+            emergency=emergency.STATE.active(), todos=self._count("SELECT COUNT(*) FROM todos WHERE done = 0"),
+            routines=self._count("SELECT COUNT(*) FROM automation_tasks WHERE enabled = 1"))
+
+    def _handoff_rows(self) -> list:
+        from app.ui.command_center import handoff_data
+
+        db = self.controller.ctx.database
+        if db is None:
+            return []
+        titles = {m.id: m.title for m in self._missions()}
+        return handoff_data.collect(db, device_names=dict(self._trusted_phones()), mission_titles=titles)
+
+    def _trusted_phones(self) -> list[tuple[str, str]]:
+        db = self.controller.ctx.database
+        if db is None:
+            return []
+        try:
+            from app.remote.mobile import MobileRegistry
+
+            return [(d.id, d.name) for d in MobileRegistry(db).all() if d.trust == "trusted" and not d.revoked_at]
+        except Exception:
+            return []
 
     def _dashboard_text(self) -> str:
         info = states.STATES[self.current_state().key]

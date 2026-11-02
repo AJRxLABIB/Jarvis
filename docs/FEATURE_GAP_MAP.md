@@ -18,3 +18,8 @@ MISSING, NOT FEASIBLE.
 Ranking rationale: B has the most reusable infrastructure (every run is already audited), the clearest user benefit (a failed
 task becomes understandable and reproducible), the lowest privacy risk (reads data already kept) and is fully testable here. A needs
 a code-generation model to be useful and its dangerous part (applying code) is already built. C/D/G follow once B's data exists.
+
+## Update (round 53)
+A (foundry: workflow-of-existing-tools, no code generation), C (workspace objects), D (source controls, adapters, near-duplicates) and F (labelled
+multilingual set, negation and Unicode fixes) are now built - see `docs/round53.md`. Still open: E needs your PC for real numbers; G has only the model-not-answering
+hypothesis set; a UI panel for workspaces/sources; phone-side screen for handoffs.

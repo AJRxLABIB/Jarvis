@@ -150,6 +150,8 @@ COMMON_APP_WORDS = (
     "Lock my PC", "Instagram", "Facebook", "Messenger", "Phone Link", "Calculator", "Paint", "Snipping Tool",
     "Command Prompt", "PowerShell", "Terminal", "Control Panel", "Photos", "Camera", "Microsoft Store",
 )
+# Words of Jarvis's own commands that small speech models get wrong ("gesture control" heard as "jaster control")
+COMMAND_WORDS = ("gesture control", "gestures", "hand tracking", "practice gestures", "emergency stop", "resume gestures")
 MAX_HINT_WORDS = 70  # the hint becomes part of Whisper's prompt; keep it short
 
 
@@ -181,7 +183,7 @@ def vocabulary(ctx: "AppContext") -> list[str]:
     except Exception:
         pass
     names = [entry.display_name for entry in ctx.config.apps.applications.values() if entry.enabled]
-    return [*custom, *personal_words(ctx), *names, *COMMON_APP_WORDS]
+    return [*custom, *personal_words(ctx), *names, *COMMAND_WORDS, *COMMON_APP_WORDS]
 
 
 def personal_words(ctx: "AppContext") -> list[str]:

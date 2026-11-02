@@ -2,7 +2,7 @@
 
 With ``OFFLINE_MODE=on`` every attempt to open a connection (or send a datagram) to an address outside this computer and
 your own network is refused here, before any packet leaves - whichever library asked (httpx, aiohttp, urllib, a voice
-engine, a browser helper). Allowed: loopback, private ranges (10/8, 172.16/12, 192.168/16, fc00::/7), link-local and names
+engine, a browser helper). Allowed: loopback, private ranges (10/8, 172.16/12, 192.168/16, fc00::/7), link-local, local-network multicast (224.0.0.0/24, ff02::/16: device discovery) and names
 that can only be local (``localhost``, single-label names, ``*.local``, ``*.lan``, ``*.home.arpa``, ``*.internal``).
 A hostname that is anything else is refused WITHOUT being looked up, so not even a DNS query leaks.
 
@@ -51,6 +51,8 @@ def local_address(host: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return host == "localhost" or "." not in host or host.endswith(_LOCAL_SUFFIXES)
+    if ip.is_multicast:                               # only the link-local scope (mDNS 224.0.0.251, ff02::fb): it never leaves the local network
+        return ip in ipaddress.ip_network("224.0.0.0/24") or ip in ipaddress.ip_network("ff02::/16")
     return bool(ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
 
 

@@ -23,6 +23,7 @@ WORKSPACES: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
         ("Phone screen", "see and tap your phone", "open_phone_screen"),
         ("Mobile devices", "pair and trust phones", "open_mobile_devices"),
         ("Windows overview", "every open window", "open_overview"),
+        ("Gesture control", "control the mouse with your hand", "open_gestures"),
     )),
     ("Intelligence", (
         ("AI and models", "which model does which job", "open_models"),

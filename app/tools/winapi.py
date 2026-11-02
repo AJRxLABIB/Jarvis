@@ -216,6 +216,7 @@ class Rect:
 class Monitor:
     area: Rect  # the work area: the screen without the taskbar
     primary: bool
+    full: Rect | None = None  # the whole monitor including the taskbar (gesture cursor uses this)
 
 
 def monitors() -> list[Monitor]:
@@ -236,7 +237,9 @@ def monitors() -> list[Monitor]:
         info.cbSize = ctypes.sizeof(MONITORINFO)
         if ctypes.windll.user32.GetMonitorInfoW(hmonitor, ctypes.byref(info)):
             work = info.rcWork
-            found.append(Monitor(Rect(work.left, work.top, work.right, work.bottom), bool(info.dwFlags & 1)))
+            full = info.rcMonitor
+            found.append(Monitor(Rect(work.left, work.top, work.right, work.bottom), bool(info.dwFlags & 1),
+                                 Rect(full.left, full.top, full.right, full.bottom)))
         return 1
 
     ctypes.windll.user32.EnumDisplayMonitors(None, None, callback_type(callback), 0)
@@ -895,6 +898,49 @@ def click_at(x: int, y: int, button: str = "left", double: bool = False) -> None
         user32.mouse_event(down, 0, 0, 0, 0)
         user32.mouse_event(up, 0, 0, 0, 0)
         time.sleep(0.05)
+
+
+def ensure_dpi_aware() -> str:
+    """Make this process per-monitor DPI aware so pointer / screenshot coordinates are physical pixels. Safe to call repeatedly (Windows refuses
+    a change once set; Qt already sets it for the GUI). Returns the awareness afterwards: unaware | system | per-monitor | unknown."""
+    require_windows()
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)   # PROCESS_PER_MONITOR_DPI_AWARE; E_ACCESSDENIED when already set: fine
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+    try:
+        value = ctypes.c_int(-1)
+        ctypes.windll.shcore.GetProcessDpiAwareness(0, ctypes.byref(value))
+        return {0: "unaware", 1: "system", 2: "per-monitor"}.get(value.value, "unknown")
+    except Exception:
+        return "unknown"
+
+
+def mouse_move(x: int, y: int) -> None:
+    """Move the pointer to screen pixel (x, y) without clicking."""
+    require_windows()
+    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+
+
+def mouse_button(button: str, down: bool) -> None:
+    """Press or release one mouse button (used by drag: the caller must release what it pressed)."""
+    require_windows()
+    press, release = _MOUSE[button]
+    ctypes.windll.user32.mouse_event(press if down else release, 0, 0, 0, 0)
+
+
+def zoom(notches: int) -> None:
+    """Ctrl + mouse wheel (zoom in browsers, Office, maps, photos): positive = zoom in. Ctrl is ALWAYS released, even if the wheel call fails."""
+    require_windows()
+    user32 = ctypes.windll.user32
+    user32.keybd_event(0x11, 0, 0, 0)
+    try:
+        user32.mouse_event(0x0800, 0, 0, int(notches) * 120, 0)
+    finally:
+        user32.keybd_event(0x11, 0, KEYEVENTF_KEYUP, 0)
 
 
 def scroll(amount: int) -> None:

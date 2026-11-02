@@ -685,6 +685,24 @@ _LOOK_SCREEN = re.compile(_P + r"(?:visuali[sz]e[ds]?|look\s+at|describe|check|a
 # "can you see my screen", "what am I looking at" -> describe the screen; "read this" -> read the window's text
 _SEE_SCREEN = re.compile(_P + r"(?:can\s+you\s+see\s+(?:my|the|this)\s+(?:screen|window)|what\s+am\s+i\s+looking\s+at|"
                          r"what'?s\s+(?:on|in)\s+this\s+(?:window|page|app)|look\s+at\s+this|see\s+my\s+screen)" + _E, re.I)
+# "what are you seeing in my screen?", "what do you see", "what am I doing" (also with filler / swearing / a repeated "I am asking you ...") -> LOOK
+# now and answer. Seeing the screen is NOT taking a screenshot: a screenshot file is only made when the user says "screenshot".
+# "take a screenshot (please)", "capture my screen", "save a screenshot of my screen" -> a PNG file in the screenshots folder (whole screen)
+_SHOT = re.compile(_P + r"(?:(?:take|capture|grab|make|save|get)\s+(?:me\s+)?(?:a\s+|the\s+|my\s+)?(?:screen\s*shot|screenshot|screen\s+capture|picture\s+of\s+(?:my|the)\s+screen)"
+                   r"(?:\s+of\s+(?:my|the)\s+(?:whole\s+|entire\s+|full\s+)?(?:screen|desktop|display))?|"
+                   r"(?:take|capture|grab)\s+(?:my|the)\s+(?:whole\s+|entire\s+|full\s+)?(?:screen|desktop))(?:\s+(?:and\s+)?(?:save|put)\s+it.*)?" + _E, re.I)
+_SEE_NOW = re.compile(r"\b(?:what|tell\s+me|show\s+me|describe)\b.{0,60}\b(?:you\s+(?:are\s+|re\s+)?(?:see|seeing|looking\s+at|watching|viewing)|"
+                      r"(?:do|can)\s+you\s+see)\b.{0,40}\b(?:screen|desktop|display|monitor)\b|"
+                      r"\bwhat\s+(?:am\s+i|i\s+am|i'?m)\s+(?:doing|working\s+on)\b|"
+                      r"\bwhat'?s\s+(?:happening|going\s+on)\s+(?:on|in)\s+(?:my|the)\s+(?:screen|desktop)\b", re.I)
+# "watch my screen and help me", "monitor my screen", "keep an eye on my screen", "screen assist" -> assist mode (watches, speaks up when useful)
+_ASSIST_ON = re.compile(_P + r"(?:(?:watch|monitor|observe|keep\s+an\s+eye\s+on|follow)\s+(?:my|the)\s+(?:screen|desktop|work)(?:\s+(?:and|to)\s+"
+                        r"(?:help|assist|guide|support)(?:\s+me)?)?|(?:assist|help|guide)\s+me\s+(?:on|with|while\s+i\s+work\s+on)\s+(?:my\s+)?"
+                        r"(?:screen|work|what\s+i'?m\s+doing)|screen\s+assist(?:ant)?(?:\s+(?:on|mode))?|start\s+(?:screen\s+)?assist(?:ing)?(?:\s+me)?)" + _E, re.I)
+_ASSIST_LIVE = re.compile(r"\b(?:live|continuous(?:ly)?|real[- ]?time)\b.{0,30}\b(?:screen|desktop)\b|\b(?:screen|desktop)\b.{0,30}\b(?:live|continuous(?:ly)?|real[- ]?time)\b|"
+                          r"\b(?:keep|stay)\s+(?:watching|looking\s+at|monitoring)\s+(?:my|the)\s+(?:screen|desktop)\b", re.I)
+_ASSIST_OFF = re.compile(_P + r"(?:stop|end|turn\s+off|disable|cancel)\s+(?:the\s+)?(?:watching|monitoring|assisting|screen\s+assist(?:ant)?|screen\s+watch)"
+                         r"(?:\s+(?:my\s+)?(?:screen|desktop))?" + _E, re.I)
 _READ_THIS = re.compile(_P + r"(?:read\s+(?:this|that|it|this\s+(?:page|window|text)|what'?s\s+(?:here|written|on\s+"
                         r"(?:the|my)\s+screen))(?:\s+(?:to|for)\s+me)?|read\s+(?:me\s+)?(?:the\s+)?(?:text\s+on\s+)?(?:this|"
                         r"the)\s+(?:screen|window))" + _E, re.I)
@@ -991,7 +1009,7 @@ _NOTICES = re.compile(_P + r"(?:(?P<list>any\s+(?:new\s+)?notifications|(?:read|
                       r"what\s+did\s+i\s+miss)|(?P<clear>clear|dismiss)\s+(?:all\s+)?(?:my\s+|the\s+)?notifications|"
                       r"(?P<read>mark)\s+(?:all\s+)?(?:my\s+)?notifications\s+(?:as\s+)?read)" + _E, re.I)
 _MODE = re.compile(_P + r"(?:(?:switch\s+to|turn\s+on|enable|go\s+(?:to|into)|start|enter|use)\s+)?(?P<mode>normal|work|coding|"
-                   r"programming|research|study|gaming|game|presentation|meeting|private|privacy|incognito|maintenance)"
+                   r"programming|research|study|gaming|game|presentation|meeting|private|privacy|incognito|maintenance|deep\s+work|travel|sleep|quiet|offline|power\s+saving|battery\s+saver)"
                    r"\s+mode" + _E, re.I)
 _MODE_STATUS = re.compile(_P + r"(?:what|which)\s+mode\s+(?:are\s+you\s+in|is\s+(?:it|on))" + _E, re.I)
 _EMERGENCY = re.compile(_P + r"(?:(?P<stop>emergency\s+stop|stop\s+everything(?:\s+now)?|abort\s+everything)|(?P<lock>lock\s+"
@@ -1058,14 +1076,139 @@ def match_proactive(cleaned: str) -> ToolCall | None:
         return ToolCall("notifications", {"action": action})
     match = _MODE.match(cleaned)
     if match:
-        return ToolCall("set_mode", {"mode": match.group("mode").lower()})
+        return ToolCall("set_mode", {"mode": " ".join(match.group("mode").lower().split())})
     if _MODE_STATUS.match(cleaned):
         return ToolCall("set_mode", {"mode": "status"})
     return None
 
 
+# Speech recognition often mishears "gesture(s)" ("jaster", "jester", "J star", "just your"): accept those so the command does not fall through
+# to the language model (which once turned "gesture control on" into an emergency network switch).
+_GW = r"(?:gestures?|jestures?|jesters?|jasters?|gestors?|gesturs?|gesturers?|j\s*star|jay\s*star|jay\s*stars?|just\s+your|just\s+yours)"
+_GESTURE_NOUN = r"(?:(?:hand\s+)?" + _GW + r"(?:\s+control)?|(?:hand|finger)\s+(?:control|tracking|detection)|mouse\s+gestures?)"
+_GE = r"(?:\s+(?:please|place|pls|plz|now|for\s+me|sir|jarvis))*[.!?]*$"      # speech often adds/mishears a trailing "please"
+_FINGER = r"(?:my\s+)?(?:index\s+)?(?:fingers?|hands?)"
+_G_ON = re.compile(_P + r"(?:(?:enable|start|turn\s+on|switch\s+on|activate|begin|open)\s+(?:the\s+)?" + _GESTURE_NOUN + r"|" + _GESTURE_NOUN
+                   + r"\s+(?:on|start|enable)|(?:detect|track|follow|use|start\s+(?:detecting|tracking|following))\s+" + _FINGER
+                   + r"(?:\s+(?:movements?|position))?|(?:finger|hand)\s+(?:detection|tracking|control)(?:\s+on)?)" + _GE, re.I)
+_G_OFF = re.compile(_P + r"(?:(?:stop|disable|turn\s+off|switch\s+off|deactivate|close|end)\s+(?:the\s+)?" + _GESTURE_NOUN + r"|" + _GESTURE_NOUN
+                    + r"\s+(?:off|stop|disable)|stop\s+(?:detecting|tracking|following)\s+" + _FINGER + r"|(?:finger|hand)\s+(?:detection|tracking|control)\s+off)" + _GE, re.I)
+_G_PRACTICE = re.compile(_P + r"(?:practice|practise|try|test)\s+(?:the\s+)?" + _GESTURE_NOUN + _E, re.I)
+_G_PAUSE = re.compile(_P + r"pause\s+(?:the\s+)?" + _GESTURE_NOUN + _E, re.I)
+_G_RESUME = re.compile(_P + r"(?:resume|continue|unpause)\s+(?:the\s+)?" + _GESTURE_NOUN + _E, re.I)
+_G_STATUS = re.compile(_P + r"(?:is\s+(?:the\s+)?" + _GESTURE_NOUN + r"\s+(?:on|running|working)|" + _GESTURE_NOUN + r"\s+status)\??" + _E, re.I)
+_G_LIST = re.compile(_P + r"(?:list|show|what\s+are)\s+(?:the\s+)?" + _GESTURE_NOUN + _E, re.I)
+
+
+_G_PROFILE = re.compile(_P + r"(?:(?:switch|change|set|use)\s+(?:the\s+)?(?:hand\s+|finger\s+)?(?:gestures?|gesture\s+control)\s+(?:profile|mode)\s+(?:to\s+)?"
+                        r"(?P<p>general|browsing|presentation|media|precision|accessibility)|(?P<p2>general|browsing|presentation|media|precision|accessibility)"
+                        r"\s+(?:profile|mode)\s+for\s+(?:the\s+)?(?:hand\s+)?gestures?)" + _E, re.I)
+_G_PROFILES = re.compile(_P + r"(?:list|show|which|what)\s+(?:the\s+)?(?:hand\s+)?gestures?\s+(?:profiles?|modes?)" + _E, re.I)
+
+
+def match_gesture(cleaned: str) -> ToolCall | None:
+    text = " ".join(re.sub(r"[,;:]", " ", cleaned).split())
+    match = _G_PROFILE.match(text)
+    if match:
+        return ToolCall("gesture_control", {"action": "profile", "profile": (match.group("p") or match.group("p2")).lower()})
+    if _G_PROFILES.match(text):
+        return ToolCall("gesture_control", {"action": "profiles"})
+    for pattern, action in ((_G_STATUS, "status"), (_G_OFF, "disable"), (_G_ON, "enable"), (_G_PRACTICE, "practice"), (_G_PAUSE, "pause"),
+                            (_G_RESUME, "resume"), (_G_LIST, "list_gestures")):
+        if pattern.match(text):
+            return ToolCall("gesture_control", {"action": action})
+    return None
+
+
+# "put it on the speaker(s)", "play it on bluetooth", "switch to headphones", "use the connected speaker", "switch audio to JBL" -> audio_output
+_AUDIO_DEV = (r"(?P<dev>(?:(?:my|the)\s+)?(?:(?:laptop|pc|computer|built[- ]?in|internal|loud|external|connected|paired|wireless|bluetooth|blue\s+tooth)\s+)*"
+              r"(?:loud\s*)?(?:speakers?|loudspeakers?|headphones?|headset|earphones?|earbuds?|airpods|bluetooth(?:\s+(?:device|speaker|headphones?|headset))?|"
+              r"blue\s+tooth(?:\s+\w+)?|connected\s+(?:device|speaker|output)|external\s+(?:speaker|device)))")
+_AUDIO_ROUTE = re.compile(_P + r"(?:(?:put|play|move|switch|change|route|send|shift|take|keep|set)\s+(?:it|this|that|the\s+(?:sound|audio|music|song|video)|sound|audio|music)?"
+                          r"\s*(?:back\s+)?(?:on|to|onto|through|via|in)|(?:use|switch\s+to|change\s+to|go\s+to|play\s+(?:it\s+)?on|play\s+through))\s+" + _AUDIO_DEV
+                          + r"(?P<tail>(?:\s+(?:loud(?:ly)?|louder|at\s+full\s+volume|full\s+volume|max))?)" + _E, re.I)
+_AUDIO_NAMED = re.compile(_P + r"(?:switch|change|set|move)\s+(?:the\s+)?(?:audio|sound)(?:\s+output)?\s+(?:to|on)\s+(?P<name>[\w .'-]{2,30}?)" + _E, re.I)
+_AUDIO_STATUS = re.compile(_P + r"(?:(?:which|what)\s+(?:speaker|speakers|output|sound\s+output|audio\s+output|audio\s+device)\s+(?:am\s+i\s+using|is\s+(?:it|this)\s+(?:on|using)|is\s+in\s+use)"
+                           r"|where\s+is\s+(?:the\s+)?(?:sound|audio|music)\s+(?:playing|coming\s+out))\??" + _E, re.I)
+_AUDIO_BACK = re.compile(_P + r"(?:(?:put|switch|change|move|set|take|go)\s+(?:it\s+|the\s+(?:sound|audio|music)\s+)?back(?:\s+(?:to\s+)?(?:where\s+it\s+was|the\s+(?:previous|last)(?:\s+one)?|before))?"
+                         r"|(?:undo|revert)\s+(?:the\s+)?(?:sound|audio)\s+(?:switch|change|output))" + _E, re.I)
+_AUDIO_LIST = re.compile(_P + r"(?:list|show)\s+(?:me\s+)?(?:my\s+|the\s+)?(?:sound|audio)\s+(?:outputs?|devices?)" + _E, re.I)
+
+
+def match_audio_route(cleaned: str) -> ToolCall | None:
+    text = " ".join(re.sub(r"[,;:]", " ", cleaned).split())
+    if _AUDIO_STATUS.match(text):
+        return ToolCall("audio_output", {"action": "status"})
+    if _AUDIO_LIST.match(text):
+        return ToolCall("audio_output", {"action": "list"})
+    if _AUDIO_BACK.match(text):
+        return ToolCall("audio_output", {"action": "switch", "target": "previous"})
+    match = _AUDIO_ROUTE.match(text)
+    if match:
+        loud = bool(match.group("tail").strip()) or bool(re.search(r"\bloud(?:ly|er)?\b", match.group("dev"), re.I))
+        return ToolCall("audio_output", {"action": "switch", "target": match.group("dev").strip(), "loud": loud})
+    match = _AUDIO_NAMED.match(text)
+    if match:
+        return ToolCall("audio_output", {"action": "switch", "target": match.group("name").strip()})
+    return None
+
+
+# performance modes (app/core/perf.py). Bare "performance mode" stays the old settings profile ("performance" = lighter UI).
+_PM_BODY = r"(?:battery\s+saver|power\s+saver|high[- ]quality|best\s+quality|quality|fast|balanced|auto(?:matic)?)"
+_PM_NAME, _PM_NAME2, _PM_NAME3 = ("(?P<m>" + _PM_BODY + ")", "(?P<m2>" + _PM_BODY + ")", "(?P<m3>" + _PM_BODY + ")")
+_PM_SET = re.compile(_P + r"(?:(?:switch|change|set|go|turn\s+on|use|enable)\s+(?:to\s+|on\s+)?(?:the\s+)?" + _PM_NAME + r"\s+(?:performance\s+)?mode"
+                     r"|(?:set|change|switch)\s+(?:the\s+)?performance\s+(?:mode\s+)?to\s+" + _PM_NAME2 + r"|performance\s+mode\s+" + _PM_NAME3 + r")" + _E, re.I)
+_PM_STATUS = re.compile(_P + r"(?:which|what)\s+(?:performance\s+mode|mode\s+(?:are\s+you|am\s+i)\s+in)(?:\s+(?:are\s+you|am\s+i)\s+(?:in|using))?\??" + _E, re.I)
+_PM_FIT = re.compile(_P + r"(?:will|does|can|would)\s+(?:the\s+)?(?:(?P<model>[\w.:\-]{2,40})\s+)?(?:model\s+)?fit(?:\s+(?:in|on)\s+(?:my\s+)?(?:memory|gpu|ram|vram|pc|computer))?\??" + _E, re.I)
+
+
+_PM_BARE = re.compile(_P + r"(?:the\s+)?(?P<m>battery\s+saver|power\s+saver|high[- ]quality|best\s+quality|balanced|fast)\s+mode" + _E, re.I)
+
+
+def match_performance(cleaned: str) -> ToolCall | None:
+    text = " ".join(re.sub(r"[,;]", " ", cleaned).split())        # a colon stays: model names look like llama3.2:3b
+    bare = _PM_BARE.match(text)
+    if bare:
+        name = bare.group("m").lower()
+        return ToolCall("performance_mode", {"action": "set", "mode": "battery" if "saver" in name else "quality" if "quality" in name else name})
+    match = _PM_SET.match(text)
+    if match:
+        name = (match.group("m") or match.group("m2") or match.group("m3")).lower()
+        mode = ("battery" if "saver" in name else "quality" if "quality" in name else "auto" if name.startswith("auto") else name)
+        return ToolCall("performance_mode", {"action": "set", "mode": mode})
+    if _PM_STATUS.match(text):
+        return ToolCall("performance_mode", {"action": "status"})
+    match = _PM_FIT.match(text)
+    if match and re.search(r"\bfit\b", text):
+        model = (match.group("model") or "").lower()
+        named = bool(re.search(r"[\d:.]", model))                 # llama3.2:3b, qwen2.5 ... a real model tag
+        if named or re.search(r"\bmodel\b", text):
+            return ToolCall("performance_mode", {"action": "fit", "model": model if named else ""})
+    return None
+
+
+_SNAP_RECOVER = re.compile(_P + r"(?:what\s+(?:was|is)\s+(?:left\s+)?unfinished|what\s+did\s+i\s+leave\s+unfinished|show\s+(?:my\s+)?unfinished\s+(?:work|missions?|tasks?)|recover\s+(?:my\s+)?(?:unfinished\s+)?(?:work|tasks?|missions?)(?:\s+after\s+(?:the\s+)?(?:crash|restart))?)" + _E, re.I)
+_SNAP_SAVE = re.compile(_P + r"(?:save|remember|snapshot)\s+(?:my\s+|this\s+)?(?:work\s+)?(?:session|work\s+state|snapshot)(?:\s+(?:as|called|named)\s+(?P<n>[\w .'-]{1,39}?))?" + _E, re.I)
+_SNAP_RESUME = re.compile(_P + r"(?:resume|restore|continue)\s+(?:my\s+)?(?:saved\s+)?(?:work\s+)?(?:session|snapshot)(?:\s+(?:called|named)?\s*(?P<n>[\w .'-]{1,39}?))?" + _E, re.I)
+_SNAP_SHOW = re.compile(_P + r"(?:what\s+changed\s+since\s+(?:my\s+)?(?:last\s+)?(?:snapshot|session)|compare\s+(?:my\s+)?(?:snapshot|session)(?:\s+(?P<n>[\w .'-]{1,39}?))?)" + _E, re.I)
+
+
+def match_snapshot(cleaned: str) -> ToolCall | None:
+    text = " ".join(re.sub(r"[,;:]", " ", cleaned).split())
+    if _SNAP_RECOVER.match(text):
+        return ToolCall("work_snapshot", {"action": "recovery"})
+    for rx, action in ((_SNAP_SAVE, "save"), (_SNAP_RESUME, "resume"), (_SNAP_SHOW, "show")):
+        m = rx.match(text)
+        if m:
+            name = (m.group("n") or "").strip()
+            if action == "save":
+                name = name or "my work"
+            return ToolCall("work_snapshot", {"action": action, "name": name})
+    return None
+
+
 def match_developer(cleaned: str) -> ToolCall | None:
-    proactive = match_proactive(cleaned)
+    proactive = match_proactive(cleaned) or match_gesture(cleaned) or match_audio_route(cleaned) or match_performance(cleaned) or match_snapshot(cleaned)
     if proactive is not None:
         return proactive
     if _DEV_PROFILE.match(cleaned):
@@ -1321,6 +1464,13 @@ def match_shortcut(
     found = _first_matches(cleaned, known_alias, known_setting, known_device)
     if found is not None:
         return found
+    if len(cleaned) <= 120 and _SHOT.match(cleaned):
+        return ToolCall("take_screenshot", {"target": "screen"})
+    if len(cleaned) <= 120 and _ASSIST_LIVE.search(cleaned) and not _ASSIST_OFF.match(cleaned):   # "watch my screen live", "live screen monitoring"
+        return ToolCall("screen_watch", {"action": "start", "condition": "assist", "minutes": 30})
+    if len(cleaned) <= 200 and _SEE_NOW.search(cleaned):      # "what are you seeing in my screen?": LOOK now (never a screenshot file)
+        return ToolCall("describe_screen", {"target": "screen", "question": "What is on my screen right now and what am I doing? Be specific and brief; "
+                                                                          "if you can see a problem or a useful next step, say so."})
     if len(cleaned) > 60:
         return None
     for stage in (lambda: _command_matches(cleaned, known_app, known_computer),
@@ -1444,6 +1594,13 @@ def _screen_info_window(cleaned: str, known_app):
     match = _RESTART_APP.match(cleaned)
     if match and not _NOT_RESTARTABLE.match(match.group("name").strip(" ,.")):
         return ToolCall("restart_application", {"name": match.group("name").strip(" ,.")})
+    if _ASSIST_OFF.match(cleaned):
+        return ToolCall("screen_watch", {"action": "stop_all"})
+    if _ASSIST_ON.match(cleaned):
+        return ToolCall("screen_watch", {"action": "start", "condition": "assist", "minutes": 30})
+    if len(cleaned) <= 200 and _SEE_NOW.search(cleaned):
+        return ToolCall("describe_screen", {"target": "screen", "question": "What is on my screen right now and what am I doing? Be specific and brief; "
+                                                                          "if you can see a problem or a useful next step, say so."})
     if _LOOK_SCREEN.match(cleaned):
         return ToolCall("describe_screen", {"target": "screen"})
     if _SEE_SCREEN.match(cleaned):

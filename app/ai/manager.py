@@ -384,8 +384,11 @@ class AIManager:
         """AI_AUTO_SMART: for a hard request, a bigger installed model that fits entirely on the GPU (see
         app/ai/thinking_swap.py). None = keep the default."""
         from app.ai import thinking_swap
+        from app.core import perf
 
         try:
+            if not (await asyncio.to_thread(perf.current_plan, self.settings)).allow_thinking:
+                return None                                   # Fast / Battery saver / a busy PC: never swap to a bigger model on your own
             default, _ = await self.resolve_model()
             budget = thinking_swap.gpu_budget_mb(await self._gpu_total_mb(),
                                                  bool(getattr(self.settings, "gpu_memory_saver", False)))

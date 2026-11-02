@@ -87,6 +87,46 @@ class CommandExecutor:
         log_event(_log, "command_background", argv=list(argv), pid=proc.pid, cwd=str(cwd))
         return CommandOutput(tuple(argv), None, "", pid=proc.pid)
 
+    def start_captured(self, argv: list[str] | tuple[str, ...], cwd: Path, log_path: Path) -> CommandOutput:
+        """A long-running command (dev server) with NO window whose output (stdout + stderr) goes to ``log_path``, so Jarvis can see whether it came up.
+        Tracked with the other background commands: the emergency stop and ``stop_all`` end it. Same rules as the others: an argument list, never a
+        shell, never stdin; the caller has already passed the command through the command policy."""
+        program = resolve_program(argv[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            log = open(log_path, "wb")                      # truncated per start: one log = one run
+        except OSError as exc:
+            raise ToolError(f"Could not open the log file: {exc.strerror or exc}", "launch_failed") from exc
+        try:
+            proc = subprocess.Popen(
+                [program, *argv[1:]], cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                shell=False, creationflags=_NO_WINDOW, env=_child_env(),
+            )
+        except OSError as exc:
+            log.close()
+            raise ToolError(f"Could not start {argv[0]}: {exc.strerror or exc}", "launch_failed") from exc
+        log.close()                                          # the child keeps its own handle
+        with self._lock:
+            self._background[proc.pid] = proc
+        log_event(_log, "command_captured", argv=list(argv), pid=proc.pid, cwd=str(cwd))
+        return CommandOutput(tuple(argv), None, "", pid=proc.pid)
+
+    def exit_code(self, pid: int) -> int | None:
+        """None while it runs (or when this executor never started ``pid``); otherwise its exit code."""
+        with self._lock:
+            proc = self._background.get(pid)
+        return None if proc is None else proc.poll()
+
+    def stop(self, pid: int) -> bool:
+        """End one background command Jarvis started (with its child processes). False when it is not one of ours or already ended."""
+        with self._lock:
+            proc = self._background.pop(pid, None)
+        if proc is None or proc.poll() is not None:
+            return False
+        _kill_tree(proc)
+        log_event(_log, "command_stopped", pid=pid)
+        return True
+
     def running(self) -> list[CommandOutput]:
         with self._lock:
             alive = {pid: p for pid, p in self._background.items() if p.poll() is None}

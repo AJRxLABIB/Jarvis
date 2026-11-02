@@ -23,6 +23,8 @@ SECTIONS: tuple[tuple[str, str, str], ...] = (
     ("settings", "Settings", "Look and feel, voice, privacy and everything configurable"),
     ("security", "Security", "Paired devices, permissions, microphone and screen state, emergency stop"),
     ("intelligence", "Intelligence", "Goals, decisions, preferences, investigations, briefs, alerts and capability gaps"),
+    ("handoff", "Handoff", "Move an unfinished task to your phone and see where each handoff stands"),
+    ("gestures", "Gestures", "Control the mouse with your hand: live status, skeleton preview, calibration, tutorial, emergency stop"),
 )
 
 

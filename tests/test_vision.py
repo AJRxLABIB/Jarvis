@@ -85,7 +85,7 @@ def backend(monkeypatch) -> FakeBackend:
 def context(tmp_path: Path, **settings) -> ToolContext:
     values = {"screen_capture_enabled": True, "screenshot_dir": tmp_path / "shots", **settings}
     ctx = ToolContext(Settings(**values))
-    ctx.path_policy = PathPolicy.build(PermissionsConfig(), known={"PICTURES": tmp_path / "Pictures"},
+    ctx.path_policy = PathPolicy.build(PermissionsConfig(), known={"PICTURES": tmp_path / "Pictures", "DOWNLOADS": tmp_path / "Downloads"},
                                        protected=[tmp_path / "protected"])
     return ctx
 
@@ -237,7 +237,7 @@ def test_indicator_turns_off_after_a_failure(tmp_path: Path, backend: FakeBacken
 
 def test_default_folder_and_protected_folder(tmp_path: Path, backend: FakeBackend) -> None:
     ctx = context(tmp_path, screenshot_dir=None)
-    assert cap.screenshot_folder(ctx) == Path(os.path.realpath(tmp_path / "Pictures" / "Screenshots" / "Jarvis"))
+    assert cap.screenshot_folder(ctx) == Path(os.path.realpath(tmp_path / "Downloads"))
     ctx = context(tmp_path, screenshot_dir=tmp_path / "protected" / "x")
     assert execute(ctx, "take_screenshot").error == "protected_path"
 

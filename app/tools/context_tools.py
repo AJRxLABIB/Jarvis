@@ -25,6 +25,22 @@ def current_context(args: ContextArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success(text, **data)
 
 
+class KnowNowArgs(ToolArgs):
+    about: str = Field(default="", max_length=300, description="The request or topic to gather context for (empty = in general)")
+
+
+def request_context(args: KnowNowArgs, ctx: ToolContext) -> ToolResult:
+    """The merged, evidence-labelled context for a request, including what is missing and any question Jarvis would ask first."""
+    from app.core import request_context as R
+
+    unified = R.for_request(ctx, args.about or "what am I doing", use_cache=False)
+    question = R.clarify(args.about, unified) if args.about else None
+    text = unified.render() or "I have nothing relevant on record for that."
+    if question:
+        text += f"\nI would ask first: {question}"
+    return ToolResult.success(text, **{k: v for k, v in unified.to_dict().items() if k != "request"}, would_ask=question or "")
+
+
 class KnowledgeArgs(ToolArgs):
     question: str = Field(min_length=3, max_length=300, description="The question, in the user's words")
 
@@ -126,6 +142,10 @@ TOOLS: tuple[Tool, ...] = (
          "git branch and uncommitted changes, goal, mission, approval waiting, PC state - and how sure Jarvis is. "
          "For 'what am I working on', 'what do you see me doing', 'what's my current context'.", current_context,
          ContextArgs, RiskLevel.SAFE, category="memory", timeout=20),
+    Tool("request_context", "Show the evidence behind a request: everything Jarvis merged as relevant to it - what you are doing, projects, memories, missions, devices, "
+         "resources, permissions - each labelled verified / retrieved / inferred / predicted with its source and age, plus what is NOT known and the "
+         "question it would ask first. For 'what context are you using', 'why did you assume that', 'show your evidence'.",
+         request_context, KnowNowArgs, RiskLevel.SAFE, category="memory", timeout=30),
     Tool("ask_knowledge", "Answer from the user's own knowledge graph (projects, files, decisions, memories, goals, "
          "missions, requests), with sources: 'which files belong to TMS', 'what decision did I make about the "
          "database', 'what was I working on last week', 'which project uses Laravel', 'everything related to X'.",

@@ -15,6 +15,11 @@ PALETTES: dict[str, dict[str, str]] = {
         "text": "#e6eef8", "dim": "#9fb3cc", "accent": "#5cc8ff", "on_accent": "#04121f", "focus": "#ffd166",
         "ok": "#4ade80", "warn": COLOR["warn"], "bad": "#ff8a8a", "bubble_user": "#17406a", "bubble_ai": "#142238",
     },
+    "forest": {
+        "bg": "#0a1510", "rail": "#0d1b14", "surface": "#112219", "raised": "#173022", "edge": "#2c4a3a",
+        "text": "#e8f3ec", "dim": "#a6c2b1", "accent": "#5fd18c", "on_accent": "#04140b", "focus": "#ffd166",
+        "ok": "#6ee7a0", "warn": "#f2c14e", "bad": "#ff8f8f", "bubble_user": "#1d4a33", "bubble_ai": "#12261b",
+    },
     "light": {
         "bg": "#f4f7fb", "rail": "#e8eef6", "surface": "#ffffff", "raised": "#eef3fa", "edge": "#b6c4d8",
         "text": "#0f1b2d", "dim": "#41546d", "accent": "#0b5cad", "on_accent": "#ffffff", "focus": "#8a4b00",

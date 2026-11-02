@@ -233,7 +233,7 @@ def test_play_music_opens_the_first_youtube_video(monkeypatch) -> None:
 
     monkeypatch.setattr(assistant, "TRANSPORT", httpx.MockTransport(handler))
     result = asyncio.run(play_music(PlayMusicArgs(query="Arijit Singh"), ctx()))
-    assert result.message == "Playing Arijit Singh on YouTube in Chrome."
+    assert result.message == "Playing Arijit Singh on YouTube."
     assert opened == ["https://www.youtube.com/watch?v=abcDEF12345"]
 
 

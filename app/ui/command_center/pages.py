@@ -520,7 +520,7 @@ class IntelligencePage(QWidget):
     CONCISE_LINES = 12
 
     PANELS = ("Understand a request", "Decisions", "Preferences", "Investigate the AI model", "Research brief", "Goals",
-              "Alerts (radar)", "Capabilities", "Unusual for you", "Routines you repeat", "Task replay")
+              "Alerts (radar)", "Capabilities", "Unusual for you", "Routines you repeat", "Task replay", "Digital twin")
 
     def __init__(self, run_tool: Callable[[str, dict, Callable[[str], None]], None], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -549,6 +549,7 @@ class IntelligencePage(QWidget):
         self.stack.addWidget(self._panel_anomalies())
         self.stack.addWidget(self._panel_routines())
         self.stack.addWidget(self._panel_replay())
+        self.stack.addWidget(self._panel_twin())
         self.menu.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.menu.setCurrentRow(0)
         right = QVBoxLayout()
@@ -683,6 +684,17 @@ class IntelligencePage(QWidget):
                                          lambda: {"action": "save", "id": self.text("x_id")}),
                             self._btn("Don't offer again", "Dismiss this proposal", "experience",
                                       lambda: {"action": "dismiss", "id": self.text("x_id")})])
+
+    def _panel_twin(self) -> QWidget:
+        m = self._field("p_twin_mission", "Mission id (to preview its remaining steps)")
+        return self._panel("What Jarvis last observed about your devices, missions, disk and memory, each with its source and age (old "
+                           "readings are marked STALE; unobserved things are UNKNOWN). The preview estimates what a mission would touch "
+                           "before it runs; nothing is run.",
+                           [self._btn("Show", "Observations with source and age", "digital_twin", {"action": "show"}),
+                            self._btn("Refresh", "Observe devices, missions, disk and memory now (local reads only)", "digital_twin", {"action": "refresh"})],
+                           [m, self._btn("Preview mission", "Risk, touched paths, collisions, undo, likely failures - nothing runs",
+                                         "digital_twin", lambda: {"action": "what_if", "mission_id": self.text("p_twin_mission")})],
+                           [self._btn("Forget observations", "Clear the twin", "digital_twin", {"action": "forget"})])
 
     def _panel_replay(self) -> QWidget:
         r = self._field("p_run", "Run id (empty = latest that went wrong)")

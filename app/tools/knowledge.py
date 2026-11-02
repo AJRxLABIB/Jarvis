@@ -122,12 +122,19 @@ async def search_everything(args: SearchAllArgs, ctx: ToolContext) -> ToolResult
     """Memories, documents and past conversations in one ranked list (each result says where it came from)."""
     from app.core.unified_search import rank
 
+    from app.memory.sources import disabled_kinds
+
+    off = disabled_kinds(ctx.database) if ctx.database is not None else set()
     memories = []
     manager = ctx.get_memory()
-    if manager is not None:
+    if manager is not None and "memory" not in off:
         memories = manager.search(args.query)
     documents, history, notes = [], [], []
+    if off:
+        notes.append("left out by your settings: " + ", ".join(sorted(off)))
     for kind, bucket in (("document", documents), ("history", history)):
+        if {"document": "document", "history": "conversation"}[kind] in off:
+            continue
         try:
             bucket.extend(await _search(ctx, args.query, kind, args.count))
         except ToolError as exc:  # no embedding model / index: still answer from what is available
