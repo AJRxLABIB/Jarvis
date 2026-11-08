@@ -28,6 +28,7 @@ SOURCES = sorted(p for p in APP.rglob("*.py") if "__pycache__" not in p.parts)
 
 # The only modules allowed to start processes, and why.
 PROCESS_MODULES = {
+    "app/core/plugin_sandbox.py": "import-time probe of a plugin in a restricted child process (argument list, shell=False)",
     "app/security/command_executor.py": "allow-listed developer commands (argument lists, shell=False)",
     "app/tools/developer.py": "opening a folder in VS Code (fixed argument list)",
     "app/tools/system.py": "nvidia-smi for GPU statistics (fixed argument list)",

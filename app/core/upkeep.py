@@ -7,6 +7,8 @@ thread, so neither the window nor the loop ever waits for it, and a failure is l
 
 from __future__ import annotations
 
+import time
+
 import asyncio
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -23,8 +25,9 @@ BACKUP_EVERY = timedelta(hours=24)
 class Upkeep:
     def __init__(self, database, db_path: Path, backup_folder: Path, *, settings=None,
                  sampler: Callable[[], dict] | None = None, clock: Callable[[], datetime] | None = None,
-                 process_sampler: Callable[[], list] | None = None) -> None:
+                 process_sampler: Callable[[], list] | None = None, config_dir: Path | None = None) -> None:
         self.database, self.db_path, self.backup_folder = database, db_path, backup_folder
+        self.config_dir = config_dir
         self.process_sampler = process_sampler
         self.settings = settings
         self.sampler = sampler or (lambda: metrics.sample_now(str(db_path.anchor or "C:\\")))
@@ -100,6 +103,40 @@ class Upkeep:
                     guardian.notify(self.database, found)
             except Exception:
                 _log.warning("the guardian scan failed", exc_info=True)
+        try:
+            from app.core import learning_quality
+            from app.memory.settings_store import SettingsStore
+
+            found = learning_quality.scheduled(self.database, SettingsStore(self.database), now)
+            if found:                                   # a decision for you: nothing is retired without asking
+                did["learning_audit"] = True
+                log_event(_log, "learning_audit_needs_review", count=len(found["retire"]), text=learning_quality.describe(found))
+        except Exception:
+            _log.debug("learning audit failed", exc_info=True)
+        try:
+            from app.core import resources
+
+            resources.apply_mode_hold(attention.allow("background")[0], attention.allow("heavy")[0])
+        except Exception:
+            _log.debug("scheduler hold failed", exc_info=True)
+        if self.config_dir is not None and attention.allow("background")[0]:
+            try:
+                from app.core import sensor_rules
+                from app.memory.settings_store import SettingsStore
+
+                if sensor_rules.due(self._last_sensors) and (Path(self.config_dir) / sensor_rules.FILE).exists():
+                    self._last_sensors = time.monotonic()
+                    if sensor_rules.run(self.database, SettingsStore(self.database), self.config_dir):
+                        did["sensor_alerts"] = True
+            except Exception:
+                _log.debug("sensor rules failed", exc_info=True)
+        try:
+            from app.tools import transaction_tool
+
+            if transaction_tool.reconcile_all(self.database):
+                did["transactions"] = True
+        except Exception:
+            _log.debug("transaction reconcile failed", exc_info=True)
         days = int(getattr(self.settings, "memory_event_retention_days", 0) or 0)
         if days > 0 and self._retention_due(now):  # at most once an hour
             try:
@@ -116,6 +153,7 @@ class Upkeep:
 
     _last_retention: datetime | None = None
     _last_guardian: datetime | None = None
+    _last_sensors: float | None = None
 
     def _guardian_due(self, now: datetime) -> bool:
         return self._last_guardian is None or now - self._last_guardian >= timedelta(minutes=3)

@@ -499,7 +499,7 @@ def test_tls_key_is_encrypted_at_rest_and_an_old_plain_key_is_migrated(tmp_path)
     assert b"ENCRYPTED" in key.read_bytes()[:60] and (tmp_path / "remote-key.pass").is_file()
     server_context(cert, key)
     before = fingerprint(cert)
-    plain = serialization.load_pem_private_key(key.read_bytes(), password=(tmp_path / "remote-key.pass").read_bytes())
+    plain = serialization.load_pem_private_key(key.read_bytes(), password=__import__("app.remote.tls", fromlist=["x"])._passphrase(key))      # the passphrase file is DPAPI-protected on Windows
     key.write_bytes(plain.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     assert b"ENCRYPTED" not in key.read_bytes()[:60]                      # what an older version left on disk
     ensure_certificate(tmp_path, "192.168.1.30")

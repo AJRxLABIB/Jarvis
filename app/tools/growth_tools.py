@@ -77,6 +77,11 @@ async def tune_ai(_: NoArgs, ctx: ToolContext) -> ToolResult:
         registry = build_default_registry()
 
     async def job() -> None:
+        from app.core import resources
+
+        await resources.scheduler().run(resources.P3, "self-improvement test", _improve, vram_gb=1.0)
+
+    async def _improve() -> None:
         from app.agent.improve_job import improve_now
 
         try:

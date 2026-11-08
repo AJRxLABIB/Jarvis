@@ -240,7 +240,7 @@ def test_main_window_send_and_close_to_tray(qapp, tmp_path: Path) -> None:
         window.send_button.click()
         assert window.input.text() == ""
         assert wait_until(qapp, lambda: any(r == "assistant" and t == "Hi, Labib." for r, t in window.chat.messages))
-        assert "%" in window.cpu_label.text() and "GB" in window.ram_label.text()
+        assert wait_until(qapp, lambda: "%" in window.cpu_label.text() and "GB" in window.ram_label.text(), timeout=15)      # sampled on a background thread: wait for the first sample
         window.close()  # the X button hides to the tray...
         assert not window.isVisible()
         window.allow_close = True  # ...only "Exit" really closes

@@ -143,6 +143,8 @@ class Growth:
             self._learn_skill(turn)
             if turn.get("corrects"):
                 self._learn_lesson(self._turn(turn["corrects"]), turn)
+            else:
+                self._reflect(turn)
 
     # ------------------------------------------------------------------ learning
     def _learn_skill(self, turn: dict) -> None:
@@ -159,6 +161,18 @@ class Growth:
         tool = (json.loads(right["tools"] or "[]") or [{"name": ""}])[0]["name"]
         self._upsert("lesson", wrong["request"], content, tool)
 
+    def _reflect(self, turn: dict) -> None:
+        """Failure reflection: the previous turn used the same tool, a step failed, and this one worked with other arguments."""
+        from app.core import learning_quality as Q
+
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT * FROM learning_turns WHERE id < ? ORDER BY id DESC LIMIT 1", (turn["id"],)).fetchone()
+        if row is None:
+            return
+        note = Q.reflect(dict(row), turn, self.clock)
+        if note:
+            self._upsert("lesson", note[0], note[1], note[2])
+
     def _upsert(self, kind: str, request: str, content: str, tool: str) -> None:
         with self.db.transaction() as conn:
             conn.execute("INSERT INTO growth_items (kind, request, content, tool, created) VALUES (?, ?, ?, ?, ?) "
@@ -171,7 +185,12 @@ class Growth:
         with self.db.connect() as conn:
             rows = [dict(r) for r in conn.execute("SELECT * FROM growth_items WHERE retired = 0 "
                                                    "ORDER BY id DESC LIMIT 1000")]
-        scored = sorted(((_similarity(request, r["request"]), r) for r in rows), key=lambda x: -x[0])
+        from app.core import learning_quality as Q
+
+        now = self.clock()
+        # faded items rank lower (never dropped: the similarity threshold below still uses the raw score)
+        scored = sorted(((_similarity(request, r["request"]), r) for r in rows),
+                        key=lambda x: -(x[0] * (0.7 + 0.3 * Q.strength(x[1], x[1]["created"], now))))
         skills = [r for s, r in scored if r["kind"] == "skill" and s >= 0.4][:SHOWN_SKILLS]
         lessons = [r for s, r in scored if r["kind"] == "lesson" and s >= 0.3][:SHOWN_LESSONS]
         return lessons + skills
@@ -226,6 +245,13 @@ class Growth:
             rows = conn.execute("SELECT request, tools, outcome, corrects FROM learning_turns WHERE outcome = 'good' "
                                 "ORDER BY id DESC LIMIT 400").fetchall()
         seen, out = set(), []
+        from app.core import learning_quality as Q
+
+        with self.db.connect() as conn:
+            recent = [dict(r) for r in conn.execute("SELECT * FROM learning_turns ORDER BY id DESC LIMIT 800")]
+        for h in Q.hard_cases(recent, limit=limit // 2):       # corrected mistakes first: the most informative tests
+            seen.add((" ".join(sorted(_words(h["request"]))), h["expect_tool"]))
+            out.append({"request": h["request"], "expect_tool": h["expect_tool"], "hard": True})
         for r in rows:
             tools = [t for t in json.loads(r["tools"] or "[]") if t["ok"]]
             if not tools:

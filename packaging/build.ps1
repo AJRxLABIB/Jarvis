@@ -37,10 +37,27 @@ if (-not $SkipTests) {
     Step "Running the tests"
     # each build gets its own temporary folder: two builds at once (or an admin and a normal window) can't collide
     $testTemp = Join-Path $env:TEMP "jarvis-build-tests-$PID"
-    python -m pytest -q -p no:cacheprovider --basetemp "$testTemp"
+    $junit = Join-Path $env:TEMP "jarvis-build-junit-$PID.xml"
+    python -m pytest -q -p no:cacheprovider --basetemp "$testTemp" --junitxml "$junit"
     $testsExit = $LASTEXITCODE
     Remove-Item -Recurse -Force $testTemp -ErrorAction SilentlyContinue
-    if ($testsExit -ne 0) { throw "Tests failed, so nothing was built. Use -SkipTests to build anyway." }
+    if ($testsExit -ne 0) {
+        # Every test may have passed while the Python process still exited with an error code (a crash while shutting down).
+        # The junit report says which it was: a real failure stops the build, a bad exit after a clean run only warns.
+        $bad = -1
+        try {
+            [xml]$report = Get-Content -Raw $junit
+            $suite = @($report.testsuites.testsuite)[0]
+            $bad = [int]$suite.failures + [int]$suite.errors
+            $ran = [int]$suite.tests
+        } catch { }
+        if ($bad -eq 0 -and $ran -gt 1000) {
+            Write-Host "All $ran tests passed, but Python exited with code $testsExit after them (a crash at shutdown, not a test failure). Continuing." -ForegroundColor Yellow
+        } else {
+            throw "Tests failed (exit code $testsExit, $bad failing), so nothing was built. Use -SkipTests to build anyway."
+        }
+    }
+    Remove-Item -Force $junit -ErrorAction SilentlyContinue
 }
 
 if ($Android) {

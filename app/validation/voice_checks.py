@@ -145,6 +145,10 @@ class VoiceEnv:
     def say(self, text: str) -> None: ...
     def capture_frames(self, seconds: float) -> list[Frame]: ...
     def record_end_of_speech(self) -> tuple[float | None, float]: ...         # (latency s, silence timeout s)
+    def _speaking(self) -> bool:
+        value = getattr(self.tts, "is_speaking", False)          # a property on TtsManager, a method on some stand-ins
+        return bool(value() if callable(value) else value)
+
     def tts_available(self) -> bool: ...
     def tts_first_audio_and_stop(self) -> tuple[float | None, float | None]: ...   # (first audio ms, stop ms)
     def frames_while_speaking(self, seconds: float) -> list[Frame]: ...
@@ -271,7 +275,7 @@ class RealVoiceEnv(VoiceEnv):
         self.tts.speak("This is a test sentence that is long enough to be interrupted halfway through, so please listen to it for a moment.")
         first = None
         while time.monotonic() - asked < 8:
-            if self.tts.is_speaking():
+            if self._speaking():
                 first = (time.monotonic() - asked) * 1000
                 break
             time.sleep(0.01)
@@ -281,7 +285,7 @@ class RealVoiceEnv(VoiceEnv):
         requested = time.monotonic()
         self.tts.stop()
         while time.monotonic() - requested < 3:
-            if not self.tts.is_speaking():
+            if not self._speaking():
                 return first, (time.monotonic() - requested) * 1000
             time.sleep(0.005)
         return first, 3000.0

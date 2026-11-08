@@ -24,7 +24,7 @@ from typing import Any
 from app.security.permissions import RiskLevel
 
 # how long an observation counts as current, by kind (seconds)
-LIFETIME = {"device": 300, "mission": 120, "disk": 600, "memory": 120, "path": 600}
+LIFETIME = {"device": 300, "mission": 120, "disk": 600, "memory": 120, "path": 600, "sensor": 900}
 DEFAULT_LIFETIME = 300
 PATH_KEYS = ("path", "source", "destination", "folder", "directory", "file", "target", "output", "dest")
 # tools Jarvis can automatically undo (app/core/undo.py::inverse_of) - everything else that changes things has no automatic undo
@@ -127,6 +127,18 @@ def refresh(ctx: Any) -> list[str]:
         notes.append("memory")
     except Exception:
         notes.append("memory: not read (psutil unavailable)")
+    try:
+        cfg = ctx.paths.config_dir if getattr(ctx, "paths", None) is not None else None
+        if cfg is not None and (Path(cfg) / "sensors.json").exists():
+            from app.core import sensors as S
+
+            readings, problem = S.read_all(cfg, 2.0)
+            for r in readings:
+                if r.status == "ok":                              # unknown / stale / invalid readings are NOT observed: the old one just ages out
+                    observe(db, "sensor", r.sensor.name, {"kind": r.sensor.kind, "value": r.value, "unit": r.sensor.unit}, "mqtt")
+            notes.append("sensors" + (f" ({problem[:60]})" if problem else ""))
+    except Exception as exc:
+        notes.append(f"sensors: not read ({type(exc).__name__})")
     return notes
 
 

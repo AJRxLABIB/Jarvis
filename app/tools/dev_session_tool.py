@@ -89,7 +89,7 @@ def _announce_crash(session: Session, report: DS.Report) -> None:
 
         session.announced = True
         top = report.findings[0] if report.findings else None
-        events.BUS.publish(events.BUILD_FAILED, project=session.folder.name, device="pc", source="dev_session", exit_code=report.exit_code,
+        events.BUS.publish(events.BUILD_FAILED, project=session.folder.name, folder=str(session.folder), device="pc", source="dev_session", exit_code=report.exit_code,
                            log=(top.summary if top else "")[:200], priority="high")
     except Exception:
         pass

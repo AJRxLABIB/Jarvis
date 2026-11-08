@@ -1048,8 +1048,11 @@ class MainWindow(QMainWindow):
         self.events.add("reminder", f"approval needed: {pending.request.summary}")
         approved = dialog.exec() == ConfirmDialog.DialogCode.Accepted
         self._confirm_dialog = None
-        if pending.future.done():  # answered by voice ("yes" / "হ্যাঁ")
-            approved = bool(pending.future.result())
+        if pending.future.done() and not pending.future.cancelled():  # answered by voice ("yes" / "হ্যাঁ"); a timed-out one was cancelled
+            try:
+                approved = bool(pending.future.result())
+            except Exception:
+                approved = False
         self.controller.resolve_confirmation(pending, approved)
         self.chat.add_message("notice", "Confirmed." if approved else "Cancelled.")
         self.events.add("ok" if approved else "state", "approved" if approved else "declined")

@@ -214,6 +214,9 @@ class Settings(BaseModel):
     gpu_memory_saver: bool = True  # small GPU (<= 8 GB) with speech on it: smaller AI context so both fit
     home_assistant_url: str = Field(default="", max_length=200)  # e.g. http://192.168.1.10:8123
     home_assistant_token: str = Field(default="", max_length=400, repr=False)  # long-lived access token (secret)
+    mcp_server_enabled: bool = False  # let programs on THIS PC call a short whitelist of read-only tools (127.0.0.1 only, needs a token: run.py --mcp-server-token)
+    mcp_server_port: int = Field(default=8766, ge=1024, le=65535)
+    mcp_server_tools: str = Field(default="", max_length=400)  # tool names separated by ';' (empty = a few status tools); only SAFE tools are ever served
     remote_enabled: bool = False  # phone remote: a private web page on your home network
     remote_port: int = Field(default=8765, ge=1024, le=65535)
     local_discovery: bool = False  # announce this PC on the local network (mDNS) so other JARVIS devices can find it; finding is never trusting
@@ -244,6 +247,7 @@ class Settings(BaseModel):
     google_client_id: str = Field(default="", max_length=200)  # your own Google OAuth "Desktop app" client (Calendar / Drive)
     google_client_secret: str = Field(default="", max_length=200, repr=False)  # its secret (secret setting)
     cyber_guardian: bool = False  # OFF by default: watch for unusual file bursts, startup changes, new listeners and stale backups (names/times only; never stops anything)
+    guardian_integrity_files: str = ""  # files whose content the guardian checks for changes (hosts file, config...), separated by ';'
     guardian_folders: str = ""  # folders the guardian watches, separated by ';' (empty = Documents, Desktop, Pictures)
     process_history: bool = False  # OFF by default: also record the top programs' names with CPU / memory numbers (for per-program baselines)
     metrics_history: bool = True  # a light record of CPU / memory / disk / battery (once a minute, 14 days) for trends

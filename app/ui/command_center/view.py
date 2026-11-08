@@ -139,6 +139,14 @@ class CommandCenterView(QWidget):
 
         self.handoff = HandoffPage(self._handoff_rows, self._trusted_phones, self._run_tool)
         self._add("handoff", self.handoff)
+        from app.ui.command_center import panel_specs
+        from app.ui.command_center.tool_panel import ToolPanelPage
+
+        self.tool_pages: dict[str, ToolPanelPage] = {}
+        for spec in panel_specs.PANELS:
+            page = ToolPanelPage(spec, self._run_tool, {name: self._w(name) for name in spec.extras if self._w(name) is not None})
+            self.tool_pages[spec.key] = page
+            self._add(spec.key, page)
         from app.ui.command_center.gesture_page import GesturePage
 
         self.gestures = GesturePage(self._run_tool, lambda: self.controller.ctx)

@@ -197,6 +197,14 @@ def run(env: Env, *, launch: bool = False) -> Report:
 
 @dataclass
 class RealEnv(Env):
+    def __post_init__(self) -> None:
+        try:                                    # measure in real pixels: otherwise Windows hands this process scaled (virtualised) UI Automation rectangles
+            import ctypes
+
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))      # per-monitor v2; harmless if already set
+        except Exception:
+            pass
+
     notes: list[str] = field(default_factory=list)
 
     def is_windows(self) -> bool:

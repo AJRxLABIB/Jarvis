@@ -171,6 +171,9 @@ class PhoneLink:
         now = _iso(_now())
         state = {k: report[k] for k in ("battery", "charging", "control", "notifications", "comms", "lock", "app_version")
                  if isinstance(report, dict) and k in report}
+        from app.core import phone_context
+
+        state.update(phone_context.sanitize(report))      # context + sensors: validated; a full report without them clears the old ones
         previous = {k: v for k, v in self.state(device_id).items() if k != "seen"}
         self._battery_alert(device_id, previous, state)
         state = {**previous, **state}                     # a bare check-in keeps what the phone said last time

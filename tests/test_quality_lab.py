@@ -123,7 +123,7 @@ def test_sampler_reports_cpu_and_memory() -> None:
     sample, report = q.make_sampler()
     assert report() == {}
     sample()
-    assert set(report()) == {"cpu_mean", "cpu_peak", "mem_peak_percent"}
+    assert {"cpu_mean", "cpu_peak", "mem_peak_percent"} <= set(report())      # plus gpu_* keys on a machine with an NVIDIA GPU
 
 
 def test_gpu_memory_is_sampled_and_reported_only_when_a_gpu_answers() -> None:

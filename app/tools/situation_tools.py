@@ -54,6 +54,30 @@ async def what_changed(args: ChangedArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success(report.text(), empty=report.empty, unchecked=report.unchecked)
 
 
+def _git_context(ctx: ToolContext, db):
+    """Event diagnosis context: git changes (read-only) and earlier similar events. Any failure = that evidence is simply missing."""
+    from app.core import event_intel, gitinfo
+
+    try:
+        from app.tools import developer as dev
+
+        executor = dev._executor(ctx)
+
+        def run(argv, cwd):
+            r = executor.run(argv, cwd, timeout=20)
+            return r.returncode, r.output
+
+        def folder(project: str):
+            try:
+                return dev.project_folder(project, ctx)
+            except Exception:
+                return None
+
+        return gitinfo.event_context(folder, run, lambda sig: gitinfo.count_similar(db, sig))
+    except Exception:
+        return event_intel.Context(seen_before=lambda sig: gitinfo.count_similar(db, sig))
+
+
 class SituationArgs(ToolArgs):
     limit: int = Field(default=5, ge=1, le=15, description="How many situations to show")
 
@@ -62,7 +86,7 @@ async def situations(args: SituationArgs, ctx: ToolContext) -> ToolResult:
     from app.core import event_intel
 
     db = _db(ctx)
-    found = await asyncio.to_thread(event_intel.situations, db)
+    found = await asyncio.to_thread(event_intel.situations, db, _git_context(ctx, db))
     if not found:
         return ToolResult.success("No open situations: nothing related or important happened recently.")
     return ToolResult.success("\n\n".join(d.text() for d in found[: args.limit]), count=len(found))
@@ -77,8 +101,11 @@ async def attention(args: AttentionArgs, ctx: ToolContext) -> ToolResult:
     from app.core import attention as A
     from app.core import modes, perf
 
+    from app.core import meeting as M
+
     state = await asyncio.to_thread(A.fullscreen_reader())
-    when, why = A.interrupt(args.priority, args.category, fullscreen=bool(state))
+    verdict = await asyncio.to_thread(M.in_meeting)
+    when, why = A.interrupt(args.priority, args.category, fullscreen=bool(state), meeting=verdict.in_meeting)
     mode = modes.STATE.current
     plan = None
     try:
@@ -90,7 +117,7 @@ async def attention(args: AttentionArgs, ctx: ToolContext) -> ToolResult:
         ok, reason = A.allow(kind, plan=plan)
         jobs.append(f"{kind}: {'allowed' if ok else 'waiting - ' + reason}")
     screen = {True: "a full-screen app is in front", False: "no full-screen app", None: "full-screen state unknown (not read on this PC)"}[state]
-    return ToolResult.success(f"{mode.name.capitalize()} mode; {screen}. A {args.priority} notice would be: {when}" + (f" ({why})" if why else "") + ".\n"
+    return ToolResult.success(f"{mode.name.capitalize()} mode; {screen}; meeting: {'yes' if verdict.in_meeting else 'no'} ({verdict.reason}). A {args.priority} notice would be: {when}" + (f" ({why})" if why else "") + ".\n"
                               + "\n".join(jobs), when=when)
 
 
@@ -117,4 +144,36 @@ TOOLS: tuple[Tool, ...] = (
          situations, SituationArgs, RiskLevel.SAFE, "windows", timeout=30),
     Tool("attention", "Would Jarvis interrupt you right now, and which background work does the current mode allow?", attention, AttentionArgs,
          RiskLevel.SAFE, "windows", timeout=15),
+)
+
+
+class InteractionArgs(ToolArgs):
+    pass
+
+
+async def interaction_advice(args: InteractionArgs, ctx: ToolContext) -> ToolResult:
+    from app.core import attention as A
+    from app.core import interaction as I
+    from app.core import meeting as M
+    from app.core import modes
+
+    s = ctx.settings
+    verdict = await asyncio.to_thread(M.in_meeting)
+    full = await asyncio.to_thread(A.fullscreen_reader())
+    phone = None
+    try:
+        from app.core import device_mesh
+
+        nodes = [n for n in device_mesh.snapshot(ctx.database) if n.kind == "phone"] if ctx.database is not None else []
+        phone = any(n.connection in ("connected", "recent") for n in nodes) if nodes else False
+    except Exception:
+        phone = None
+    advice = I.advise(I.Context(mode=modes.STATE.current.name, in_meeting=verdict.in_meeting, fullscreen=full,
+                                gestures_enabled=bool(getattr(s, "gesture_control", False) or getattr(s, "gestures_enabled", False)), phone_connected=phone))
+    return ToolResult.success(advice.text(), best=advice.ranked[0][0] if advice.ranked else "", speak=advice.speak_replies)
+
+
+TOOLS = TOOLS + (
+    Tool("interaction_advice", "Which way fits right now - voice, keyboard, gestures or your phone - and whether replies should be spoken (meeting, full-screen app, "
+         "quiet / sleep mode).", interaction_advice, InteractionArgs, RiskLevel.SAFE, "windows", timeout=15),
 )

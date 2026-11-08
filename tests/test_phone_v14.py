@@ -65,4 +65,4 @@ def test_lock_admin_has_only_the_lock_power():
     tags = re.findall(r"<([a-z-]+)\s*/>", re.sub(r"<!--.*?-->", "", policy, flags=re.S))
     assert tags == ["force-lock"]                       # the only policy: no wipe, password rules or camera control
     manifest = (ANDROID / "AndroidManifest.xml").read_text(encoding="utf-8")
-    assert ".LockAdmin" in manifest and "BIND_DEVICE_ADMIN" in manifest and 'versionName="1.4.0"' in manifest
+    assert ".LockAdmin" in manifest and "BIND_DEVICE_ADMIN" in manifest and 'versionName="1.5.0"' in manifest

@@ -114,7 +114,7 @@ class RemoteHub:
 MAX_VOICE_BYTES = 2 * 1024 * 1024  # about a minute of phone audio
 # polling / reading commands are answered fresh every time; everything else is remembered by request_id (idempotency)
 READ_ONLY_PHONE_COMMANDS = frozenset({"hello", "status", "events", "wait_events", "capabilities", "auth_options",
-                                      "wake_config", "missions", "phone_commands", "screen_frame"})
+                                      "wake_config", "missions", "overview", "phone_commands", "screen_frame"})
 FRAME_RATE_LIMIT = 60              # screen frames per RATE_WINDOW per address (the phone sends about 3 a second)
 WAIT_MAX = 25.0                    # seconds a phone's "wait_events" request is held open at most
 
@@ -289,6 +289,19 @@ class RemoteServer:
             if hub.emergency is None:
                 raise MobileError(503, "unavailable", "Emergency stop isn't connected.")
             return {"ok": True, "message": hub.emergency()}
+        if command == "overview":
+            if hub.run_tool is None:
+                raise MobileError(503, "unavailable", "unavailable")
+            asked = {"situations": ("situations", {"limit": 3}), "security": ("guardian", {"action": "status"}),
+                     "tasks": ("transaction", {"action": "list"}), "changed": ("what_changed", {"mark": False, "since": str(arguments.get("since", ""))[:20]})}
+            sections: dict[str, str] = {}
+            for key, (tool, tool_args) in asked.items():      # read-only tools only; one failing section never hides the others
+                try:
+                    answer = await hub.run_tool(tool, tool_args)
+                    sections[key] = str(answer.get("message") or answer.get("error") or "")[:1500]
+                except Exception:
+                    sections[key] = "unavailable"
+            return {"ok": True, "sections": sections}
         if command == "missions":
             if hub.run_tool is None:
                 raise MobileError(503, "unavailable", "unavailable")
@@ -385,6 +398,12 @@ class RemoteServer:
             if hub.sessions is not None:
                 hub.sessions.open(device.id, [command], network=getattr(hub, "_last_network", ""))
 
+        if command in ("screen", "mouse", "key"):               # the PC's screen / input (not screen_frame: that is the PHONE's own screen)
+            from app.core import privacy_zones
+
+            zone = privacy_zones.restriction("remote")
+            if zone is not None:                         # a sensitive program is in front: the phone does not get to see or drive it
+                raise MobileError(403, "privacy_zone", f"{zone}. Remote screen control waits until it is closed.")
         if command in ("list_files", "read_file", "get_file", "put_file", "screen", "mouse", "key"):
             if hub.ops_ctx is None:
                 raise MobileError(503, "unavailable", "The PC handlers aren't ready.")

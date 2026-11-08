@@ -397,6 +397,12 @@ class ToolExecutor:
                                       egress=is_egress(tool.name, tool.category))
         if stop is None and not modes.STATE.current.capture and tool.name in CAPTURE_TOOLS:
             stop = f"{modes.STATE.current.name.capitalize()} mode: no screen capture. Say 'normal mode' to allow it."
+        if stop is None and tool.name in CAPTURE_TOOLS:
+            from app.core import privacy_zones
+
+            zone = privacy_zones.restriction("capture")
+            if zone is not None:
+                stop = f"{zone}: I won't look at the screen. Switch the zone off in 'privacy zones' if you really want that."
         if stop is not None:
             return gate.end(ToolResult.failure("blocked", stop))
         if not self.rate_limiter.allow(level):
@@ -518,6 +524,7 @@ class ToolExecutor:
                 gate.record.to(State.VERIFYING)
             outcome = await self._verify(tool, args, outcome, call)
         if outcome.ok:
+            outcome = self._stamp_verification(tool, args, outcome)
             self._teach(tool, args)
             self._record_undo(call, outcome, run)
             if run is not None and gate.once_key is not None:
@@ -624,12 +631,24 @@ class ToolExecutor:
                 ok, found = await asyncio.wait_for(asyncio.to_thread(tool.verify, args, outcome, self.context), 10.0)
         except Exception:
             _log.warning("verification of %s failed to run", tool.name, exc_info=True)
-            return outcome  # can't check: report what the tool said, without claiming more
+            return ToolResult(True, outcome.message, {**outcome.data, "verification": "UNCERTAIN"})  # can't check: say what the tool said, claim no more
         self._audit("verification", call, details={"ok": ok, "found": found})
         if ok:
-            return ToolResult(True, outcome.message, {**outcome.data, "verified": True})
+            return ToolResult(True, outcome.message, {**outcome.data, "verified": True, "verification": "VERIFIED"})
         return ToolResult.failure("not_verified", f"{outcome.message} But when I checked, {found}.",
-                                  **{**outcome.data, "verified": False})
+                                  **{**outcome.data, "verified": False, "verification": "FAILED"})
+
+    def _stamp_verification(self, tool: Tool, args: Any, outcome: ToolResult) -> ToolResult:
+        """Every successful result carries one standard verification state (VERIFIED / FAILED / UNCERTAIN / NOT_SUPPORTED / NOT_REQUIRED).
+        A tool that changes things but has no check of its own is NOT_SUPPORTED: its "done" is the tool's word, not independent evidence."""
+        if "verification" in outcome.data:
+            return outcome
+        try:
+            level = tool.level_for(args, self.context)
+        except Exception:
+            level = tool.level
+        state = "NOT_REQUIRED" if level == RiskLevel.SAFE else "NOT_SUPPORTED"
+        return ToolResult(True, outcome.message, {**outcome.data, "verification": state})
 
     def _record_undo(self, call: ToolCall, outcome: ToolResult, run: Any) -> None:
         database = getattr(self.context, "database", None)

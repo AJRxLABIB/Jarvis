@@ -299,7 +299,7 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
             self.executor.context.scheduler = self.scheduler
             from app.core.upkeep import Upkeep
 
-            self.upkeep = Upkeep(ctx.database, ctx.paths.db_path, ctx.paths.data_dir / "backups", settings=ctx.settings)
+            self.upkeep = Upkeep(ctx.database, ctx.paths.db_path, ctx.paths.data_dir / "backups", settings=ctx.settings, config_dir=ctx.paths.config_dir)
             self.scheduler.housekeeping.append(self.upkeep.run)  # health history + the daily backup, off the UI thread
 
     _update_found = Signal(object)
@@ -525,12 +525,12 @@ class AssistantController(FeaturesMixin, HealthMixin, RemoteMixin, BackgroundMix
         future.add_done_callback(done)
 
     # ------------------------------------------------------------------ text
-
     @Slot(str)
     def send_text(self, text: str, *, spoken: bool = False, source: str | None = None) -> bool:
         text = text.strip()
         if not text:
             return False
+        if self._answer_open_question(text): return True  # noqa: E701
         if self._live_control(text):          # stop speaking / pause the mission / explain... even while busy
             return True
         if self._busy:

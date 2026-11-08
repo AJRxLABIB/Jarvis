@@ -864,3 +864,39 @@ Not built yet: unified cross-device mission handoff UI, work-state snapshots/res
 - Built and unit-tested (`tests/test_round63.py`, 25 tests): cross-device transactions (+ tool `transaction`), event intelligence (+ `situations`, event `BuildFailed`), attention firewall and mode-driven scheduling (+ `attention`; modes quiet / power saving / offline; gaming / presentation / meeting now hold work), what-changed-while-away (+ `what_changed`), dependency-aware health (+ `service_impact`). See `docs/round63-coordination.md`.
 - Unverified: all of it on your real PC / phone; the Windows full-screen reader; real folder scans on large trees.
 - Not built: a real meeting detector, git / history readers for the event diagnosis, a command-center panel for transactions and situations, Android NSD discovery (no JDK here).
+
+## Round 64 (integration)
+- Built and unit-tested (`tests/test_round64.py`): git context for event diagnosis, meeting detector, phone-verified transactions (auto-reconcile), guardian "open files" attribution, retention controls, app profiles for UI Automation, `vscode` + `office_info` tools, four command-center pages (Coordination, Guardian, Skills, Data kept), phone `overview` command. See `docs/round64-integration.md`.
+- Unverified: all of it on real hardware; the Qt pages were never rendered. Not built: Android screens, a drag-and-drop Skill Studio, per-file change auditing.
+
+## Round 65 (privacy + guardian)
+- Built and unit-tested (`tests/test_round65.py`): privacy zones (+ enforcement in tools, memory, clipboard, phone remote), guardian USB-drive and file-integrity detectors, adaptive interaction advice. See `docs/round65-privacy-and-guardian.md`.
+- Unverified on hardware: foreground reader, USB / volume-serial reader, file hashing on your files. Not built: Android sensors / camera, eye-gaze, embedded inference runtime evaluation.
+
+## Fix: spoken "yes" / "confirm" not accepted (Nov 2)
+- Cause (from `data/logs/jarvis.log`): during the shutdown question the recognizer heard short replies but dropped them (`stt_filler_dropped`: "yeah / ok / right" are on the noise-filler list), the strict yes-grammar rejected natural phrasing ("I confirm"), and a miss was silent. The 60 s timeout also raised an unhandled `CancelledError` in `main_window._on_confirmation`.
+- Fixed: answer mode in the recognizer (no filler / short-text drop, nudged to yes / no / confirm / cancel), tolerant `classify_answer` (any "no" wins; chatter is not an answer), the answer also works through the normal reply path (`resolve_pending`), a visible "I heard ..." note when it is not understood, the timeout crash. `tests/test_confirm_answers.py` (53 cases). Not verified with your real microphone.
+
+## Round 66 - learning quality control
+Research (2025-26: arXiv 2605.12978 blind consolidation can fall below no-memory; 2505.16067 wrong experience propagates, selective add/delete helps; 2604.00131 forgetting as decay) showed the gap is not *more* learning but *trustworthy* learning. Existing stack (growth, self_improve, experience, replay) unchanged. Added `app/core/learning_quality.py` + tool `learning_audit`: Ebbinghaus-style strength, early error-propagation guard (shown-for requests failing >= baseline+25%), conflict detection (better record wins), corrected mistakes as hard test cases, reversible cleanup with a ledger (only flips `retired`; request history untouched). Rule-based, no AI call. Tests: `tests/test_round66.py`. Unverified: behaviour over weeks of real use; thresholds are reasoned defaults, not tuned.
+
+## Round 67 - the learning loop acts on the quality layer
+`Growth._reflect` (failed tool call -> same tool worked next turn with other arguments -> lesson, from the logs only); `relevant()` ranks faded items lower (never drops); `cases()` starts with corrected mistakes; upkeep runs `learning_quality.scheduled` weekly (logs `learning_audit_needs_review`; retiring still needs your OK via `learning_audit cleanup`); `SemanticIndex.add_exchange` obeys the `index` privacy-zone kind. Skill composition was NOT added: the Experience Compiler already turns repeated tool sequences into workflows. Not buildable here: Android screens (no JDK), drag-and-drop Skill Studio (needs a rendered Qt UI), real-device validation, embedded llama.cpp benchmark.
+
+## Round 68 - "JARVIS 4.0" prompt audit + gaps
+See docs/round68-sensors.md. Built: `core/mqtt_lite.py` (read-only MQTT 3.1.1, local broker, anonymous), `core/sensors.py` (stale/unknown/invalid honesty), tool `sensors`, `core/plugin_check.py` + tool `plugin_check`, trust writes detected `capabilities`. Tests `tests/test_round68.py`. Unverified on real sensors.
+
+## Round 69 - local read-only MCP server
+`app/mcp/server.py`, `--mcp-server-token` / `--mcp-server-revoke`, settings MCP_SERVER_ENABLED / PORT / TOOLS, `tests/test_mcp_server.py`, docs/round69-mcp-server.md. mDNS announcing already existed (remote/discovery.py). Android NSD + screens still need a JDK.
+
+## Round 70
+Sensor rules (`core/sensor_rules.py`, upkeep hook), sensors in twin + radar, weighted hard cases (`self_improve.HARD_WEIGHT`), plugin trust via restricted child probe (`core/plugin_sandbox.py`, `plugin_probe_child.py`), Learning panel spec. Tests `tests/test_round70.py`. Unverified: real sensors, Qt panel rendering, Windows behaviour of the probe (no memory cap there). Not built: per-file attribution.
+
+## Round 71
+See docs/round71-resources-and-verification.md. Verification states in the executor + `verification_coverage`; `core/resources.py` + `resources` tool (GPU fit with margin, model book, scheduler P0-P4, not yet wired into inference); Job Object limits on the plugin probe. Tests `tests/test_round71.py`.
+
+## Round 72
+Scheduler wired into index_documents (P2), tune_ai (P3) and the upkeep mode hold; `investigate_problem`; `deadline_risk`. Tests `tests/test_round72.py`. Unverified on real use.
+
+## Round 73
+Android 1.5.0 (UNCOMPILED - build with `packaging\build_android.ps1` and send any compile errors): Command Center screens (overview / find devices / sensors), NSD discovery, opt-in phone context (network, headset, orientation, still/moving, light - no location), "JARVIS stop" and "Wake PC" quick-settings tiles. PC side: `core/phone_context.py` (validated vocabulary, 15 min freshness, stale = unknown), `PhoneLink.collect` stores it, read-only `phone_context` tool. Tests `tests/test_round73.py` (fakes only; sensors/tiles unverified on a real phone).

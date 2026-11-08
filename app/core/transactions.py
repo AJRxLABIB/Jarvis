@@ -55,7 +55,7 @@ def create(title: str, steps: list[dict[str, Any]], *, mission_id: str = "") -> 
         if any(a < 1 or a >= number for a in after):
             raise TransactionError(f"Step {number} can only wait for earlier steps.")        # forward references = no cycles possible
         built.append({"n": number, "title": text, "device": device, "action": str(raw.get("action", ""))[:80], "after": after,
-                      "status": PENDING, "attempts": 0, "evidence": "", "note": "", "updated": _now()})
+                      "status": PENDING, "attempts": 0, "evidence": "", "note": "", "began": "", "command": 0, "updated": _now()})
     tx = {"id": "tx-" + secrets.token_hex(4), "title": title, "mission_id": mission_id[:60], "state": ACTIVE, "created": _now(), "steps": built,
           "checkpoint": {"verified": [], "at": _now()}, "decisions": []}
     return tx
@@ -118,7 +118,7 @@ def begin(tx: dict[str, Any], n: int, online: Callable[[str], bool]) -> dict[str
         raise TransactionError(f"Step {n} must wait for step {', '.join(str(a) for a in s['after'] if a not in done)}.")
     if s["attempts"] >= MAX_ATTEMPTS:
         raise TransactionError(f"Step {n} already failed {s['attempts']} times; choose another way (move it, skip it or stop).")
-    s.update(status=RUNNING, attempts=s["attempts"] + 1, updated=_now())
+    s.update(status=RUNNING, attempts=s["attempts"] + 1, began=_now(), command=0, updated=_now())
     tx["state"] = ACTIVE
     _checkpoint(tx)
     return s
@@ -143,6 +143,34 @@ def fail(tx: dict[str, Any], n: int, reason: str) -> dict[str, Any]:
     s.update(status=FAILED, note=(reason or "")[:200], updated=_now())
     _checkpoint(tx)
     return s
+
+
+FINAL_BAD = {"failed", "unsupported", "expired", "cancelled"}
+
+
+def reconcile(tx: dict[str, Any], find: Callable[[str, str, str, int], dict[str, Any] | None]) -> list[str]:
+    """Settle running PHONE steps from what the phone itself reported - no command id needs to be passed.
+
+    ``find(device, action, since, command_id)`` returns the phone's command row ({id, status, result, action}) or None: the explicit command if one was
+    attached, otherwise the newest command of that action sent to that device after the step began. ``done`` verifies the step with the phone's own
+    result as evidence; failed / unsupported / expired / cancelled marks it failed (the options then offer retry / move / skip); pending / sent changes
+    nothing. PC steps are never settled here. Returns what changed, one line each.
+    """
+    changed: list[str] = []
+    for s in tx["steps"]:
+        if s["status"] != RUNNING or s["device"] == "pc" or not s["action"]:
+            continue
+        row = find(s["device"], s["action"], s.get("began", ""), int(s.get("command") or 0))
+        if row is None:
+            continue
+        s["command"] = int(row["id"])
+        if row["status"] == "done":
+            verify(tx, s["n"], f"{row['action']} finished on the phone (command {row['id']}): {(row.get('result') or 'no output')[:200]}", s["device"])
+            changed.append(f"step {s['n']} verified by {s['device']}")
+        elif row["status"] in FINAL_BAD:
+            fail(tx, s["n"], f"phone command {row['id']} {row['status']}: {(row.get('result') or '')[:120]}")
+            changed.append(f"step {s['n']} failed ({row['status']})")
+    return changed
 
 
 def device_lost(tx: dict[str, Any], device: str) -> list[dict[str, Any]]:

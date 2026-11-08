@@ -180,13 +180,25 @@ def press_control(args: PressArgs, ctx: ToolContext) -> ToolResult:
     window = winapi.target_window()
     if window is None:
         raise ToolError("Which window? I don't see one in front.", "no_window")
+    from app.core import app_profiles
+
+    process = str(getattr(window, "process_name", "") or "")
     matches = find_controls(window.hwnd, args.name)
+    tried = [args.name]
+    if matches == []:                                     # this program may label it differently ("Save" -> "Save As")
+        for other in app_profiles.alternatives(process, args.name):
+            tried.append(other)
+            matches = find_controls(window.hwnd, other)
+            if matches:
+                break
     if matches is None:
         raise ToolError("I can't read this window's controls (UI Automation isn't available). Say 'click the text "
                         f"{args.name}' to find it on the screen instead.", "unavailable")
     if not matches:
-        raise ToolError(f"I don't see a control called '{args.name}' in {window.title[:60] or 'this window'}. "
-                        f"Say 'click the text {args.name}' to look for it on the screen.", "not_found")
+        hint = app_profiles.advice(process, args.name)
+        raise ToolError(f"I don't see a control called '{args.name}' in {window.title[:60] or 'this window'}"
+                        + (f" (also tried: {', '.join(tried[1:])})" if len(tried) > 1 else "") + f". Say 'click the text {args.name}' to look for it on "
+                        f"the screen. {hint}".rstrip(), "not_found")
     best = matches[0]
     if len(matches) > 1 and matches[1].score == best.score and _norm(matches[1].name) == _norm(best.name):
         pass  # identical duplicates (toolbar + menu): the first is fine

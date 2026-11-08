@@ -174,7 +174,8 @@ def diagnose(group: list[Intel], ctx: Context | None = None) -> Diagnosis:
         d.gaps.append("no log or error text was captured, so the cause below is a guess")
         d.confidence = "low" if d.confidence == "medium" else d.confidence
     if first.name == "BuildFailed" or any(e.name == "BuildFailed" for e in group):
-        changes = ctx.changes_before(first.project, first.when()) if first.project else []
+        where = str(next((e.evidence.get("folder") for e in group if e.evidence.get("folder")), "") or first.project)
+        changes = ctx.changes_before(where, first.when()) if where else []
         if changes:
             d.lines.append(f"Changed before it: {', '.join(changes[:6])}" + (f" (+{len(changes) - 6} more)" if len(changes) > 6 else ""))
         else:

@@ -62,17 +62,31 @@ def _import(path: Path):
     return module, tools
 
 
+def _detected(path: Path) -> set[str]:
+    try:
+        from app.core import plugin_check
+
+        return set(plugin_check.scan(path.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+
 def trust_plugin(folder: Path, name: str) -> dict:
-    """From the window only (a person at the PC): runs the plugin's code once to list its tools, then writes
-    the manifest. Raises when the plugin doesn't load."""
+    """From the window only (a person at the PC): imports the plugin in a RESTRICTED CHILD PROCESS (core/plugin_sandbox.py) to list its tools,
+    then writes the manifest. Raises ValueError when it doesn't load, times out or tries anything blocked while loading."""
     path = Path(folder) / f"{name}.py"
     if not path.is_file():
         raise FileNotFoundError(path)
     digest = file_sha(path)
-    module, tools = _import(path)
-    manifest = {"name": name, "version": str(getattr(module, "VERSION", "1.0")),
-                "description": ((module.__doc__ or "").strip().splitlines() or [""])[0][:200],
-                "sha256": digest, "tools": {t.name: int(t.level) for t in tools},
+    from app.core import plugin_sandbox
+
+    try:
+        info = plugin_sandbox.probe(path)                  # its code runs in a restricted child process first, never inside Jarvis
+    except plugin_sandbox.ProbeError as exc:
+        raise ValueError(f"not trusted: {exc}") from exc
+    manifest = {"name": name, "version": info.get("version", "1.0"), "description": info.get("doc", ""),
+                "sha256": digest, "tools": {n: int(v) for n, v in info["tools"].items()},
+                "capabilities": sorted(_detected(path)),
                 "trusted_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     manifest_path(path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     log_event(_log, "plugin_trusted", plugin=name, tools=sorted(manifest["tools"]))

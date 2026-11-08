@@ -28,6 +28,12 @@ class ProactiveMixin:
                               on_new=lambda *_: self.notifications_changed.emit(self.notifications.unread_count()))
         events.BUS.subscribe(events.MISSION_COMPLETED, self._remember_mission)  # episodic memory
         modes.STATE = modes.ModeState(store)
+        try:
+            from app.core import privacy_zones
+
+            privacy_zones.configure(store)
+        except Exception:
+            _log.warning("privacy zones could not load", exc_info=True)
         emergency.STATE = emergency.Emergency()
         emergency.STATE.load(store)
         self._announce_update(store)

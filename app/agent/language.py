@@ -316,13 +316,60 @@ _NO = re.compile(r"^(?:(?:no|nope|nah|don't|do not|cancel|stop|never mind|negati
                  r"বাতিল|করো না|করবেন না|দরকার নেই|na|naa)[\s,.!।]*)+(?:please|sir|স্যার)?[\s.!।]*$", re.I)
 
 
+_YES_WORDS = frozenset({"yes", "yeah", "yep", "yup", "yea", "ya", "sure", "ok", "okay", "kay", "confirm", "confirmed", "confirming", "approve", "approved",
+                        "proceed", "affirmative", "absolutely", "definitely", "certainly", "correct", "right", "alright", "go", "ahead", "continue",
+                        "execute", "accept", "agreed", "fine", "positive", "haan", "han", "haa", "ha", "ji", "হ্যাঁ", "হা", "হাঁ", "জি", "জ্বি", "ঠিক",
+                        "করো", "করুন", "অবশ্যই", "আচ্ছা"})
+_NO_WORDS = frozenset({"no", "nope", "nah", "not", "never", "dont", "don't", "cancel", "cancelled", "stop", "abort", "negative", "decline", "declined",
+                       "refuse", "wait", "hold", "না", "নাহ", "থাক", "বাতিল", "na", "naa"})
+# words that may surround a yes without changing its meaning ("yes, I confirm it", "yes go ahead and shut it down now please")
+_FILLER_WORDS = frozenset({"i", "im", "i'm", "it", "that", "this", "the", "a", "please", "sir", "jarvis", "now", "do", "so", "and", "you", "can", "may", "will",
+                           "would", "should", "let's", "lets", "go", "ahead", "thanks", "thank", "then", "just", "that's", "thats", "is", "was", "its", "it's",
+                           "me", "my", "for", "to", "of", "on", "up", "down", "off", "out", "shut", "shutdown", "restart", "reboot", "delete", "send",
+                           "open", "close", "install", "computer", "pc", "laptop", "action", "request", "command", "one", "ok", "sure",
+                           "স্যার", "এখন", "এটা", "করে", "দাও", "দিন"})
+MAX_ANSWER_WORDS = 7
+
+
+def resolve_pending(pending, text: str) -> bool | None:
+    """Answer an open confirmation from a spoken / typed reply. Returns the answer (True / False) when it was a clear one and the question was still
+    open, else None. A CRITICAL question (level 3+) can only be answered by a click on screen."""
+    if pending is None or pending.future.done():
+        return None
+    if int(getattr(pending.request, "level", 0)) >= 3:
+        return None
+    answer = classify_answer(text)
+    if answer is None:
+        return None
+    try:
+        pending.future.set_result(answer)
+    except Exception:                       # answered or cancelled a moment ago by someone else
+        return None
+    return answer
+
+
 def classify_answer(text: str) -> bool | None:
-    """Spoken answer to a yes/no question: True, False, or None (not a clear answer)."""
+    """Spoken answer to a yes/no question: True, False, or None (not a clear answer).
+
+    Two steps. The strict grammar first. Then a tolerant one for the way people really answer a confirmation ("yes, I confirm", "yeah go ahead and do
+    it", "okay confirmed"): a short reply (at most 7 words) with a clear yes word, no no word, and nothing else but filler words. Any no / cancel /
+    stop word anywhere makes it a NO, always. Longer or off-topic speech ("yes, I'm pumped", a whole sentence) is NOT an answer.
+    """
     cleaned = " ".join((text or "").lower().split()).strip(" .!?।,")
     if not cleaned:
         return None
     if _NO.match(cleaned):
         return False
     if _YES.match(cleaned):
+        return True
+    words = [w.strip("'’") for w in re.findall(r"[\w'’]+", cleaned, re.UNICODE)]
+    if not words or len(words) > MAX_ANSWER_WORDS:
+        return None
+    has_no = any(w in _NO_WORDS or w.replace("'", "") in _NO_WORDS for w in words) or "do not" in cleaned
+    if has_no and "or" in words and any(w in _YES_WORDS for w in words):
+        return None                                  # "say yes or no": the question itself, not an answer
+    if has_no:
+        return False
+    if any(w in _YES_WORDS for w in words) and all(w in _YES_WORDS or w in _FILLER_WORDS for w in words):
         return True
     return None

@@ -46,10 +46,13 @@ class Score:
     malformed: int = 0
     seconds: float = 0.0
     errors: list[str] = field(default_factory=list)
+    weight: float = 0.0
+    weight_right: float = 0.0
 
     @property
     def accuracy(self) -> float:
-        return self.right / self.cases if self.cases else 0.0
+        """Weighted: a request you once had to correct counts double (HARD_WEIGHT), so the test cares about what actually went wrong."""
+        return self.weight_right / self.weight if self.weight else 0.0
 
     @property
     def avg_seconds(self) -> float:
@@ -57,6 +60,7 @@ class Score:
 
 
 # ask(model, temperature, request_text) -> (tool name chosen or None, malformed?)
+HARD_WEIGHT = 2.0
 Ask = Callable[[str, float, str], Awaitable[tuple[str | None, bool]]]
 
 
@@ -71,7 +75,10 @@ async def evaluate(ask: Ask, model: str, candidate: Candidate, cases: list[dict]
             chosen, malformed = None, False
         score.seconds += clock() - started
         score.cases += 1
+        w = HARD_WEIGHT if case.get("hard") else 1.0
+        score.weight += w
         score.right += int(chosen == case["expect_tool"])
+        score.weight_right += w * int(chosen == case["expect_tool"])
         score.malformed += int(malformed)
     return score
 

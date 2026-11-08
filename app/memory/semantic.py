@@ -201,6 +201,10 @@ class SemanticIndex:
         user_text, reply_text = redact(user_text.strip()), redact(reply_text.strip())
         if len(user_text) < 4 or not reply_text:
             return False
+        from app.core import privacy_zones
+
+        if not privacy_zones.allows("index"):          # a privacy zone (banking, private browsing, meeting...) is in front
+            return False
         stamp = (when or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M")
         text = f"[{stamp}] You: {user_text[:1500]}\nJarvis: {reply_text[:1500]}"
         await self._store("history", stamp, [text])

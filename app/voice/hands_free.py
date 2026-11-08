@@ -350,6 +350,7 @@ class HandsFreeListener:
         on_release: Callable[[bool], None] | None = None,   # True = it wasn't you, carry on; False = drop the rest
         other_audio=None,       # app.voice.other_audio.OtherAudio: another app (a video) is making sound right now
         on_transcribing: Callable[[bool], None] | None = None,   # a COMMAND is being turned into text right now
+        on_answer_note: Callable[[str], None] | None = None,     # what was heard while a yes / no question is open (so a miss is visible)
     ) -> None:
         self.settings = settings
         self.microphone = microphone
@@ -401,6 +402,7 @@ class HandsFreeListener:
         self.playback_level, self.on_hold, self.on_release = playback_level, on_hold, on_release
         self.other_audio = other_audio
         self.on_transcribing = on_transcribing
+        self.on_answer_note = on_answer_note
         from app.voice.echo_gate import EchoGate
 
         self._gate = EchoGate()
@@ -509,11 +511,16 @@ class HandsFreeListener:
             self._resume = None
         self.on_result(result)  # the host calls resume() when it is done
 
-    def _transcribe(self, audio: np.ndarray):
+    def _transcribe(self, audio: np.ndarray, answer: bool = False):
         command = self.state in ("command", "follow_up") and self.on_transcribing is not None
         if command:
             self.on_transcribing(True)               # the UI shows TRANSCRIBING (honest: what you said is being read)
         try:
+            if answer:
+                try:
+                    return self.stt.transcribe(audio, self.settings.voice_language, answer=True)
+                except TypeError:                    # a recognizer without answer mode (tests, other engines)
+                    pass
             return self.stt.transcribe(audio, self.settings.voice_language)
         except STTError as exc:
             self._notice(str(exc))
@@ -804,8 +811,10 @@ class HandsFreeListener:
             return True
         self._answer_collector = None
         if not self._is_owner(utterance.audio):
+            self._answer_note("I didn't recognise your voice for that answer. Say it again, or click Confirm / Cancel.")
+            log_event(_log, "answer_rejected_speaker")
             return True
-        transcript = self._transcribe(utterance.audio)
+        transcript = self._transcribe(utterance.audio, answer=True)
         text = transcript.text if transcript is not None else ""
         try:
             understood = bool(text) and callback(text)
@@ -814,7 +823,18 @@ class HandsFreeListener:
             understood = False
         if understood:
             self.cancel_ask()
+        else:     # never silent: you see what was heard (on screen only - not in the log) and what to do
+            log_event(_log, "answer_not_understood", heard_words=len(text.split()))
+            self._answer_note(f"I heard \u201c{text.strip()}\u201d - that is not a clear yes or no. Say yes or no, or click Confirm / Cancel."
+                              if text.strip() else "I didn't catch that. Say yes or no, or click Confirm / Cancel.")
         return True
+
+    def _answer_note(self, message: str) -> None:
+        if self.on_answer_note is not None:
+            try:
+                self.on_answer_note(message)
+            except Exception:
+                _log.debug("answer note failed", exc_info=True)
 
     DUPLEX_MAX_SECONDS = 6.0
 

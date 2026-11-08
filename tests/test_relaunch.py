@@ -13,7 +13,7 @@ def test_command_is_an_argument_list_that_waits_for_the_old_process() -> None:
     assert cmd[0].endswith("python") and cmd[1].endswith("run.py")
     assert cmd[2:] == ["--restart-after", "4242", "--minimized"]
     frozen = relaunch.relaunch_command(7, minimized=False, frozen=True, executable="/x/Jarvis.exe")
-    assert frozen == ["/x/Jarvis.exe", "--restart-after", "7"]
+    assert [frozen[0].replace("\\", "/"), *frozen[1:]] == ["/x/Jarvis.exe", "--restart-after", "7"]      # Windows turns / into \\
 
 
 @pytest.mark.parametrize("text", ["refresh", "Refresh.", "restart yourself", "restart Jarvis", "reload yourself",

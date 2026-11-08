@@ -138,7 +138,8 @@ def proxies() -> list[str]:
     """Proxy environment variables that are set. The guard cannot see past a proxy, so strict mode should warn about them."""
     import os
 
-    return sorted(k for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy") if os.environ.get(k))
+    found = [k for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy") if os.environ.get(k)]
+    return sorted({k.upper() for k in found}) if os.name == "nt" else sorted(found)      # Windows variable names are case-insensitive: one entry, not two
 
 
 def status() -> dict[str, Any]:

@@ -5,6 +5,7 @@ device with status done) - the PC's own word is never enough for the phone's wor
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 from pydantic import Field
@@ -17,7 +18,7 @@ PC = "pc"
 
 
 class TransactionArgs(ToolArgs):
-    action: Literal["create", "status", "next", "begin", "verify", "fail", "device_lost", "options", "move", "skip", "stop", "list"] = Field(
+    action: Literal["create", "status", "next", "begin", "verify", "fail", "device_lost", "options", "move", "skip", "stop", "list", "reconcile"] = Field(
         default="status", description="create = new task across devices; next = steps that can start now; begin / verify / fail = move one step; "
                                       "device_lost = a device dropped; options = what to do about uncertain / failed steps; move / skip / stop = your decision")
     id: str = Field(default="", max_length=20, description="Transaction id (default: the latest open one)")
@@ -66,6 +67,36 @@ def phone_result(db: Any, device: str, command_id: int) -> str | None:
     return f"{row['action']} finished on the phone: {(row['result'] or 'no output')[:200]}"
 
 
+def find_command(db: Any, device: str, action: str, since: str, command_id: int = 0) -> dict[str, Any] | None:
+    """The phone's own command row for a step: the attached one, or the newest of this action for this device sent after the step began."""
+    with db.connect() as conn:
+        if command_id:
+            row = conn.execute("SELECT id, status, result, action FROM phone_commands WHERE id = ? AND device_id = ?", (command_id, device)).fetchone()
+        else:
+            row = conn.execute("SELECT id, status, result, action FROM phone_commands WHERE device_id = ? AND action = ? AND created >= ? "
+                               "ORDER BY id DESC LIMIT 1", (device, action, since or "")).fetchone()
+    return dict(row) if row else None
+
+
+def reconcile_all(db: Any) -> list[str]:
+    """Settle every open transaction from the phone's reports (also run by the background upkeep loop). Never raises."""
+    from app.memory.settings_store import SettingsStore
+
+    notes: list[str] = []
+    try:
+        store = SettingsStore(db)
+        for tx in T.listing(store):
+            if tx["state"] in (T.COMPLETE, T.STOPPED):
+                continue
+            changed = T.reconcile(tx, lambda d, a, s, c: find_command(db, d, a, s, c))
+            if changed:
+                T.save(store, tx)
+                notes += [f"{tx['title']}: {c}" for c in changed]
+    except Exception:
+        pass
+    return notes
+
+
 async def transaction(args: TransactionArgs, ctx: ToolContext) -> ToolResult:
     store = _store(ctx)
     online, can = _online_map(ctx)
@@ -74,11 +105,17 @@ async def transaction(args: TransactionArgs, ctx: ToolContext) -> ToolResult:
             tx = T.create(args.title, args.steps, mission_id=args.mission_id)
             T.save(store, tx)
             return ToolResult.success(T.describe(tx, online), id=tx["id"])
+        if args.action == "reconcile":
+            notes = await asyncio.to_thread(reconcile_all, ctx.database)
+            return ToolResult.success("\n".join(notes) or "Nothing new from the phone.", changed=len(notes))
         if args.action == "list":
             return ToolResult.success("\n".join(f"{t['id']}  {t['state']}  {t['title']}" for t in T.listing(store)[-15:]) or "No transactions.")
         tx = T.get(store, args.id)
         if tx is None:
             return ToolResult.failure("not_found", "No such transaction.")
+        if tx["state"] not in (T.COMPLETE, T.STOPPED) and args.action in ("status", "next", "options"):
+            if T.reconcile(tx, lambda d, a, s, c: find_command(ctx.database, d, a, s, c)):
+                T.save(store, tx)                   # what the phone reported since the last look
         if args.action == "status":
             return ToolResult.success(T.describe(tx, online), state=tx["state"])
         if args.action == "next":

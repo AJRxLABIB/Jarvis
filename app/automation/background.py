@@ -218,7 +218,7 @@ def run_background(ctx: Any, version: str = "") -> int:
     scheduler = Scheduler(AutomationStore(ctx.database), executor,
                           lambda title, message: host_holder["host"].notify(title, message))
     executor.context.scheduler = scheduler
-    upkeep = Upkeep(ctx.database, ctx.paths.db_path, ctx.paths.data_dir / "backups", settings=ctx.settings)
+    upkeep = Upkeep(ctx.database, ctx.paths.db_path, ctx.paths.data_dir / "backups", settings=ctx.settings, config_dir=ctx.paths.config_dir)
     scheduler.housekeeping.append(upkeep.run)
     host = host_holder["host"] = BackgroundHost(ctx.paths.data_dir, scheduler, version=version)
     print(f"Jarvis background mode started (pid {host.pid}). Pause/stop it with the 'background_mode' tool, or "

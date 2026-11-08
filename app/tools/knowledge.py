@@ -209,15 +209,21 @@ async def index_documents(args: IndexArgs, ctx: ToolContext) -> ToolResult:
                         "no_folder")
     index = semantic_index(ctx)
     totals: dict[str, Any] = {"indexed": 0, "unchanged": 0, "skipped": 0, "passages": 0, "removed": 0}
-    for folder in folders:
-        try:
-            stats = await index.index_folder(folder)
-        except ValueError as exc:
-            raise ToolError(str(exc), "not_found") from exc
-        except AIError as exc:
-            raise ToolError(str(exc), "embedding_unavailable") from exc
-        for key in totals:
-            totals[key] += stats[key]
+
+    async def work() -> None:
+        for folder in folders:
+            try:
+                stats = await index.index_folder(folder)
+            except ValueError as exc:
+                raise ToolError(str(exc), "not_found") from exc
+            except AIError as exc:
+                raise ToolError(str(exc), "embedding_unavailable") from exc
+            for key in totals:
+                totals[key] += stats[key]
+
+    from app.core import resources
+
+    await resources.scheduler().run(resources.P2, "index documents", work, vram_gb=0.5)      # shares the GPU fairly with other model work
     return ToolResult.success(
         f"Indexed {totals['indexed']} new or changed document(s) ({totals['passages']} passages); "
         f"{totals['unchanged']} unchanged, {totals['skipped']} skipped"

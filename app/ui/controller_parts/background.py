@@ -298,7 +298,7 @@ class BackgroundMixin:
         try:
             from PySide6.QtGui import QGuiApplication
 
-            from app.core import modes
+            from app.core import modes, privacy_zones
             from app.core.clipboard_memory import ClipboardStore, ClipboardWatcher
 
             board = QGuiApplication.clipboard()
@@ -306,7 +306,7 @@ class BackgroundMixin:
                 return
             store = ClipboardStore(self.ctx.database, int(getattr(self.ctx.settings, "clipboard_retention_days", 7)))
             self._clipboard_watcher = ClipboardWatcher(store, enabled=lambda: bool(getattr(self.ctx.settings, "clipboard_history", False)),
-                                                       remember=lambda: modes.STATE.current.remember)
+                                                       remember=lambda: modes.STATE.current.remember and privacy_zones.allows("clipboard"))
             board.dataChanged.connect(lambda: self._clipboard_changed(board))
         except Exception:
             _log.warning("clipboard memory could not start", exc_info=True)

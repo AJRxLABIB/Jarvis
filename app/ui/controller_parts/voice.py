@@ -101,6 +101,18 @@ class VoiceMixin:
         self._keep_voice(result.recording.audio if result.recording is not None else None, result.transcript)
         self.send_text(result.text, spoken=True)
 
+    def _answer_open_question(self, text: str) -> bool:
+        """"yes" / "confirm" / "no" while a question is open answers it, whichever way it arrived (typed, spoken, remote)."""
+        from app.agent.language import resolve_pending
+
+        pending = self._pending_confirmation
+        answer = resolve_pending(pending, text) if pending is not None else None
+        if answer is None:
+            return False
+        log_event(_log, "confirmed_by_reply", approved=answer)
+        self.confirmation_answered.emit(pending, answer)
+        return True
+
     def _hands_free_paused(self) -> bool:
         """Don't listen to ourselves, and don't take commands while one is running or a question is open."""
         return self._busy or self._listening or self.tts.is_speaking or self._pending_confirmation is not None
@@ -129,7 +141,7 @@ class VoiceMixin:
                 self.confirmation_answered.emit(pending, answer)
             return True
 
-        listener.ask(on_answer, timeout=40.0)      # starts counting when the question is asked: leave time to hear it and answer
+        listener.ask(on_answer, timeout=55.0)      # starts counting when the question is asked: leave time to hear it and answer
 
     def _spoken_text(self) -> str:
         return self.tts.current_text if self.tts.is_speaking else ""
@@ -400,6 +412,7 @@ class VoiceMixin:
             playback_level=self.tts.playback_db, on_hold=self._hold_speech, on_release=self._release_speech,
             other_audio=self._other_audio(),
             on_transcribing=self.transcribing.emit,
+            on_answer_note=self.notice.emit,
         )
         self.hands_free.start()
         self._voiceprint_tip()

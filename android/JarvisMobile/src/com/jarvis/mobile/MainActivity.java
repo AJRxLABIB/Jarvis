@@ -35,7 +35,7 @@ import java.util.Map;
  *     Windows password, and never claims Windows is unlocked when it isn't.
  */
 public class MainActivity extends Activity {
-    static final String APP_VERSION = "1.4.0";
+    static final String APP_VERSION = "1.5.0";
     static final String EXTRA_START_SHARE = "com.jarvis.mobile.START_SHARE";   // the PC asked to start sharing
     private static final int REQ_VOICE = 1, REQ_AUTH = 2, REQ_SHARE = 3;
 
@@ -58,6 +58,17 @@ public class MainActivity extends Activity {
     private final LiveEvents live = new LiveEvents();   // instant messages / approvals while the app is open
     private volatile long liveSince = 0;                // what the PC has already told us (read by the live thread)
     private volatile String livePendingId = "";
+
+    /** What the Command center screens (CommandCenter.java) may use from this Activity. */
+    private final CommandCenter.Host commandHost = new CommandCenter.Host() {
+        @Override public android.content.Context context() { return MainActivity.this; }
+        @Override public LinearLayout content() { return content; }
+        @Override public Store store() { return store; }
+        @Override public Actions actions() { return actions; }
+        @Override public boolean away() { return away; }
+        @Override public void toast(String message) { MainActivity.this.toast(message); }
+        @Override public void show(String next) { screen = next; render(); }
+    };
 
     private final Runnable poller = new Runnable() {
         @Override public void run() {
@@ -91,6 +102,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onPause() {
         super.onPause();
+        CommandCenter.stopDiscovery();
         live.stop();
         ui.removeCallbacks(poller);
     }
@@ -190,7 +202,8 @@ public class MainActivity extends Activity {
             if (order[i].equals(screen)) ((TextView) nav.getChildAt(i)).setTextColor(Ui.CYAN);
         }
         content.removeAllViews();
-        if (store.current() == null && !screen.equals("devices")) {
+        if (!CommandCenter.owns(screen)) CommandCenter.stopDiscovery();
+        if (store.current() == null && !screen.equals("devices") && !screen.equals("center_find")) {
             screen = "devices";
         }
         switch (screen) {
@@ -199,6 +212,8 @@ public class MainActivity extends Activity {
             case "control": renderControl(); break;
             case "missions": renderMissions(); break;
             case "settings": renderSettings(); break;
+            case "center": case "center_overview": case "center_find": case "center_sensors":
+                CommandCenter.render(commandHost, screen); break;
             default: renderHome();
         }
     }
@@ -494,6 +509,10 @@ public class MainActivity extends Activity {
         update.setOnClickListener(v -> checkUpdate(pc));
         appCard.addView(update);
         content.addView(appCard);
+
+        Button center = Ui.button(this, "Command center", Ui.PANEL);
+        center.setOnClickListener(v -> { screen = "center"; render(); });
+        content.addView(center);
 
         if (pc != null) renderSync(pc);
         renderPhoneLink();

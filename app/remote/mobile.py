@@ -96,6 +96,7 @@ COMMANDS: dict[str, tuple[str | None, str | None]] = {
     "wake_config": ("read", None),         # this PC's Wake-on-LAN details (MAC, broadcast) for the app
     "auth_options": ("read", None),        # supported Windows sign-in methods when locked
     "missions": ("read", None),            # mission_status, read-only
+    "overview": ("read", None),            # situations, security, cross-device tasks, what changed: short read-only text sections for the phone's home screen
     "list_files": ("files", None),
     "read_file": ("files", None),
     "get_file": ("files", None),

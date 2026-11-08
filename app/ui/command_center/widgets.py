@@ -24,6 +24,11 @@ SECTIONS: tuple[tuple[str, str, str], ...] = (
     ("security", "Security", "Paired devices, permissions, microphone and screen state, emergency stop"),
     ("intelligence", "Intelligence", "Goals, decisions, preferences, investigations, briefs, alerts and capability gaps"),
     ("handoff", "Handoff", "Move an unfinished task to your phone and see where each handoff stands"),
+    ("coordination", "Coordination", "Tasks across PC and phone, related events as one situation, what changed while you were away"),
+    ("guardian", "Guardian", "File bursts, new startup programs and listeners, backups: reported, never acted on"),
+    ("skills", "Skills", "Your saved routines as honest cards: needs, risks, failure handling, undo"),
+    ("learning", "Learning", "What I learned from use, and which learned items to retire"),
+    ("retention", "Data kept", "What Jarvis keeps and for how long; clear one store"),
     ("gestures", "Gestures", "Control the mouse with your hand: live status, skeleton preview, calibration, tutorial, emergency stop"),
 )
 

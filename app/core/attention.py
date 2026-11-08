@@ -95,8 +95,17 @@ def fullscreen_reader() -> Callable[[], bool | None]:
     return read
 
 
-def may_speak(priority: str, category: str = "", *, focus_active: bool = False, reader: Callable[[], bool | None] | None = None) -> bool:
+def may_speak(priority: str, category: str = "", *, focus_active: bool = False, reader: Callable[[], bool | None] | None = None,
+              meeting_reader: Callable[[], bool] | None = None) -> bool:
     """For the spoken path (``speak_up``): True when the notice may be spoken now. It is shown either way."""
     state = (reader or fullscreen_reader())()
-    when, _ = interrupt(priority, category, focus_active=focus_active, fullscreen=bool(state))
+    meeting = False
+    if _RANK.get(priority, 1) < 3:                    # only non-urgent notices need the (slower) meeting check
+        try:
+            from app.core import meeting as M
+
+            meeting = meeting_reader() if meeting_reader is not None else M.in_meeting().in_meeting
+        except Exception:
+            meeting = False
+    when, _ = interrupt(priority, category, focus_active=focus_active, fullscreen=bool(state), meeting=meeting)
     return when == "now"

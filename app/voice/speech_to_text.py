@@ -410,7 +410,7 @@ class FasterWhisperSTT(SpeechToText):
     SECOND_PASS_BELOW = 0.55  # confidence under this: decode again, more carefully (only on the GPU: fast)
     SECOND_PASS_BEAM = 10
 
-    def _decode(self, audio: np.ndarray, language: str | None, careful: bool = False, vad: bool = True):
+    def _decode(self, audio: np.ndarray, language: str | None, careful: bool = False, vad: bool = True, hotwords: str | None = None):
         extra = {"patience": 2.0, "best_of": 5} if careful else {}
         return self._model.transcribe(
             audio,
@@ -421,10 +421,14 @@ class FasterWhisperSTT(SpeechToText):
             condition_on_previous_text=False,
             without_timestamps=True,
             # the English hint words would pull Bangla speech towards English: Bangla gets its own (your corrections)
-            hotwords=self.hotwords if language in (None, "en") else (self.hotwords_bn if language == "bn" else None),
+            hotwords=hotwords or (self.hotwords if language in (None, "en") else (self.hotwords_bn if language == "bn" else None)),
         )
 
-    def transcribe(self, audio: np.ndarray, language: str | None = None) -> Transcript:
+    ANSWER_HOTWORDS = "yes no yeah okay confirm confirmed cancel stop"
+
+    def transcribe(self, audio: np.ndarray, language: str | None = None, *, answer: bool = False) -> Transcript:
+        """``answer=True``: a short reply to a yes / no question. "Yes", "yeah", "okay" are real answers here, so the filler and short-text filters
+        (which exist to drop "Thank you." made up from noise) are skipped, and the recognizer is nudged towards yes / no / confirm / cancel."""
         self.load()
         audio = np.asarray(audio, dtype=np.float32)
         seconds = audio.size / SAMPLE_RATE
@@ -441,7 +445,7 @@ class FasterWhisperSTT(SpeechToText):
                 try:
                     if self._model is None:
                         self._load_locked()
-                    segments, info = self._decode(audio, lang)
+                    segments, info = self._decode(audio, lang, hotwords=self.ANSWER_HOTWORDS if answer else None)
                     if lang is None and len(self.allowed_languages) > 1:
                         chosen = choose_language(info, self.allowed_languages)
                         if chosen is not None and chosen != getattr(info, "language", None):
@@ -491,7 +495,7 @@ class FasterWhisperSTT(SpeechToText):
                         log_event(_log, "stt_bangla_model_used", before=round(confidence, 3), after=round(confidence2, 3))
                         text, confidence, no_speech = text2, max(confidence, confidence2), no_speech2
 
-            if segments and _normalized(text) in FILLERS and seconds < self.FILLER_RETRY_SECONDS:
+            if segments and not answer and _normalized(text) in FILLERS and seconds < self.FILLER_RETRY_SECONDS:
                 # "Volume up" heard as "Thank you.": a quiet or clipped command. Once more, louder and without
                 # the voice filter (it can cut short words); still a filler and unsure -> not heard at all.
                 try:
@@ -512,7 +516,7 @@ class FasterWhisperSTT(SpeechToText):
                     _log.warning("filler retry failed", exc_info=True)
 
         elapsed = int((time.perf_counter() - started) * 1000)
-        if is_hallucination(text, no_speech, audio.size / SAMPLE_RATE if hasattr(audio, "size") else None):
+        if (_NOISE_TEXT.search(text) if answer else is_hallucination(text, no_speech, audio.size / SAMPLE_RATE if hasattr(audio, "size") else None)):
             if text:
                 log_event(_log, "stt_noise_dropped", characters=len(text))
             text = ""

@@ -66,6 +66,17 @@ def create_tool_executor(
 
         executor.mcp_hub = McpHub(ctx.paths.config_dir, registry)
         executor.mcp_hub.start()  # in the background: their tools appear when the servers are ready
+    executor.mcp_server = None
+    if getattr(ctx.settings, "mcp_server_enabled", False):
+        try:
+            from app.mcp import server as mcp_server
+
+            names = tuple(n.strip() for n in str(ctx.settings.mcp_server_tools or "").split(";") if n.strip()) or mcp_server.DEFAULT_TOOLS
+            if mcp_server.token_hash(ctx.paths.data_dir):       # no token yet = nothing is served (run.py --mcp-server-token)
+                executor.mcp_server = mcp_server.McpServer(registry, executor, ctx.paths.data_dir, ctx.settings.mcp_server_port, names)
+                executor.mcp_server.start()
+        except Exception:
+            executor.mcp_server = None
     try:
         from app.tools.automation import seed_default_workflows
 

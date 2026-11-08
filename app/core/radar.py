@@ -70,10 +70,33 @@ def device_signals(ctx: Any, now: datetime | None = None) -> list[Candidate]:
     return out
 
 
+HOT_C, COLD_C = 35.0, 5.0
+
+
+def sensor_signals(ctx: Any, now: datetime | None = None) -> list[Candidate]:
+    """From the digital twin's FRESH sensor observations only (an old reading is never used as a warning)."""
+    out = []
+    try:
+        from app.core import twin
+
+        for o in twin.snapshot(ctx.database, now, kind="sensor"):
+            v = o.value if isinstance(o.value, dict) else {}
+            if o.state != "fresh" or v.get("kind") != "temperature" or not isinstance(v.get("value"), (int, float)):
+                continue
+            t = float(v["value"])
+            if t >= HOT_C or t <= COLD_C:
+                out.append(Candidate(f"sensor:temp:{o.key}", "system", f"{o.key} is {'hot' if t >= HOT_C else 'cold'}",
+                                     f"{o.key} reads {t:g} {v.get('unit') or 'C'} (a sensor reading from {int(o.age_s // 60)} min ago).", 0.5, 0.6, confidence=0.8,
+                                     interruption=0.3))
+    except Exception:
+        pass
+    return out
+
+
 def signals(ctx: Any, now: datetime | None = None) -> list[Candidate]:
     from app.core import anomaly
 
-    found = resource_signals(ctx) + device_signals(ctx, now)
+    found = resource_signals(ctx) + device_signals(ctx, now) + sensor_signals(ctx, now)
     try:
         found += anomaly.signals(ctx, now)           # "unusual for you" - statistics over your own history
     except Exception:

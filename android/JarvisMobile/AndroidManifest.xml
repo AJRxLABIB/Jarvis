@@ -2,8 +2,8 @@
 <!-- JARVIS Mobile: your secure remote terminal for the JARVIS PC. It never handles your Windows password. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jarvis.mobile"
-    android:versionCode="5"
-    android:versionName="1.4.0">
+    android:versionCode="6"
+    android:versionName="1.5.0">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 
@@ -103,6 +103,19 @@
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
             </intent-filter>
         </receiver>
+        <!-- Quick Settings tiles (you add them yourself from the tile editor): emergency stop, and Wake-on-LAN for the paired PC -->
+        <service android:name=".EmergencyTile" android:exported="true" android:label="JARVIS stop"
+            android:icon="@mipmap/ic_launcher" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service android:name=".WakeTile" android:exported="true" android:label="Wake PC"
+            android:icon="@mipmap/ic_launcher" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
         <!-- Share > JARVIS Mobile: text or a link to the PC -->
         <activity android:name=".ShareActivity" android:exported="true" android:label="Send to my PC"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">

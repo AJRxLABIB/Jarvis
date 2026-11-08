@@ -18,11 +18,15 @@ REAL = [{"tool": "get_datetime"}, {"tool": "calculate", "arguments": {"expressio
 
 
 def test_every_result_is_labelled_simulated_and_nothing_real_runs(monkeypatch) -> None:
-    def refuse(*a, **k):
+    real_connect = socket.socket.connect
+
+    def refuse(self, address=None, *a, **k):
+        if isinstance(address, tuple) and address and address[0] in ("127.0.0.1", "::1"):
+            return real_connect(self, address, *a, **k)          # asyncio's own self-pipe on Windows connects over loopback
         pytest.fail("the simulator must not open a network connection")
 
     monkeypatch.setattr(socket.socket, "connect", refuse)        # asyncio's own socketpair needs no connect()
-    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: pytest.fail("the simulator must not open a network connection"))
     report = sim.simulate_workflow(REAL, registry=REG)
     text = report.describe()
     assert text.startswith(sim.BANNER) and "(simulated)" in text and "hypothetical" in text.lower()

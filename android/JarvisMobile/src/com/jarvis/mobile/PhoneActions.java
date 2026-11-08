@@ -67,6 +67,9 @@ public final class PhoneActions {
         out.put("comms", commsAllowed(c));
         out.put("lock", LockAdmin.active(c));
         out.put("app_version", MainActivity.APP_VERSION);
+        Map<String, Object> context = SensorHub.context(c, SensorHub.mayBlock());   // only the kinds switched on in "Phone sensors"
+        if (!context.isEmpty()) out.put("context", context);
+        out.put("sensors", SensorHub.available(c));
         return out;
     }
 

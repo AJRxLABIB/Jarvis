@@ -1053,6 +1053,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--intro-subtitle", default="", help=argparse.SUPPRESS)
     parser.add_argument("--intro-owner", default="", help=argparse.SUPPRESS)
     parser.add_argument("--stats-child", action="store_true", help=argparse.SUPPRESS)  # the dashboard's process lister
+    parser.add_argument("--mcp-server-token", action="store_true", help="create (or replace) the token for the local read-only MCP server and show it once")
+    parser.add_argument("--mcp-server-revoke", action="store_true", help="delete the local MCP server token (it stops accepting every client)")
     parser.add_argument("--capabilities", action="store_true",
                         help="print what works offline / on the local network / with internet, and every tool's risk")
     parser.add_argument("--reset-gl-guard", action="store_true",
@@ -1074,6 +1076,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         from app.tools.catalog import build_default_registry
 
         print(markdown(build_default_registry()))
+        return EXIT_OK
+    if args.mcp_server_token or args.mcp_server_revoke:   # the token of the local read-only MCP server: only a person at the PC can create it
+        from app.mcp import server as mcp_server
+
+        ctx = bootstrap(args.root)
+        if args.mcp_server_revoke:
+            print("Token deleted." if mcp_server.revoke_token(ctx.paths.data_dir) else "There was no token.")
+            return EXIT_OK
+        print("Token (shown once, keep it secret): " + mcp_server.create_token(ctx.paths.data_dir)
+              + "\nSet MCP_SERVER_ENABLED=true and restart Jarvis; clients call http://127.0.0.1:%d/mcp with 'Authorization: Bearer <token>'." % ctx.settings.mcp_server_port)
         return EXIT_OK
     if args.stats_child:  # lists processes for the dashboard in its own process (never stalls the animation)
         from app.ui.stats_process import run_stats_child

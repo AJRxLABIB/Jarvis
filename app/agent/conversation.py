@@ -42,6 +42,7 @@ from app.agent.tool_router import select_specs
 from app.ai.manager import AIManager
 from app.ai.prompts import build_system_prompt
 from app.config.settings import Settings
+from app.core import privacy_zones
 from app.memory.conversations import ConversationStore
 from app.tools.base import ToolResult
 from app.utils import network
@@ -331,7 +332,7 @@ class ConversationManager:
                 from app.core import modes
 
                 if call.name == "open_application" and self.tools is not None and self.tools.context.database \
-                        and modes.STATE.current.remember:
+                        and modes.STATE.current.remember and privacy_zones.allows("memory"):
                     try:
                         from app.agent.habits import record
 
@@ -520,7 +521,7 @@ class ConversationManager:
 
         settings = self.tools.context.settings if self.tools is not None else self.settings
         return (bool(getattr(settings, "learn_from_use", True)) and source not in ("automation", "internal")
-                and modes.STATE.current.remember and self.tools is not None and self.tools.context.database is not None)
+                and modes.STATE.current.remember and privacy_zones.allows("memory") and self.tools is not None and self.tools.context.database is not None)
 
     def _learn_from(self, user_text: str, reply: "AssistantReply", source: str) -> None:
         """Every request is recorded with what really happened; its outcome is settled by what you do next
@@ -649,10 +650,10 @@ class ConversationManager:
                     self._note("cancelled", text, execution.call.name)
             from app.core import modes
 
-            if self.settings.conversation_memory and model != "direct" and modes.STATE.current.remember:
+            if self.settings.conversation_memory and model != "direct" and modes.STATE.current.remember and privacy_zones.allows("memory"):
                 asyncio.get_running_loop().create_task(self._remember(text, reply_text))
             if getattr(self.settings, "memory_suggestions", False) and model != "direct" and \
-                    modes.STATE.current.remember:
+                    modes.STATE.current.remember and privacy_zones.allows("memory"):
                 asyncio.get_running_loop().create_task(self._suggest_memories(text))
             sources = answer_sources(executions, self._memories_used(), model)
             self.last_sources = sources
@@ -1208,7 +1209,7 @@ class ConversationManager:
             pass
         text = self._current_text
         decision = route(text, simple=is_simple_request(text), hard=is_hard_request(text), task=is_task(text),
-                         in_editor=in_editor, private_mode=not modes.STATE.current.remember)
+                         in_editor=in_editor, private_mode=not (modes.STATE.current.remember and privacy_zones.allows("memory")))
         decision = self._apply_performance(decision)
         self.last_route = decision
         return decision
