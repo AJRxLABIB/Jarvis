@@ -900,3 +900,6 @@ Scheduler wired into index_documents (P2), tune_ai (P3) and the upkeep mode hold
 
 ## Round 73
 Android 1.5.0 (UNCOMPILED - build with `packaging\build_android.ps1` and send any compile errors): Command Center screens (overview / find devices / sensors), NSD discovery, opt-in phone context (network, headset, orientation, still/moving, light - no location), "JARVIS stop" and "Wake PC" quick-settings tiles. PC side: `core/phone_context.py` (validated vocabulary, 15 min freshness, stale = unknown), `PhoneLink.collect` stores it, read-only `phone_context` tool. Tests `tests/test_round73.py` (fakes only; sensors/tiles unverified on a real phone).
+
+## Round 74
+Audit of the "Next-Generation" prompt (docs/round74-diagnosis-gateway.md). Built: `core/root_cause.py` (+ `root_cause` tool), `core/inference_gateway.py` (+ `inference_queue` tool; chat/voice not routed through it yet), `core/vault.py` (+ `vault_scan`; not yet wired into the index). Tests `tests/test_round74.py`. Fakes only; unverified on real hardware.
