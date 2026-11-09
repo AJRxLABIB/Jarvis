@@ -61,8 +61,15 @@ def _ollama_factory(settings: Settings, transport: httpx.AsyncBaseTransport | No
     )
 
 
+def _foundry_factory(settings: Settings, transport: httpx.AsyncBaseTransport | None) -> AIProvider:
+    from app.ai.foundry_local import FoundryLocalProvider
+
+    return FoundryLocalProvider(settings.foundry_local_url, request_timeout=settings.ai_request_timeout, context_window=settings.ai_context_window,
+                                temperature=settings.ai_temperature, transport=transport)
+
+
 # Register new providers here (the name must also be in SUPPORTED_AI_PROVIDERS).
-PROVIDERS: dict[str, ProviderFactory] = {"ollama": _ollama_factory}
+PROVIDERS: dict[str, ProviderFactory] = {"ollama": _ollama_factory, "foundry_local": _foundry_factory}
 
 
 def create_provider(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> AIProvider:

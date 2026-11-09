@@ -70,6 +70,8 @@ public final class PhoneActions {
         Map<String, Object> context = SensorHub.context(c, SensorHub.mayBlock());   // only the kinds switched on in "Phone sensors"
         if (!context.isEmpty()) out.put("context", context);
         out.put("sensors", SensorHub.available(c));
+        List<Map<String, Object>> placeEvents = Places.eventsForReport(c);   // arrivals / departures only, never coordinates
+        if (!placeEvents.isEmpty()) out.put("location_events", placeEvents);
         return out;
     }
 
@@ -96,6 +98,11 @@ public final class PhoneActions {
             if ("set_clipboard".equals(action)) return setClipboard(c, Json.str(args, "text", ""));
             if ("locate".equals(action)) return locate(c);
             if ("lock_phone".equals(action)) return LockAdmin.lockNow(c);
+            if ("set_places".equals(action)) {
+                int n = Places.setPlaces(c, args == null ? null : args.get("places"));
+                return new Object[]{true, n + " place(s) saved on the phone" + (Places.enabled(c) ? "." : ". Switch on 'Place alerts' in JARVIS Mobile > Places to use them.")};
+            }
+            if ("clear_places".equals(action)) { Places.setPlaces(c, null); return new Object[]{true, "Places removed from the phone."}; }
             if (Comms.ACTIONS.contains(action)) {
                 if (!commsAllowed(c)) return new Object[]{false, "calls and messages from the PC are switched off on the phone "
                         + "(JARVIS Mobile > Control > 'Allow calls and messages')"};
@@ -234,9 +241,12 @@ public final class PhoneActions {
     @SuppressWarnings("unchecked")
     public static int checkIn(final Context c, Pc pc, boolean away) throws Exception {
         Map<String, Object> args = new LinkedHashMap<String, Object>();
-        args.put("report", report(c));
+        Map<String, Object> report = report(c);
+        args.put("report", report);
         Api.Result result = Api.command(pc, away, pc.id, "phone_commands", args);
         if (result == null || result.status >= 400) return 0;
+        Object reported = report.get("location_events");
+        if (reported instanceof List) Places.markSent(c, (List<Map<String, Object>>) reported);   // the PC has them now (repeats are ignored there too)
         Object list = result.json().get("commands");
         if (!(list instanceof List)) return 0;
         int ran = 0;

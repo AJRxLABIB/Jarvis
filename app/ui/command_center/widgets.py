@@ -29,6 +29,12 @@ SECTIONS: tuple[tuple[str, str, str], ...] = (
     ("skills", "Skills", "Your saved routines as honest cards: needs, risks, failure handling, undo"),
     ("learning", "Learning", "What I learned from use, and which learned items to retire"),
     ("retention", "Data kept", "What Jarvis keeps and for how long; clear one store"),
+    ("vision", "Vision", "Photos from your phone camera, analysed here: text, detected objects, and the model's description - kept apart"),
+    ("media", "Media", "Recordings you can search by what was said, with times and optional speaker labels"),
+    ("agents", "Agents", "Outside AI agents you approved to hand one task to"),
+    ("places", "Places", "Saved places, arrive / leave rules, and what the phone watches"),
+    ("sound", "Sound", "Listening for configured sounds: opt-in, nothing recorded"),
+    ("providers", "AI engines", "Local AI engines: Ollama and Foundry Local"),
     ("gestures", "Gestures", "Control the mouse with your hand: live status, skeleton preview, calibration, tutorial, emergency stop"),
 )
 

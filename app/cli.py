@@ -77,6 +77,17 @@ def create_tool_executor(
                 executor.mcp_server.start()
         except Exception:
             executor.mcp_server = None
+    executor.a2a_server = None
+    if getattr(ctx.settings, "a2a_server_enabled", False):
+        try:
+            from app.core import a2a_server
+
+            skills = tuple(n.strip() for n in str(ctx.settings.a2a_server_tools or "").split(";") if n.strip()) or a2a_server.DEFAULT_TOOLS
+            if a2a_server.token_hash(ctx.paths.data_dir):       # no token yet = nothing is served (run.py --a2a-server-token)
+                executor.a2a_server = a2a_server.A2AServer(registry, executor, ctx.paths.data_dir, ctx.settings.a2a_server_port, skills)
+                executor.a2a_server.start()
+        except Exception:
+            executor.a2a_server = None
     try:
         from app.tools.automation import seed_default_workflows
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 GROUPS: dict[str, tuple[str, ...]] = {
     "identity": ("assistant_name", "user_address", "user_name", "setup_done", "settings_version"),
-    "ai": ("ai_provider", "ollama_host", "ai_model", "auto_start_ollama", "hide_ollama_window", "ai_request_timeout",
+    "ai": ("ai_provider", "ollama_host", "foundry_local_url", "a2a_enabled", "ai_model", "auto_start_ollama", "hide_ollama_window", "ai_request_timeout",
            "ai_temperature", "ai_context_window", "ai_fast_model", "ai_smart_model", "ai_coding_model", "ai_think", "ai_auto_smart", "ai_auto_switch", "performance_mode", "gpu_preference", "taint_lockdown", "ollama_keep_alive",
            "context_max_messages", "context_max_chars", "idle_unload_minutes", "ollama_fast_memory",
            "gpu_memory_saver", "vision_model", "embedding_model"),
@@ -40,6 +40,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
                "memory_event_retention_days", "metrics_retention_days",
                "process_history", "cyber_guardian", "guardian_folders", "guardian_integrity_files"),
     "local_mcp_server": ("mcp_server_enabled", "mcp_server_port", "mcp_server_tools"),
+    "local_a2a_server": ("a2a_server_enabled", "a2a_server_port", "a2a_server_tools"),
     "browser_and_web": ("browser_enabled", "browser_channel", "browser_headless", "browser_idle_minutes",
                         "search_provider", "web_browser", "chrome_profile", "edge_profile", "reuse_tabs",
                         "news_region", "music_default_query"),

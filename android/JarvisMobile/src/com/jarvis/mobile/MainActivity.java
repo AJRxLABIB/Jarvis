@@ -35,9 +35,9 @@ import java.util.Map;
  *     Windows password, and never claims Windows is unlocked when it isn't.
  */
 public class MainActivity extends Activity {
-    static final String APP_VERSION = "1.5.0";
+    static final String APP_VERSION = "1.6.0";
     static final String EXTRA_START_SHARE = "com.jarvis.mobile.START_SHARE";   // the PC asked to start sharing
-    private static final int REQ_VOICE = 1, REQ_AUTH = 2, REQ_SHARE = 3;
+    private static final int REQ_VOICE = 1, REQ_AUTH = 2, REQ_SHARE = 3, REQ_PHOTO = 8;
 
     private Store store;
     private Actions actions;
@@ -68,7 +68,31 @@ public class MainActivity extends Activity {
         @Override public boolean away() { return away; }
         @Override public void toast(String message) { MainActivity.this.toast(message); }
         @Override public void show(String next) { screen = next; render(); }
+        @Override public void permissions(String[] permissions, int code) {
+            if (android.os.Build.VERSION.SDK_INT >= 23) requestPermissions(permissions, code);
+        }
+        @Override public void takePhoto() { capturePhoto(); }
     };
+
+    private android.net.Uri photoUri;
+
+    /** One photo, only when the user taps: the camera app's own screen, the file in Pictures/JARVIS, then PhotoSend shrinks + uploads + deletes it. */
+    private void capturePhoto() {
+        if (store.current() == null) { toast("Pair a computer first."); return; }
+        if (android.os.Build.VERSION.SDK_INT < 29) { toast("Taking a photo for JARVIS needs Android 10 or newer."); return; }
+        try {
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "jarvis-" + System.currentTimeMillis() + ".jpg");
+            values.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            values.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/JARVIS");
+            photoUri = getContentResolver().insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (photoUri == null) { toast("Couldn't prepare a place for the photo."); return; }
+            Intent camera = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).putExtra(android.provider.MediaStore.EXTRA_OUTPUT, photoUri);
+            startActivityForResult(camera, REQ_PHOTO);
+        } catch (Exception e) {
+            toast("No camera app could be opened.");
+        }
+    }
 
     private final Runnable poller = new Runnable() {
         @Override public void run() {
@@ -212,7 +236,7 @@ public class MainActivity extends Activity {
             case "control": renderControl(); break;
             case "missions": renderMissions(); break;
             case "settings": renderSettings(); break;
-            case "center": case "center_overview": case "center_find": case "center_sensors":
+            case "center": case "center_overview": case "center_find": case "center_sensors": case "center_places": case "center_photo":
                 CommandCenter.render(commandHost, screen); break;
             default: renderHome();
         }
@@ -1052,6 +1076,19 @@ public class MainActivity extends Activity {
                 ui.postDelayed(this::render, 500);
             } else {
                 toast("Not shared.");
+            }
+        } else if (requestCode == REQ_PHOTO) {
+            final android.net.Uri taken = photoUri;
+            photoUri = null;
+            if (taken == null) return;
+            if (resultCode == Activity.RESULT_OK) {
+                toast("Sending the photo to your PC...");
+                PhotoSend.send(this, taken, store.current(), new PhotoSend.Done() {
+                    @Override public void finished(final String message) { ui.post(new Runnable() { @Override public void run() { toast(message); } }); }
+                });
+            } else {
+                try { getContentResolver().delete(taken, null, null); } catch (Exception ignored) { /* nothing was saved */ }
+                toast("No photo taken.");
             }
         } else if (requestCode == REQ_AUTH) {
             Runnable retry = pendingAfterAuth;

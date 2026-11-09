@@ -1159,6 +1159,38 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        42,
+        "media_index",
+        (
+            # personal media intelligence: the files are NOT copied, only referenced (path + content hash); what was heard / read is stored with its time
+            """
+            CREATE TABLE media_assets (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                path     TEXT NOT NULL UNIQUE,
+                sha      TEXT NOT NULL DEFAULT '',
+                size     INTEGER NOT NULL DEFAULT 0,
+                kind     TEXT NOT NULL DEFAULT 'video',
+                duration REAL,
+                status   TEXT NOT NULL DEFAULT 'pending',
+                step     TEXT NOT NULL DEFAULT '',
+                error    TEXT NOT NULL DEFAULT '',
+                added    TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE media_segments (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_id INTEGER NOT NULL REFERENCES media_assets (id) ON DELETE CASCADE,
+                start    REAL NOT NULL,
+                end      REAL NOT NULL,
+                text     TEXT NOT NULL,
+                kind     TEXT NOT NULL DEFAULT 'speech'
+            )
+            """,
+            "CREATE INDEX idx_media_segments_asset ON media_segments (asset_id, start)",
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

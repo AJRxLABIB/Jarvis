@@ -18,7 +18,7 @@ from dotenv import dotenv_values
 from dotenv.parser import parse_stream
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-SUPPORTED_AI_PROVIDERS: tuple[str, ...] = ("ollama",)
+SUPPORTED_AI_PROVIDERS: tuple[str, ...] = ("ollama", "foundry_local")
 LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 _SENSITIVE_FIELD_MARKERS = ("key", "token", "secret", "password")
 
@@ -61,6 +61,8 @@ class Settings(BaseModel):
     user_name: str = Field(default="", max_length=40)  # your name, shown on the start screen (empty = "THIS PC")
     ai_provider: str = "ollama"
     ollama_host: str = "http://127.0.0.1:11434"
+    a2a_enabled: bool = False             # outside AI agents (A2A): off until you switch it on; agents must still be registered and approved one by one
+    foundry_local_url: str = ""          # optional second engine (Microsoft Foundry Local): its loopback address from `foundry service status`; empty = off
     ai_model: str = ""  # empty = choose from installed Ollama models
     auto_start_ollama: bool = True
     hide_ollama_window: bool = True  # at start-up, minimise the window the Ollama app opens (it keeps running)
@@ -217,6 +219,9 @@ class Settings(BaseModel):
     mcp_server_enabled: bool = False  # let programs on THIS PC call a short whitelist of read-only tools (127.0.0.1 only, needs a token: run.py --mcp-server-token)
     mcp_server_port: int = Field(default=8766, ge=1024, le=65535)
     mcp_server_tools: str = Field(default="", max_length=400)  # tool names separated by ';' (empty = a few status tools); only SAFE tools are ever served
+    a2a_server_enabled: bool = False  # let another AI agent on THIS PC ask for a few read-only status skills over A2A (127.0.0.1 only, needs a token: run.py --a2a-server-token)
+    a2a_server_port: int = Field(default=8767, ge=1024, le=65535)
+    a2a_server_tools: str = Field(default="", max_length=400)  # skill (tool) names separated by ';' (empty = a few status tools); only SAFE tools are ever served
     remote_enabled: bool = False  # phone remote: a private web page on your home network
     remote_port: int = Field(default=8765, ge=1024, le=65535)
     local_discovery: bool = False  # announce this PC on the local network (mDNS) so other JARVIS devices can find it; finding is never trusting
@@ -279,6 +284,17 @@ class Settings(BaseModel):
         value = value.lower()
         if value not in SUPPORTED_AI_PROVIDERS:
             raise ValueError(f"unsupported provider '{value}' (supported: {', '.join(SUPPORTED_AI_PROVIDERS)})")
+        return value
+
+    @field_validator("foundry_local_url")
+    @classmethod
+    def _check_foundry(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/"):
+            raise ValueError("must look like http://127.0.0.1:5272 (a base address on this computer, no path or credentials)")
         return value
 
     @field_validator("ollama_host")

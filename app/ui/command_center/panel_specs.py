@@ -74,4 +74,39 @@ PANELS: tuple[Panel, ...] = (
           (Block("What is kept", "retention", {"action": "status"}),),
           tuple(Action(f"Clear {s}...", "retention", {"action": "clear", "store": s}, "Asks you to confirm first") for s in RETENTION_STORES)),
 )
+PANELS += (
+    Panel("vision", "Vision",
+          "Photos from your phone's camera, analysed on this PC only: the text read from the photo, the objects an optional detector recognised, and what the vision "
+          "model says it sees - shown apart, because only the first two are evidence. Nothing is recorded in the background; on the phone: JARVIS Mobile > Command center > "
+          "Take a photo for JARVIS.",
+          (Block("Photo session", "camera_session", {"action": "status"}),),
+          (Action("Analyse the newest photo from my phone", "analyze_photo", {}, "Photos taken with 'Take a photo for JARVIS' work for 10 minutes; other shared images need a session"),
+           Action("Open a 5-minute photo session", "camera_session", {"action": "start"}),
+           Action("Close the photo session", "camera_session", {"action": "stop"}))),
+    Panel("media", "Media",
+          "Recordings (lectures, meetings, videos) that Jarvis has indexed so you can ask where something was said. Files stay where they are; needs FFmpeg for new ones. "
+          "Speaker labels (\"Speaker 1/2\") are optional and only approximate.",
+          (Block("What is indexed", "media_search", {"action": "status"}),),
+          (Action("Index the next recordings", "media_manage", {"action": "process"}, "Runs in the background and can be cancelled"),
+           Action("Index with speaker labels", "media_manage", {"action": "process", "speakers": True}, "Extra time; labels are approximate"),
+           Action("Cancel indexing", "media_manage", {"action": "cancel"}))),
+    Panel("agents", "Agents",
+          "Outside AI agents (A2A) that Jarvis may hand ONE task to, only after you approved each one; their answers are treated as data, never as instructions. "
+          "Register and approve them by asking in chat (\"register the agent at https://...\").",
+          (Block("Registered agents", "a2a_status", {}),)),
+    Panel("places", "Places",
+          "Places Jarvis knows (names and sizes only, never coordinates) and the rules that fire when you arrive, leave or stay. Your phone decides arrivals itself about every "
+          "15 minutes and reports only the event; alerts can be about 30 minutes late.",
+          (Block("Saved places and rules", "location_status", {}),),
+          (Action("Send my places to the phone", "manage_places", {"action": "send_to_phone"}, "Then switch on Place alerts in JARVIS Mobile > Command center"),)),
+    Panel("sound", "Sound",
+          "Listening for configured sounds (loud noise by default; named sounds need the YAMNet model you put on disk). Opt-in, stops by itself, nothing is recorded, and it "
+          "is not a safety or emergency system.",
+          (Block("Listening status", "sound_monitor", {"action": "status"}),),
+          (Action("Listen for loud sounds (30 min)", "sound_monitor", {"action": "start"}, "Asks first; the microphone indicator stays on"),
+           Action("Stop listening", "sound_monitor", {"action": "stop"}))),
+    Panel("providers", "AI engines",
+          "Which local AI engines are available (Ollama, Foundry Local), how they answer, and which one is used. Nothing is sent to the internet by choosing one.",
+          (Block("Engines", "inference_providers", {}),)),
+)
 BY_KEY = {p.key: p for p in PANELS}

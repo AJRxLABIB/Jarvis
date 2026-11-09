@@ -903,3 +903,9 @@ Android 1.5.0 (UNCOMPILED - build with `packaging\build_android.ps1` and send an
 
 ## Round 74
 Audit of the "Next-Generation" prompt (docs/round74-diagnosis-gateway.md). Built: `core/root_cause.py` (+ `root_cause` tool), `core/inference_gateway.py` (+ `inference_queue` tool; chat/voice not routed through it yet), `core/vault.py` (+ `vault_scan`; not yet wired into the index). Tests `tests/test_round74.py`. Fakes only; unverified on real hardware.
+
+## Round 75
+Phase 0 audit + new capabilities (docs/round75-new-capabilities.md): Foundry Local provider, geofence core + phone-event hook, A2A v1.0 client (off by default), sound-event monitoring, media index (migration 42, FFmpeg), photo analysis, context facts + event names. Not built: Android capture/geofence code, AppFunctions (Gradle/Kotlin-only, experimental), A2A server, speaker separation, new Qt screens. Tests `tests/test_round75.py`. Fakes only; unverified on real hardware.
+
+## Round 76
+The leftovers (docs/round76-leftovers.md): Android place alerts + take-a-photo (JARVIS Mobile 1.6.0), speaker turns, optional YOLO object detector, JARVIS as an A2A server (off by default, skill calls only), six new command-center panels. All Android sources now compile against the stand-in API (JDK in the test run); AppFunctions deliberately not built (needs Kotlin/Gradle). Unverified: anything on a real phone, real recordings, a real detector model, third-party A2A agents.

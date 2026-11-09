@@ -2,8 +2,8 @@
 <!-- JARVIS Mobile: your secure remote terminal for the JARVIS PC. It never handles your Windows password. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.jarvis.mobile"
-    android:versionCode="6"
-    android:versionName="1.5.0">
+    android:versionCode="7"
+    android:versionName="1.6.0">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 
@@ -26,6 +26,8 @@
     <!-- "where is my phone": its last known location, only to your PC, after you allow Location -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- "Place alerts" (opt-in): a look at the location about every 15 minutes while the app is closed; only arrivals / departures leave the phone -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <!-- "open an app on my phone": see the launchable apps (Android 11+ package visibility) -->
     <queries>

@@ -150,6 +150,42 @@ public final class SyncClientTest {
         Map<String, Object> live1 = new java.util.LinkedHashMap<String, Object>(); live1.put("id", 7L); msgs.add(live1);
         Map<String, Object> live2 = new java.util.LinkedHashMap<String, Object>(); live2.put("id", 12L); msgs.add(live2);
         check(LiveEvents.maxId(msgs) == 12L && LiveEvents.maxId(null) == 0L, "live updates resume after the newest message");
+        // 9. place alerts: the same rules as the PC's core/geofence.py
+        List<Map<String, Object>> places = new ArrayList<Map<String, Object>>();
+        Map<String, Object> home = new java.util.LinkedHashMap<String, Object>();
+        home.put("id", "home"); home.put("name", "Home"); home.put("lat", 23.7800); home.put("lon", 90.4000); home.put("radius_m", 150.0);
+        places.add(home);
+        Map<String, Object> st = new java.util.LinkedHashMap<String, Object>();
+        long t0 = 1_000_000_000_000L;
+        check(Places.distanceM(23.78, 90.40, 23.79, 90.40) > 1100 && Places.distanceM(23.78, 90.40, 23.79, 90.40) < 1120, "distance is about 1.1 km per 0.01 degree");
+        check(Places.feed(places, st, 23.7900, 90.4000, 20, t0).isEmpty(), "the first good fix only learns where you are");
+        check(Places.feed(places, st, 23.7800, 90.4000, 20, t0 + 60000).isEmpty(), "one fix inside is not enough to say you arrived");
+        List<Map<String, Object>> arrived = Places.feed(places, st, 23.7800, 90.4000, 20, t0 + 120000);
+        check(arrived.size() == 1 && "enter".equals(arrived.get(0).get("kind")) && "home".equals(arrived.get(0).get("place")), "two fixes inside = arrived");
+        check(arrived.get(0).get("id").toString().matches("[A-Za-z0-9_.:-]{1,64}"), "an event id is something the PC accepts");
+        check(Places.feed(places, st, 23.7900, 90.4000, 500, t0 + 180000).isEmpty() && Places.feed(places, st, 23.7900, 90.4000, 500, t0 + 240000).isEmpty(),
+                "vague fixes (500 m) say nothing");
+        check(Places.feed(places, st, 23.7803, 90.4000, 20, t0 + 300000).isEmpty(), "still inside: nothing new");
+        check(Places.feed(places, st, 23.7900, 90.4000, 20, t0 + 360000).isEmpty(), "one fix outside is not enough to say you left");
+        List<Map<String, Object>> left = Places.feed(places, st, 23.7900, 90.4000, 20, t0 + 420000);
+        check(left.size() == 1 && "exit".equals(left.get(0).get("kind")), "two fixes outside = left");
+        check(Places.feed(places, st, 23.7801, 90.4000, 20, t0 + 480000).isEmpty(), "coming back needs two fixes too");
+        List<Map<String, Object>> again = Places.feed(places, st, 23.7801, 90.4000, 20, t0 + 540000);
+        check(again.size() == 1 && "enter".equals(again.get(0).get("kind")), "arriving again after the 5-minute cooldown is reported");
+        Map<String, Object> st3 = new java.util.LinkedHashMap<String, Object>();
+        Places.feed(places, st3, 23.7900, 90.4000, 20, t0);
+        Places.feed(places, st3, 23.7800, 90.4000, 20, t0 + 10000);
+        check(Places.feed(places, st3, 23.7800, 90.4000, 20, t0 + 20000).size() == 1, "first arrival reported");
+        Places.feed(places, st3, 23.7900, 90.4000, 20, t0 + 30000);
+        Places.feed(places, st3, 23.7900, 90.4000, 20, t0 + 40000);
+        Places.feed(places, st3, 23.7800, 90.4000, 20, t0 + 50000);
+        check(Places.feed(places, st3, 23.7800, 90.4000, 20, t0 + 60000).isEmpty(), "a second enter inside the 5-minute cooldown stays quiet (GPS jitter at the edge)");
+        Map<String, Object> st2 = new java.util.LinkedHashMap<String, Object>();
+        Places.feed(places, st2, 23.7800, 90.4000, 20, t0);
+        List<Map<String, Object>> dwell = Places.feed(places, st2, 23.7800, 90.4000, 20, t0 + 700000);
+        check(dwell.size() == 1 && "dwell".equals(dwell.get(0).get("kind")), "ten minutes inside = one dwell");
+        check(Places.feed(places, st2, 23.7800, 90.4000, 20, t0 + 800000).isEmpty(), "the dwell is reported once");
+
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);
     }

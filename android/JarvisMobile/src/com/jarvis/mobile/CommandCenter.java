@@ -28,12 +28,15 @@ public final class CommandCenter {
         boolean away();
         void toast(String message);
         void show(String screen);
+        void permissions(String[] permissions, int code);
+        void takePhoto();
     }
 
     private static Discovery discovery;
 
     public static boolean owns(String screen) {
-        return "center".equals(screen) || "center_overview".equals(screen) || "center_find".equals(screen) || "center_sensors".equals(screen);
+        return "center".equals(screen) || "center_overview".equals(screen) || "center_find".equals(screen) || "center_sensors".equals(screen)
+                || "center_places".equals(screen) || "center_photo".equals(screen);
     }
 
     public static void render(Host h, String screen) {
@@ -41,6 +44,8 @@ public final class CommandCenter {
         if ("center_overview".equals(screen)) overview(h);
         else if ("center_find".equals(screen)) find(h);
         else if ("center_sensors".equals(screen)) sensors(h);
+        else if ("center_places".equals(screen)) places(h);
+        else if ("center_photo".equals(screen)) photo(h);
         else hub(h);
     }
 
@@ -69,7 +74,8 @@ public final class CommandCenter {
         card.addView(Ui.text(c, "What your PC reports, finding your PC on this network, and what this phone shares.", 12, Ui.DIM));
         h.content().addView(card);
         String[][] items = {{"center_overview", "Overview from the PC"}, {"center_find", "Find my PC on this network"},
-                {"center_sensors", "Phone sensors and privacy"}};
+                {"center_sensors", "Phone sensors and privacy"}, {"center_places", "Place alerts (arrive / leave)"},
+                {"center_photo", "Take a photo for JARVIS"}};
         for (final String[] item : items) {
             Button b = Ui.button(c, item[1], Ui.PANEL);
             b.setOnClickListener(new android.view.View.OnClickListener() {
@@ -239,5 +245,77 @@ public final class CommandCenter {
         LinearLayout out = Ui.card(c);
         out.addView(preview);
         h.content().addView(out);
+    }
+
+    // ------------------------------------------------------------------ place alerts
+
+    private static void places(final Host h) {
+        final Context c = h.context();
+        back(h, h.content());
+        LinearLayout info = Ui.card(c);
+        info.addView(Ui.text(c, "Place alerts", 16, Ui.CYAN));
+        info.addView(Ui.text(c, "Your PC sends this phone a few places (home, work...). The phone decides by itself whether you arrived or left and tells the PC "
+                + "only that - never where you are. It looks at the location about every 15 minutes (not live), needs two looks in a row to be sure, "
+                + "so an alert can be up to about 30 minutes late. For this to work with the app closed, Android needs Location set to "
+                + "\"Allow all the time\". Off by default; switching it off stops all looking.", 12, Ui.DIM));
+        h.content().addView(info);
+        LinearLayout box = Ui.card(c);
+        CheckBox on = new CheckBox(c);
+        on.setText("Place alerts");
+        on.setTextColor(Ui.TEXT);
+        on.setChecked(Places.enabled(c));
+        on.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean checked) {
+                Places.setEnabled(c, checked);
+                if (checked && !Places.hasLocationPermission(c)) {
+                    h.permissions(new String[]{"android.permission.ACCESS_FINE_LOCATION"}, 6);
+                } else if (checked && !Places.hasBackgroundPermission(c)) {
+                    h.toast("Now set Location to \"Allow all the time\" in the app's Android settings so alerts work with the app closed.");
+                    if (android.os.Build.VERSION.SDK_INT >= 29) h.permissions(new String[]{"android.permission.ACCESS_BACKGROUND_LOCATION"}, 7);
+                }
+            }
+        });
+        box.addView(on);
+        h.content().addView(box);
+        LinearLayout list = Ui.card(c);
+        list.addView(Ui.text(c, "Places on this phone", 14, Ui.CYAN));
+        StringBuilder sb = new StringBuilder();
+        for (Map<String, Object> p : Places.list(c)) sb.append(Json.str(p, "name", "?")).append("  (").append(Math.round(((Number) p.get("radius_m")).doubleValue())).append(" m)\n");
+        list.addView(Ui.text(c, sb.length() == 0 ? "None yet. On the PC say: \"send my places to my phone\"." : sb.toString().trim(), 13, Ui.TEXT));
+        h.content().addView(list);
+        final TextView status = Ui.text(c, Places.summary(c), 13, Ui.TEXT);
+        Button look = Ui.button(c, "Look now", Ui.PANEL);
+        look.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) {
+                status.setText("Looking...");
+                h.actions().runOnPool(new Runnable() {
+                    @Override public void run() {
+                        Places.sample(c);
+                        h.actions().onMain(new Runnable() { @Override public void run() { status.setText(Places.summary(c)); } });
+                    }
+                });
+            }
+        });
+        h.content().addView(look);
+        LinearLayout out = Ui.card(c);
+        out.addView(status);
+        h.content().addView(out);
+    }
+
+    // ------------------------------------------------------------------ photo for JARVIS
+
+    private static void photo(final Host h) {
+        Context c = h.context();
+        back(h, h.content());
+        LinearLayout info = Ui.card(c);
+        info.addView(Ui.text(c, "Take a photo for JARVIS", 16, Ui.CYAN));
+        info.addView(Ui.text(c, "Opens your camera app. You take one photo; it is shrunk and sent to your PC (like Share > JARVIS Mobile), and the copy on this phone is "
+                + "removed. Then ask JARVIS \"what is this?\" and it looks at it on the PC. Nothing is taken without you pressing the shutter. Needs Android 10 or newer.", 12, Ui.DIM));
+        h.content().addView(info);
+        Button go = Ui.button(c, "Open the camera", Ui.PANEL);
+        go.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { h.takePhoto(); }
+        });
+        h.content().addView(go);
     }
 }

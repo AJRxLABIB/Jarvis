@@ -36,6 +36,7 @@ PROCESS_MODULES = {
     "app/vision/ocr.py": "tesseract.exe with fixed arguments",
     "app/automation/supervisor.py": "the Windows service starts `run.py --background` (argument list, shell=False)",
     "app/core/relaunch.py": "Jarvis starts its own replacement (`run.py --restart-after <pid>`, argument list, shell=False)",
+    "app/core/media_ffmpeg.py": "ffmpeg / ffprobe for media indexing (argument lists, shell=False, input path never starts with -, timeout + cancel kill the process)",
     "app/mcp/client.py": "MCP servers the user configured in config/mcp.json (argument list, shell=False)",
 }
 PROCESS_CALLS = {"subprocess.Popen", "subprocess.run", "subprocess.call", "subprocess.check_call",

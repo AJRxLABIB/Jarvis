@@ -44,6 +44,12 @@ public final class SyncJob extends JobService {
                 boolean retry = false;
                 try {
                     Pc pc = new Store(SyncJob.this).current();
+                    if (Places.enabled(SyncJob.this)) {
+                        Places.sample(SyncJob.this);   // a look at where the phone is, to see if you arrived / left
+                        if (pc != null && Places.pending(SyncJob.this)) {
+                            try { PhoneActions.checkIn(SyncJob.this, pc, false); } catch (Exception ignored) { /* the events stay until it works */ }
+                        }
+                    }
                     if (pc != null && AppSync.backgroundOn(SyncJob.this) && PhoneActions.controlAllowed(SyncJob.this)) {
                         try { PhoneActions.checkIn(SyncJob.this, pc, false); } catch (Exception ignored) { /* later */ }
                     }

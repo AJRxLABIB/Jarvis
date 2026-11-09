@@ -17,6 +17,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.utils.logging_setup import get_logger
+
+_log = get_logger("phone_link")
+
 ACTIONS = ("flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "show_text",
            # JARVIS Mobile 1.2: apps without a name, screen sharing, and calls / SMS / contacts (a separate switch on
            # the phone: "Allow calls and messages", plus Android's own permissions)
@@ -25,7 +29,11 @@ ACTIONS = ("flashlight_on", "flashlight_off", "ring", "open_app", "open_link", "
            # 1.3: what's on the phone's screen / tap by its text (accessibility), clipboard, where the phone is
            "read_screen", "tap_text", "set_clipboard", "locate",
            # 1.4: lock the screen (only once YOU made JARVIS Mobile a device admin on the phone; lock is its only power)
-           "lock_phone")
+           "lock_phone",
+           # 1.6: the places the phone watches itself (arrive / leave events come back in its check-in report)
+           "set_places", "clear_places")
+MAX_PLACES = 50
+_PLACE_ID = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
 COMMS = frozenset({"call", "end_call", "send_sms", "read_messages", "find_contact"})
 LATEST: dict[str, Any] = {}      # the last report of the phone that checked in (battery, charging) for automations
 MAX_RESULT = 2000
@@ -98,7 +106,26 @@ def check_action(action: str, args: dict[str, Any]) -> dict[str, Any]:
         clean["text"] = text
     elif action == "find_contact":
         clean["name"] = _who(args.get("name", ""), "Whose number?")
+    elif action == "set_places":
+        clean["places"] = _places(args.get("places"))
     return clean
+
+
+def _places(value) -> list[dict[str, Any]]:
+    """The places sent to the phone: validated one by one (same limits as core/geofence.py), at most MAX_PLACES."""
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError("Which places should the phone watch?")
+    out: list[dict[str, Any]] = []
+    for item in list(value)[:MAX_PLACES]:
+        try:
+            pid, name = str(item["id"]), " ".join(str(item.get("name", "")).split())[:60]
+            lat, lon, radius = float(item["lat"]), float(item["lon"]), float(item["radius_m"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ValueError("A place needs an id, name, lat, lon and radius_m.") from None
+        if not _PLACE_ID.match(pid) or not (-90 <= lat <= 90 and -180 <= lon <= 180) or not (50 <= radius <= 5000):
+            raise ValueError(f"The place '{pid[:20]}' has an invalid id, position or radius (50-5000 m).")
+        out.append({"id": pid, "name": name or pid, "lat": lat, "lon": lon, "radius_m": radius})
+    return out
 
 
 def _who(value, question: str) -> str:
@@ -174,6 +201,13 @@ class PhoneLink:
         from app.core import phone_context
 
         state.update(phone_context.sanitize(report))      # context + sensors: validated; a full report without them clears the old ones
+        if isinstance(report, dict) and report.get("location_events"):
+            from app.core import location_events
+
+            try:
+                location_events.process(self.db, report["location_events"])      # events only, never coordinates; rules say or suggest, they run nothing
+            except Exception:
+                _log.warning("location events could not be processed", exc_info=True)
         previous = {k: v for k, v in self.state(device_id).items() if k != "seen"}
         self._battery_alert(device_id, previous, state)
         state = {**previous, **state}                     # a bare check-in keeps what the phone said last time

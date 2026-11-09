@@ -29,7 +29,12 @@ REMINDER, SUGGESTION = "Reminder", "Suggestion"
 SECURITY_EVENT, EMERGENCY = "SecurityEvent", "Emergency"
 JARVIS_UPDATED, MODE_CHANGED = "JarvisUpdated", "ModeChanged"
 BUILD_FAILED = "BuildFailed"       # a project Jarvis started crashed (dev_session); event_intel groups it with what changed
-KNOWN = frozenset({RUN_FINISHED, MISSION_COMPLETED, MISSION_PAUSED, BATTERY_LOW, PC_PROBLEM, DOWNLOAD_COMPLETED,
+# round 75: the cross-feature events. Payloads carry ``correlation_id`` (one id for everything one request caused) and never raw images, audio or coordinates.
+VISION_ANALYSIS_COMPLETED, MEDIA_PROCESSING_COMPLETED, MEDIA_SEARCH_MATCH_FOUND = "VisionAnalysisCompleted", "MediaProcessingCompleted", "MediaSearchMatchFound"
+AGENT_TASK_COMPLETED, LOCATION_ENTERED, LOCATION_EXITED = "AgentTaskCompleted", "LocationEntered", "LocationExited"
+SOUND_EVENT_DETECTED, INFERENCE_PROVIDER_CHANGED = "SoundEventDetected", "InferenceProviderChanged"
+KNOWN = frozenset({VISION_ANALYSIS_COMPLETED, MEDIA_PROCESSING_COMPLETED, MEDIA_SEARCH_MATCH_FOUND, AGENT_TASK_COMPLETED, LOCATION_ENTERED, LOCATION_EXITED,
+                   SOUND_EVENT_DETECTED, INFERENCE_PROVIDER_CHANGED, RUN_FINISHED, MISSION_COMPLETED, MISSION_PAUSED, BATTERY_LOW, PC_PROBLEM, DOWNLOAD_COMPLETED,
                    REMINDER, SUGGESTION, SECURITY_EVENT, EMERGENCY, JARVIS_UPDATED, MODE_CHANGED, BUILD_FAILED})
 
 
