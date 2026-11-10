@@ -297,7 +297,7 @@ TOOLS: tuple[Tool, ...] = (
     Tool("troubleshoot", "Find setup problems (Python version, missing packages, missing models, microphone, missing .env, "
          "database version, services not answering) with evidence, cause and the fix. A scan changes nothing and runs "
          "no command; commands like pip install are shown for you to run. Jarvis itself can only do three small, "
-         "previewed repairs after you approve: create a missing .env from .env.example, clear stale caches, close "
+         "previewed repairs after you approve: create a missing .env with the default settings, clear stale caches, close "
          "stuck requests.", troubleshoot, TroubleshootArgs, RiskLevel.SAFE, "system", timeout=30, risk=_troubleshoot_risk,
          confirmation=lambda a, c: ("Undo the .env that Jarvis created (only if you have not edited it)?" if a.action == "undo"
                                     else f"Run the repair '{a.repair}'? Preview it first with: troubleshoot preview {a.repair}.")),

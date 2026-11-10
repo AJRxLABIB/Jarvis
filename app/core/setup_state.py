@@ -1,6 +1,6 @@
 """The first-run setup is done ONCE: remembered in the data folder as well as in .env.
 
-Before, the only record was SETUP_DONE=true in .env. When .env was replaced (a fresh copy of .env.example, an
+Before, the only record was SETUP_DONE=true in .env. When .env was replaced (a fresh default copy, an
 older copy, a re-extracted project folder), Jarvis forgot it had been set up and showed the wizard again at every
 start. Now finishing - or cancelling - the wizard also writes data/setup_state.json with the (non-secret) answers.
 At start-up, if .env says "not set up" but that record exists, SETUP_DONE and the remembered answers

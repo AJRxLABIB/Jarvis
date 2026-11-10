@@ -9,13 +9,14 @@ QUEUED -> RESOURCE_CHECK -> MODEL_PREPARATION -> RUNNING -> COMPLETED | FAILED |
 * Retries follow ``core/retry.py`` (transient / resource kinds only), bounded; cancellation reaches queued and running requests.
 * History is bounded (200). ``snapshot()`` is what a dashboard or the ``inference_queue`` tool shows - real states only.
 
-Honest status: logic + tests with fake readers. The conversation and voice paths are NOT yet routed through it (they call the model directly); indexing and
-tune_ai already use the scheduler. Callers opt in with ``await gateway().run(request, work)``.
+Conversation and voice calls go through ``observe`` (tracked, never queued - the user is waiting); background work (indexing, tune_ai) uses the scheduler via
+``await gateway().run(request, work)``. Logic + tests with fake readers; unverified on real hardware.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import threading
 import time
@@ -167,10 +168,56 @@ class Gateway:
                 self._active.pop(req.id, None)
                 self.history.append(req)
 
+    # -- interactive calls (chat / voice): tracked, never queued or gated
+    @contextlib.asynccontextmanager
+    async def observe(self, capability: str, model: str = "", priority: int = R.P0):
+        """Lifecycle record for a live conversation / voice model call.
+
+        Interactive requests are deliberately NOT queued, held by the mode hold or blocked by a memory check - the user is waiting, and the model is
+        already loaded by the provider. They get an id, QUEUED -> RUNNING -> COMPLETED | FAILED | CANCELLED, a latency, and show up in ``snapshot()``.
+        Any failure inside the bookkeeping itself is swallowed: tracking must never break a reply.
+        """
+        try:
+            req = InferenceRequest(capability, model, priority, est_gb=0.0, max_seconds=None, max_retries=0)
+            req.device_used = "auto"
+            req.plan_why = "interactive: tracked, not queued"
+            self._set(req, QUEUED)
+            self._set(req, RUNNING)
+            with self._lock:
+                self._active[req.id] = (req, None)
+        except Exception:
+            req = None
+        try:
+            yield req
+        except asyncio.CancelledError:
+            self._finish(req, CANCELLED)
+            raise
+        except GeneratorExit:
+            self._finish(req, CANCELLED)
+            raise
+        except BaseException as exc:
+            if req is not None:
+                req.error = str(exc)
+            self._finish(req, FAILED)
+            raise
+        else:
+            self._finish(req, COMPLETED)
+
+    def _finish(self, req: "InferenceRequest | None", state: str) -> None:
+        if req is None:
+            return
+        try:
+            self._set(req, state)
+            with self._lock:
+                self._active.pop(req.id, None)
+                self.history.append(req)
+        except Exception:
+            pass
+
     def cancel(self, request_id: str) -> bool:
         with self._lock:
             found = self._active.get(request_id)
-        if not found:
+        if not found or found[1] is None:                        # interactive calls are stopped by their own stop control
             return False
         return (self.sched or R.scheduler()).cancel(found[1])
 

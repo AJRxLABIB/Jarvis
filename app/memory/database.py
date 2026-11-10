@@ -1191,6 +1191,29 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX idx_media_segments_asset ON media_segments (asset_id, start)",
         ),
     ),
+    Migration(
+        43,
+        "commitments",
+        (
+            # promises you made and things you are waiting for, found in mail / messages: one sentence each (never the whole message)
+            """
+            CREATE TABLE commitments (
+                id      TEXT PRIMARY KEY,
+                kind    TEXT NOT NULL,
+                who     TEXT NOT NULL,
+                text    TEXT NOT NULL,
+                due     TEXT NOT NULL DEFAULT '',
+                source  TEXT NOT NULL DEFAULT '',
+                ref     TEXT NOT NULL DEFAULT '',
+                thread  TEXT NOT NULL DEFAULT '',
+                created REAL NOT NULL,
+                status  TEXT NOT NULL DEFAULT 'open',
+                settled REAL
+            )
+            """,
+            "CREATE INDEX idx_commitments_open ON commitments (status, kind, thread)",
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

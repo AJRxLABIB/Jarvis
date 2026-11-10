@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.config.env_template import default_env_text
 from app.core import setup_state
 from app.main import bootstrap
 
-EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"
 
 
 def test_record_and_repairs(tmp_path: Path) -> None:
@@ -30,7 +30,7 @@ def test_a_replaced_env_is_repaired_at_start(tmp_path: Path) -> None:
     ctx = bootstrap(tmp_path, environ={})
     assert ctx.settings.setup_done and setup_state.is_done(ctx.paths.data_dir)     # record started from .env
     ctx.database.close() if hasattr(ctx.database, "close") else None
-    env.write_text(EXAMPLE.read_text(encoding="utf-8").replace("\n", "\r\n"), encoding="utf-8")  # .env reset
+    env.write_text(default_env_text().replace("\n", "\r\n"), encoding="utf-8")  # .env reset to defaults
     ctx = bootstrap(tmp_path, environ={})
     assert ctx.settings.setup_done and ctx.settings.user_address == "Sir" and ctx.settings.home_location == "Dhaka"
     assert "SETUP_DONE=true" in env.read_text(encoding="utf-8")

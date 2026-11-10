@@ -18,6 +18,8 @@ from dataclasses import dataclass, field, replace
 
 import httpx
 
+from app.core.inference_gateway import gateway as _gateway
+
 from app.ai.base import (
     AIError,
     AIProvider,
@@ -463,6 +465,10 @@ class AIManager:
                    fast: bool = False, smart: bool = False, coding: bool = False,
                    sensitive: bool = False, untrusted: bool = False) -> ChatResponse:
         request = await self._prepare(messages, tools, fast, smart, coding, sensitive, untrusted)
+        async with _gateway().observe("chat", request.model):
+            return await self._chat_prepared(request)
+
+    async def _chat_prepared(self, request: ChatRequest) -> ChatResponse:
         started = time.monotonic()
         try:
             response = await self.provider.chat(request)
@@ -492,6 +498,11 @@ class AIManager:
         """Yields (model name, chunk). ``fast``: AI_FAST_MODEL, ``smart``: AI_SMART_MODEL, ``coding``:
         AI_CODING_MODEL (if set and installed). A failure before the first chunk falls back to AI_MODEL once."""
         request = await self._prepare(messages, tools, fast, smart, coding, sensitive, untrusted)
+        async with _gateway().observe("chat", request.model):
+            async for item in self._stream_prepared(request):
+                yield item
+
+    async def _stream_prepared(self, request: ChatRequest) -> AsyncIterator[tuple[str, ChatChunk]]:
         started = False
         began = time.monotonic()
         try:

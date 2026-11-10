@@ -248,6 +248,11 @@ class Settings(BaseModel):
     auto_backup: bool = True  # a verified copy of the database once a day (data\\backups, newest 7 kept)
     memory_event_retention_days: int = Field(default=0, ge=0, le=3650)  # forget what Jarvis recorded itself after N days (0 = keep)
     metrics_retention_days: int = Field(default=14, ge=1, le=90)  # how long health readings are kept
+    imap_host: str = Field(default="", max_length=200)  # read mail from any mailbox (read-only); empty = guessed from IMAP_USER for Gmail / Yahoo / Outlook.com / iCloud
+    imap_port: int = Field(default=993, ge=1, le=65535)  # IMAP over TLS
+    imap_user: str = Field(default="", max_length=200)  # the mail address you sign in with
+    imap_password: str = Field(default="", max_length=400, repr=False)  # an APP PASSWORD from the mail account's security page (secret; encrypted on the next start)
+    imap_folder: str = Field(default="INBOX", max_length=120)
     github_token: str = Field(default="", max_length=400, repr=False)  # read-only GitHub access token (secret)
     google_client_id: str = Field(default="", max_length=200)  # your own Google OAuth "Desktop app" client (Calendar / Drive)
     google_client_secret: str = Field(default="", max_length=200, repr=False)  # its secret (secret setting)
@@ -579,6 +584,18 @@ def _read_env_file(env_file: Path) -> dict[str, str]:
 
 SECRET_FIELDS = tuple(name for name, info in Settings.model_fields.items()
                       if any(m in name for m in _SENSITIVE_FIELD_MARKERS) and info.annotation is str)
+
+
+def env_overrides(env_file: Path, environ: Mapping[str, str] | None = None) -> list[str]:
+    """Names of settings whose value in the process environment differs from the one written in ``.env``. The environment wins, so an
+    edit to .env silently does nothing for these - typically a terminal that loaded an OLDER copy of .env into its environment
+    (VS Code's "python.terminal.useEnvFile" does exactly that). Names only: values may be secrets."""
+    try:
+        file_values = _read_env_file(env_file) if env_file.is_file() else {}
+    except Exception:
+        return []
+    env = os.environ if environ is None else environ
+    return sorted(name for name in ENV_NAMES.values() if name in env and name in file_values and env[name].strip() != file_values[name].strip())
 
 
 def load_settings(env_file: Path | None = None, environ: Mapping[str, str] | None = None) -> Settings:

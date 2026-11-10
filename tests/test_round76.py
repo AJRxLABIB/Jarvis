@@ -550,3 +550,27 @@ def test_media_tool_args_for_speakers_validate():
     assert ManageArgs(action="process", speakers=True, sensitivity="high").speakers is True
     with pytest.raises(Exception):
         ManageArgs(action="process", sensitivity="extreme")
+
+
+def test_environment_values_that_shadow_the_env_file_are_named(tmp_path):
+    from app.config.settings import env_overrides
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("AI_MODEL=jarvis\nCORE_RENDERER=auto\nUSER_NAME=LABIB\n", encoding="utf-8")
+    stale = {"AI_MODEL": "qwen3:4b-instruct", "CORE_RENDERER": "auto", "PATH": "x", "OLLAMA_HOST": "http://127.0.0.1:11434"}
+    assert env_overrides(env_file, stale) == ["AI_MODEL"]                 # same value or not in the file: not reported
+    assert env_overrides(env_file, {}) == [] and env_overrides(tmp_path / "missing.env", stale) == []
+
+
+def test_a_stale_environment_copy_of_the_env_file_no_longer_beats_the_file(tmp_path, monkeypatch):
+    from app.main import bootstrap
+
+    (tmp_path / ".env").write_text("AI_MODEL=jarvis\nSETUP_DONE=true\n", encoding="utf-8")
+    monkeypatch.setenv("AI_MODEL", "qwen3:4b-instruct")                   # what an old terminal still carries
+    monkeypatch.setenv("USER_NAME", "FromEnv")                            # not written in .env: still applies
+    monkeypatch.delenv("JARVIS_ENV_WINS", raising=False)
+    ctx = bootstrap(tmp_path)
+    assert ctx.settings.ai_model == "jarvis" and ctx.settings.user_name == "FromEnv"
+    monkeypatch.setenv("AI_MODEL", "qwen3:4b-instruct")
+    monkeypatch.setenv("JARVIS_ENV_WINS", "1")
+    assert bootstrap(tmp_path).settings.ai_model == "qwen3:4b-instruct"   # the documented override is still available

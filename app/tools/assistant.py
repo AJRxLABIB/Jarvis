@@ -384,6 +384,9 @@ async def daily_briefing(args: BriefingArgs, ctx: ToolContext) -> ToolResult:
                 data["weather"] = weather.data
             except ToolError as exc:
                 log_event(_log, "briefing_weather_skipped", reason=exc.code)
+            air = await _air_line(ctx)
+            if air:
+                parts.append(air)
     battery = _battery_line() if "battery" in show else ""
     if battery:
         parts.append(battery)
@@ -392,7 +395,7 @@ async def daily_briefing(args: BriefingArgs, ctx: ToolContext) -> ToolResult:
         parts.append("Coming up today: " + "; ".join(reminders) + ".")
     from app.tools.productivity import todo_summary
 
-    for name, line in (("todos", lambda: todo_summary(ctx)), ("goals", lambda: _goals_line(ctx, now)),
+    for name, line in (("todos", lambda: todo_summary(ctx)), ("todos", lambda: _promises_line(ctx, now)), ("goals", lambda: _goals_line(ctx, now)),
                        ("missions", lambda: _missions_line(ctx))):
         text = line() if name in show else ""
         if text:
@@ -404,6 +407,40 @@ async def daily_briefing(args: BriefingArgs, ctx: ToolContext) -> ToolResult:
         if text:
             parts.append(text)
     return ToolResult.success(" ".join(parts), **data, reminders=reminders)
+
+
+async def _air_line(ctx: ToolContext) -> str:
+    """Only when the air is worth mentioning (AQI above 100): one short sentence. Silent on any failure."""
+    try:
+        from app.core import environment as env
+
+        _, lat, lon = await geocode(ctx.settings.home_location)
+        data = await _get_json(env.AIR_URL, {"latitude": lat, "longitude": lon, "timezone": "auto", "current": "us_aqi"})
+        aqi = (data.get("current") or {}).get("us_aqi") if isinstance(data, dict) else None
+        if isinstance(aqi, (int, float)) and aqi > 100:
+            band, advice = env.aqi_band(aqi)
+            return f"The air is {band} (AQI {aqi:.0f}). {advice}"
+    except Exception:
+        log_event(_log, "briefing_air_skipped")
+    return ""
+
+
+def _promises_line(ctx: ToolContext, now) -> str:
+    """Promises you made that are overdue or due today (from the commitments ledger); empty when there are none."""
+    if ctx.database is None:
+        return ""
+    try:
+        from app.core import commitments as C
+
+        items = C.Ledger(ctx.database).items(("open",), "i_owe")
+        due = [i for i in items if C.bucket(i, now.date()) in ("overdue", "today")]
+        if due:
+            first = due[0]
+            return (f"{len(due)} promise{'s' if len(due) > 1 else ''} you made {'are' if len(due) > 1 else 'is'} due: "
+                    f"{first['who']} - \"{first['text'][:70]}\"" + (f" and {len(due) - 1} more." if len(due) > 1 else "."))
+    except Exception:
+        log_event(_log, "briefing_promises_skipped")
+    return ""
 
 
 def _outlook_running() -> bool:

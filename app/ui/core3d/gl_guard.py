@@ -56,6 +56,8 @@ def overrides(strikes: int, settings) -> dict:
     out: dict = {"intro_animation": False}
     if getattr(settings, "visual_quality", "auto") in ("auto", "high"):
         out["visual_quality"] = "balanced"
+    # One crash keeps the 3D core but starts it the safe way: on this project's test machine that start ran for hours while the
+    # full start (intro + fades + high quality) crashed. Only a crash in the safe start too falls back to the flat core.
     if strikes >= 2 and getattr(settings, "core_renderer", "auto") == "auto":
         out["core_renderer"] = "painter"
     return out
@@ -68,8 +70,8 @@ def notice(strikes: int, changed: dict) -> str:
     if changed.get("core_renderer") == "painter":
         parts.append("the flat core is used instead of the 3D one")
     done = ", ".join(p for p in parts if p)
-    return (f"The graphics driver crashed while the 3D core started ({strikes}x). To keep Jarvis running, {done} for "
-            "now. Update the GPU driver, then run 'python run.py --reset-gl-guard' to restore everything.")
+    return (f"Jarvis crashed while the 3D core started ({strikes}x). To keep it running, {done} for now. "
+            "'python run.py --reset-gl-guard' restores the full start; if that crashes again, this safe start comes back.")
 
 
 def mark(data_dir: Path, phase: str, *, full_settings: bool = True) -> None:

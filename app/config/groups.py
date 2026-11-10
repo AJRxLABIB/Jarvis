@@ -50,7 +50,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
                   "auto_sort_downloads", "weekly_health_check"),
     "places_and_units": ("home_location", "temperature_unit"),
     "developer": ("dev_project_dir", "dev_command_timeout", "jarvis_source_dir"),
-    "devices_and_remote": ("home_assistant_url", "home_assistant_token", "github_token", "google_client_id", "google_client_secret", "remote_enabled", "remote_port", "local_discovery", "remote_allow_tailscale", "wake_public_address", "wake_public_port",
+    "devices_and_remote": ("home_assistant_url", "home_assistant_token", "imap_host", "imap_port", "imap_user", "imap_password", "imap_folder", "github_token", "google_client_id", "google_client_secret", "remote_enabled", "remote_port", "local_discovery", "remote_allow_tailscale", "wake_public_address", "wake_public_port",
                            "remote_https", "fcm_service_account"),
     "extensions": ("plugins_enabled", "mcp_enabled", "update_manifest_url"),
     "diagnostics": ("debug", "log_level", "log_max_bytes", "log_backup_count", "data_dir"),

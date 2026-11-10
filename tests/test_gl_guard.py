@@ -25,7 +25,7 @@ def test_crash_after_window_shown_steps_down_then_painter(tmp_path):
     strikes = gl_guard.decide(tmp_path, previous_crashed=True)
     assert strikes == 1
     first = gl_guard.overrides(strikes, _settings())
-    assert first == {"intro_animation": False, "visual_quality": "balanced"}
+    assert first == {"intro_animation": False, "visual_quality": "balanced"}          # the 3D core stays, started the safe way
     assert "flat core" not in gl_guard.notice(strikes, first)
     gl_guard.mark(tmp_path, gl_guard.SHOWING)
     strikes = gl_guard.decide(tmp_path, previous_crashed=True)

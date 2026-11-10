@@ -34,6 +34,7 @@ SECTIONS: tuple[tuple[str, str, str], ...] = (
     ("agents", "Agents", "Outside AI agents you approved to hand one task to"),
     ("places", "Places", "Saved places, arrive / leave rules, and what the phone watches"),
     ("sound", "Sound", "Listening for configured sounds: opt-in, nothing recorded"),
+    ("daily", "Daily", "What needs you now, promises and waiting-for, air and rain around you, PC check-up"),
     ("providers", "AI engines", "Local AI engines: Ollama and Foundry Local"),
     ("gestures", "Gestures", "Control the mouse with your hand: live status, skeleton preview, calibration, tutorial, emergency stop"),
 )

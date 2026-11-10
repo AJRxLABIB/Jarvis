@@ -105,6 +105,15 @@ PANELS += (
           (Block("Listening status", "sound_monitor", {"action": "status"}),),
           (Action("Listen for loud sounds (30 min)", "sound_monitor", {"action": "start"}, "Asks first; the microphone indicator stays on"),
            Action("Stop listening", "sound_monitor", {"action": "stop"}))),
+    Panel("daily", "Daily",
+          "Your day in one place: what needs you across mail, WhatsApp, notifications, promises and to-dos; the promises you made and what you are waiting for; "
+          "the air, UV and rain around you; and a read-only check-up of this PC. Mail is read over IMAP when IMAP_USER / IMAP_PASSWORD are set in .env "
+          "(nothing is ever marked read or changed).",
+          (Block("What needs you now", "needs_me", {}),
+           Block("Promises and waiting-for", "commitments", {"action": "list"}),
+           Block("Around you today", "environment_report", {}),
+           Block("PC check-up", "pc_checkup", {})),
+          (Action("Scan recent mail for promises", "commitments", {"action": "scan"}, "Reads received and sent mail (read-only) and updates the list"),)),
     Panel("providers", "AI engines",
           "Which local AI engines are available (Ollama, Foundry Local), how they answer, and which one is used. Nothing is sent to the internet by choosing one.",
           (Block("Engines", "inference_providers", {}),)),

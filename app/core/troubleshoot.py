@@ -124,12 +124,11 @@ def scan(ctx: Any, env: Environment | None = None) -> list[Finding]:
 
     if paths is not None:
         env_file = Path(paths.env_file)
-        example = Path(paths.root) / ".env.example"
         if not env_file.exists():
             out.append(Finding("env_missing", "There is no .env settings file", f"{env_file} does not exist",
                                "first start on this PC, or it was moved - defaults are being used",
-                               "create it from .env.example (nothing is overwritten and no secret is copied)", "files",
-                               repair="create_env" if example.is_file() else "", severity="info",
+                               "create it with every setting at its default (nothing is overwritten and it contains no secret)", "files",
+                               repair="create_env", severity="info",
                                rollback="delete the new .env (Jarvis can do this if you have not edited it)"))
         data_dir = Path(paths.data_dir)
         try:
@@ -253,8 +252,8 @@ def preview(ctx: Any, repair_id: str) -> str:
     """What a repair would do - computed without changing anything."""
     if repair_id == "create_env":
         paths = ctx.paths
-        return (f"Would create {paths.env_file} as a copy of .env.example. It only happens if the file does not exist; "
-                "nothing is overwritten. .env.example contains no secrets.")
+        return (f"Would create {paths.env_file} with every setting at its default. It only happens if the file does not exist; "
+                "nothing is overwritten and it contains no secrets.")
     if repair_id == "clear_caches":
         from app.core import diagnostics
 
@@ -288,17 +287,17 @@ def apply(ctx: Any, repair_id: str, *, approved: bool, env: Environment | None =
         return {"done": False, "reason": "not approved", "preview": preview(ctx, repair_id)}
     undo = ""
     if repair_id == "create_env":
-        target, source = Path(ctx.paths.env_file), Path(ctx.paths.root) / ".env.example"
+        from app.config.env_template import default_env_text
+
+        target = Path(ctx.paths.env_file)
         if target.exists():
             return {"done": False, "reason": "a .env already exists; it is never overwritten"}
-        if not source.is_file():
-            return {"done": False, "reason": ".env.example was not found"}
-        content = source.read_bytes()
+        content = default_env_text().encode("utf-8")
         tmp = target.with_suffix(".tmp")
         tmp.write_bytes(content)
         tmp.replace(target)       # atomic: either the whole file exists or nothing does
         _remember(ctx, {"repair": "create_env", "path": str(target), "sha256": hashlib.sha256(content).hexdigest()})
-        done, undo = f"created {target.name} from .env.example", "rollback_repair('create_env') deletes it if you have not edited it"
+        done, undo = f"created {target.name} with the default settings", "rollback_repair('create_env') deletes it if you have not edited it"
     elif repair_id == "clear_caches":
         from app.core import diagnostics
 

@@ -19,7 +19,7 @@ runs whole-codebase security checks (`tests/test_security_static.py`):
 - the agent and AI layers never start processes
 - every tool has strict arguments (unknown fields rejected), a description for each
   field, a router category, a timeout, and is not critical
-- every setting is documented in `.env.example`, and privacy features default to off
+- the generated default `.env` lists every setting, and privacy features default to off
 
 Coverage report (optional): `pip install pytest-cov`, then
 `python -m pytest -q --cov=app --cov-report=term-missing`.

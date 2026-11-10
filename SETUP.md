@@ -29,7 +29,7 @@ Your existing `.venv` already works; only redo this on a new PC.
 ## 3. Settings
 
 ```powershell
-copy .env.example .env     # skip if you already have a .env - it is never overwritten
+python run.py --write-env     # creates .env with every setting at its default; an existing .env is never overwritten
 notepad .env
 ```
 

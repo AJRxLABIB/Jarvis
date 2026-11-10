@@ -107,6 +107,19 @@ def bootstrap(root: Path | None = None, environ: Mapping[str, str] | None = None
             pass
     except OSError:
         pass
+    shadowed: list[str] = []
+    if environ is None and os.environ.get("JARVIS_ENV_WINS", "").strip().lower() not in ("1", "true", "yes"):
+        # A terminal (VS Code's python.terminal.useEnvFile) or the previous Jarvis this one was restarted from can carry an OLDER copy of
+        # .env in its environment, which would silently beat every later edit to the file. For names written in .env, the file wins.
+        # (JARVIS_ENV_WINS=1 restores "environment first"; a variable that is not in .env still applies as before.)
+        try:
+            from app.config.settings import env_overrides
+
+            shadowed = env_overrides(root / ".env")
+            for name in shadowed:
+                os.environ.pop(name, None)
+        except Exception:
+            shadowed = []
     settings = load_settings(root / ".env", environ)
     try:
         from app.utils import gpu_pref
@@ -141,6 +154,8 @@ def bootstrap(root: Path | None = None, environ: Mapping[str, str] | None = None
     log_event(log, "settings_loaded", settings=settings.public_dict())
     if migrated:
         log_event(log, "settings_upgraded", migrations=migrated)
+    if shadowed:
+        log_event(log, "stale_environment_ignored", names=shadowed)
     if setup_repaired:   # .env had been replaced by a fresh copy: the one-time setup was restored, not asked again
         log_event(log, "setup_restored", keys=setup_repaired)
 
@@ -1054,6 +1069,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--intro-owner", default="", help=argparse.SUPPRESS)
     parser.add_argument("--stats-child", action="store_true", help=argparse.SUPPRESS)  # the dashboard's process lister
     parser.add_argument("--mcp-server-token", action="store_true", help="create (or replace) the token for the local read-only MCP server and show it once")
+    parser.add_argument("--write-env", action="store_true", help="create .env with every setting at its default (an existing .env is never overwritten)")
     parser.add_argument("--a2a-server-token", action="store_true", help="create (or replace) the token for the local read-only A2A agent server and show it once")
     parser.add_argument("--a2a-server-revoke", action="store_true", help="delete the local A2A server token (it stops accepting every agent)")
     parser.add_argument("--mcp-server-revoke", action="store_true", help="delete the local MCP server token (it stops accepting every client)")
@@ -1088,6 +1104,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_OK
         print("Token (shown once, keep it secret): " + mcp_server.create_token(ctx.paths.data_dir)
               + "\nSet MCP_SERVER_ENABLED=true and restart Jarvis; clients call http://127.0.0.1:%d/mcp with 'Authorization: Bearer <token>'." % ctx.settings.mcp_server_port)
+        return EXIT_OK
+    if args.write_env:
+        from app.config.env_template import write_default_env
+
+        target = Path(args.root or default_root()).resolve() / ".env"
+        print(f"Created {target}." if write_default_env(target) else f"{target} already exists; it was not changed.")
         return EXIT_OK
     if args.a2a_server_token or args.a2a_server_revoke:   # the token of the local read-only A2A server: only a person at the PC can create it
         from app.core import a2a_server

@@ -15,7 +15,6 @@ from app.utils.paths import AppPaths
 def make(tmp_path: Path, **settings) -> ToolContext:
     root = tmp_path / "proj"
     root.mkdir()
-    (root / ".env.example").write_text("AI_MODEL=\nHOME_ASSISTANT_TOKEN=\n", encoding="utf-8")
     paths = AppPaths.build(root)
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     db = Database(paths.data_dir / "t.db")
@@ -95,7 +94,7 @@ def test_create_env_is_atomic_verified_and_never_overwrites(tmp_path: Path) -> N
     result = ts.apply(ctx, "create_env", approved=True, env=healthy_env())
     assert result["done"] and result["verified"] is True and "env_missing" not in result["still_reported"]
     env_file = Path(ctx.paths.env_file)
-    assert env_file.read_text(encoding="utf-8").startswith("AI_MODEL=")
+    assert "AI_MODEL=" in env_file.read_text(encoding="utf-8") and "HOME_ASSISTANT_TOKEN=\n" in env_file.read_text(encoding="utf-8")   # every setting, secrets empty
     assert not list(env_file.parent.glob("*.tmp"))
     env_file.write_text("MY=settings\n", encoding="utf-8")
     again = ts.apply(ctx, "create_env", approved=True, env=healthy_env())

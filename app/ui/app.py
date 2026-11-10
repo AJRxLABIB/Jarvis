@@ -88,6 +88,17 @@ def run_gui(ctx: "AppContext", argv: list[str] | None = None) -> int:
     window = MainWindow(controller, ctx.settings.monitor_interval)
     if gl_changes:
         window.chat.add_message("notice", gl_guard.notice(gl_strikes, gl_changes))
+    try:
+        from app.config.settings import env_overrides
+
+        stale = env_overrides(ctx.paths.root / ".env")
+        if stale:
+            log_event(_log, "environment_overrides_env_file", names=stale)
+            window.chat.add_message("notice", "These settings come from the terminal's environment, not from .env, so editing .env does not change them: "
+                                    + ", ".join(stale[:8]) + ("..." if len(stale) > 8 else "") + ". Close that terminal and start Jarvis from a new one "
+                                    "(in VS Code, set python.terminal.useEnvFile to false).")
+    except Exception:
+        pass
     _watch_gl(window, ctx, full_settings=not gl_changes)
     if crash_report is not None:
         window.chat.add_message("notice", f"Jarvis didn't close normally last time. A crash report (private data "

@@ -37,6 +37,7 @@ PROCESS_MODULES = {
     "app/automation/supervisor.py": "the Windows service starts `run.py --background` (argument list, shell=False)",
     "app/core/relaunch.py": "Jarvis starts its own replacement (`run.py --restart-after <pid>`, argument list, shell=False)",
     "app/core/media_ffmpeg.py": "ffmpeg / ffprobe for media indexing (argument lists, shell=False, input path never starts with -, timeout + cancel kill the process)",
+    "app/core/pc_checkup.py": "powershell.exe running one of the module's FIXED read-only status scripts (argument list, shell=False, no user text, timeout)",
     "app/mcp/client.py": "MCP servers the user configured in config/mcp.json (argument list, shell=False)",
 }
 PROCESS_CALLS = {"subprocess.Popen", "subprocess.run", "subprocess.call", "subprocess.check_call",
@@ -185,19 +186,28 @@ def test_argument_models_reject_unknown_fields() -> None:
 # ---------------------------------------------------------------- settings
 
 
-def test_every_setting_is_documented_in_env_example() -> None:
-    documented = set(re.findall(r"^#?\s*([A-Z][A-Z0-9_]+)=", (ROOT / ".env.example").read_text(encoding="utf-8"),
-                                re.M))
-    missing = {env for env in ENV_NAMES.values() if env not in documented}
-    assert not missing, f"add to .env.example: {sorted(missing)}"
+def test_the_generated_default_env_lists_every_setting_and_no_secret() -> None:
+    from app.config.env_template import default_env_text
+    from app.config.settings import SECRET_FIELDS
+
+    text = default_env_text()
+    written = dict(re.findall(r"^([A-Z][A-Z0-9_]+)=(.*)$", text, re.M))
+    assert set(written) == set(ENV_NAMES.values())
+    assert all(written[ENV_NAMES[f]] == "" for f in SECRET_FIELDS)
+    assert not (ROOT / ".env.example").exists()                       # one settings file: .env (generated, never a second copy to keep in step)
 
 
-def test_env_example_loads_and_matches_defaults_where_given() -> None:
+def test_the_generated_default_env_loads_back_to_the_defaults(tmp_path) -> None:
+    from app.config.env_template import default_env_text, write_default_env
     from app.config.settings import load_settings
 
-    loaded = load_settings(ROOT / ".env.example", environ={})
-    assert isinstance(loaded, BaseModel)
+    target = tmp_path / ".env"
+    assert write_default_env(target) is True and target.read_text(encoding="utf-8") == default_env_text()
+    loaded = load_settings(target, environ={})
+    assert isinstance(loaded, BaseModel) and loaded == Settings()
     assert loaded.screen_capture_enabled is False and loaded.offline_mode == "auto"
+    target.write_text("USER_NAME=Mine\n", encoding="utf-8")
+    assert write_default_env(target) is False and target.read_text(encoding="utf-8") == "USER_NAME=Mine\n"      # never overwritten
 
 
 def test_settings_have_no_secret_fields_yet() -> None:
