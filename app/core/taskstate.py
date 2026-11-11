@@ -76,3 +76,21 @@ def verify_completion(steps: Iterable[_StepLike]) -> tuple[bool, str]:
     if skipped:
         return True, f"completed with {len(skipped)} step(s) skipped: " + ", ".join(str(s.n) for s in skipped)
     return True, ""
+
+
+def display_state(state: str, note: str = "", step_states: list[str] | None = None) -> str:
+    """The mission state in plain words, splitting "paused" / "waiting" by WHY: awaiting approval, blocked, recovering. The stored state is unchanged."""
+    low, steps = (note or "").lower(), step_states or []
+    if state in ("paused", "waiting"):
+        if "checkpoint" in low or "go-ahead" in low or "waiting" in steps or "approval" in low:
+            return "awaiting approval"
+        if "failed" in steps or low.startswith("paused at step"):
+            return "blocked"
+        if "interrupted" in low or "restarted" in low:
+            return "interrupted (resume to continue)"
+        if "switched off" in low or "emergency" in low:
+            return "paused (automations are off)"
+        return "paused"
+    if state == "running" and any(s == "running" for s in steps) and "retry" in low:
+        return "recovering"
+    return {"planned": "ready", "verifying": "verifying the result"}.get(state, state)

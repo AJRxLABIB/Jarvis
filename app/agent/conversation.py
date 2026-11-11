@@ -462,6 +462,14 @@ class ConversationManager:
                 parts.append(line)
         except Exception:
             _log.warning("context engine failed", exc_info=True)
+        try:  # "the first one" / "number 3" -> which item of the list last shown (app/core/referents.py)
+            from app.core import referents
+
+            pointer = referents.hint(self._current_text, referents.STORE.current())
+            if pointer:
+                parts.append(pointer)
+        except Exception:
+            _log.debug("referent hint failed", exc_info=True)
         try:  # one merged, evidence-labelled view of everything relevant (app/core/request_context.py)
             from app.core import request_context
 

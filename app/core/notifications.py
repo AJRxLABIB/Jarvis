@@ -88,6 +88,23 @@ class NotificationCenter:
         return [Notice(r["id"], r["ts"], r["source"], r["category"], r["priority"], r["title"], r["body"], r["action"],
                        bool(r["read"]), bool(r["archived"])) for r in rows]
 
+    def search(self, query: str, *, category: str | None = None, limit: int = 20) -> list[Notice]:
+        """Notifications (read or not, archived too) whose title or text contains every word of ``query``; newest first."""
+        words = [w for w in (query or "").lower().split() if w][:6]
+        where, params = ["1 = 1"], []
+        for w in words:
+            where.append("(lower(title) LIKE ? OR lower(body) LIKE ?)")
+            params += [f"%{w}%", f"%{w}%"]
+        if category:
+            where.append("category = ?")
+            params.append(category)
+        if len(where) == 1:
+            return []
+        with self._db.connect() as conn:
+            rows = conn.execute(f"SELECT * FROM notifications WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?", (*params, limit)).fetchall()
+        return [Notice(r["id"], r["ts"], r["source"], r["category"], r["priority"], r["title"], r["body"], r["action"],
+                       bool(r["read"]), bool(r["archived"])) for r in rows]
+
     def unread_count(self) -> int:
         with self._db.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM notifications WHERE read = 0 AND archived = 0").fetchone()[0])

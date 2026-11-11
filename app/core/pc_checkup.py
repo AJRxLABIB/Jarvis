@@ -60,11 +60,18 @@ class Check:
 Runner = Callable[[str], str]
 
 
+# Not part of the check-up: read-only event queries for app/core/file_attribution.py. Events only exist when YOU switched recording on; reading Security needs admin.
+EVENT_SCRIPTS: dict[str, str] = {
+    "file_audit_events": "(Get-WinEvent -FilterHashtable @{LogName='Security';Id=4663} -MaxEvents 400 -ErrorAction Stop | ForEach-Object { $_.ToXml() }) -join ''",
+    "sysmon_file_events": "(Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational';Id=11,23,26} -MaxEvents 400 -ErrorAction Stop | ForEach-Object { $_.ToXml() }) -join ''",
+}
+
+
 def run_powershell(script: str) -> str:
     """Runs one of the FIXED scripts above and returns its text. Raises RuntimeError with a short reason."""
     if sys.platform != "win32":
         raise RuntimeError("only available on Windows")
-    if script not in SCRIPTS.values():
+    if script not in SCRIPTS.values() and script not in EVENT_SCRIPTS.values():
         raise RuntimeError("not one of the built-in read-only scripts")
     args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]
     try:

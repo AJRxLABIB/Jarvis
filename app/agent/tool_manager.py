@@ -270,6 +270,13 @@ class ToolExecutor:
                 decision=decision.value if decision else None,
                 details={"ok": result.ok, "error": result.error, "message": result.message, "elapsed_ms": elapsed},
             )
+            if result.ok:
+                try:   # remember a list just shown, so "the first one" in the next message can be resolved (app/core/referents.py)
+                    from app.core import referents
+
+                    referents.STORE.capture(call.name, result.data)
+                except Exception:
+                    pass
             return ToolExecution(call, result, level, decision, elapsed, record.id if record is not None else None)
 
         prepared = self._prepare(call)
@@ -305,10 +312,38 @@ class ToolExecutor:
         stale = self._stale_approval(record, args)
         if stale is not None:
             return done(stale, gate.level, gate.decision)
+        paused = self._breaker_blocks(tool, user_command)
+        if paused is not None:
+            return done(paused, gate.level, gate.decision)
         predicted = self._predict(tool, mission, record.level)
         outcome = await self._run_checked(tool, call, args, gate)
+        self._breaker_record(tool, outcome)
         self._resolve_prediction(predicted, outcome)
         return done(outcome, gate.level, gate.decision)
+
+    def _breaker_blocks(self, tool: Tool, user_command: bool) -> ToolResult | None:
+        """Network tools only: a service that keeps timing out is paused for a cool-down instead of being hammered (app/core/circuit.py)."""
+        if not tool.needs_network:
+            return None
+        try:
+            from app.core.circuit import BREAKERS
+
+            ok, why = BREAKERS.allow(tool.name, direct=user_command)
+        except Exception:
+            return None
+        return None if ok else ToolResult.failure("service_paused", why)
+
+    def _breaker_record(self, tool: Tool, outcome: ToolResult) -> None:
+        if not tool.needs_network:
+            return
+        try:
+            from app.core import retry
+            from app.core.circuit import BREAKERS
+
+            transient = (not outcome.ok) and retry.classify(outcome.error, outcome.message or "") == "transient"
+            BREAKERS.record(tool.name, bool(outcome.ok), transient, outcome.message or outcome.error or "")
+        except Exception:
+            pass
 
     def _predict(self, tool: Tool, mission: str, level: int) -> str:
         """Before a call that changes something (or that can verify itself): record "this will succeed" (app/core/predictions.py). Mission steps are

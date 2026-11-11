@@ -231,6 +231,34 @@ def memory_merge(args: MergeArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success("Rejected - that pair will not be proposed again.")
 
 
+class BreakerArgs(ToolArgs):
+    action: Literal["status", "reset"] = Field(default="status", description="status = which online services are paused after repeated failures; reset = let them be tried again now")
+    tool: str = Field(default="", max_length=60, description="reset: one tool name (empty = all)")
+
+
+def service_breakers(args: BreakerArgs, ctx: ToolContext) -> ToolResult:
+    from app.core import circuit
+
+    if args.action == "reset":
+        return ToolResult.success(f"Reset {circuit.BREAKERS.reset(args.tool.strip() or None)} paused service(s); they will be tried again.")
+    rows = circuit.BREAKERS.snapshot()
+    return ToolResult.success(circuit.describe(rows), paused=[r["tool"] for r in rows if r["paused_s"]])
+
+
+class AttributionArgs(ToolArgs):
+    action: Literal["who", "setup"] = Field(default="who", description="who = which program changed files (from Windows' own records); setup = how to switch that recording on")
+    folder: str = Field(default="", max_length=260, description="who: only changes under this folder or file path (empty = everything recorded)")
+
+
+def file_attribution(args: AttributionArgs, ctx: ToolContext) -> ToolResult:
+    from app.core import file_attribution as FA, pc_checkup
+
+    if args.action == "setup":
+        return ToolResult.success(FA.SETUP)
+    changes, notes = FA.read(pc_checkup.run_powershell, pc_checkup.EVENT_SCRIPTS)
+    return ToolResult.success(FA.describe(changes, notes, args.folder.strip()), changes=len(changes), notes=notes)
+
+
 class ApiLeadArgs(ToolArgs):
     app: str = Field(min_length=1, max_length=60, description="The program or service to look up, e.g. 'spotify', 'notion', 'obs studio'")
 
@@ -253,6 +281,11 @@ TOOLS: tuple[Tool, ...] = (
          "reject it, or undo an applied merge ('any duplicate memories', 'merge those two memories').", memory_merge, MergeArgs, RiskLevel.SAFE, "memory", timeout=30,
          risk=lambda a, c: RiskLevel.MODERATE if a.action in ("apply", "undo") else RiskLevel.SAFE,
          confirmation=lambda a, c: f"{'Merge' if a.action == 'apply' else 'Undo the merge of'} the two memories in proposal {a.id}?"),
+    Tool("service_breakers", "Which online services Jarvis has paused after repeated time-outs or connection failures, and reset them ('why is web search paused', 'try the "
+         "services again').", service_breakers, BreakerArgs, RiskLevel.SAFE, "system", timeout=5),
+    Tool("file_attribution", "Which PROGRAM changed, created or deleted files, from Windows' own audit / Sysmon records when the user has switched them on, or how to switch them on "
+         "('which program changed files in my Documents', 'who deleted that file'). Read-only; paths and program names only.", file_attribution, AttributionArgs, RiskLevel.SAFE,
+         "system", timeout=40),
     Tool("find_app_api", "Search the web for a program's official API or SDK documentation and return the links as unverified leads ('does Spotify have an API', 'find the Notion SDK'). "
          "Use discover_integration for what is available on this PC.", find_app_api, ApiLeadArgs, RiskLevel.SAFE, category="web", needs_network=True, timeout=30),
     Tool("idle_work", "What Jarvis's idle-time housekeeping actually did while the user was away (with real results), or run the due jobs now ('what did you do while I was away', "

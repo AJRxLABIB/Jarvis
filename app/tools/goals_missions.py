@@ -211,9 +211,12 @@ def mission_status(_: NoArgs, ctx: ToolContext) -> ToolResult:
         stones = m.milestones()
         if stones:
             extra += " (milestones: " + ", ".join(f"{name} {done}/{total}" for name, done, total in stones) + ")"
-        parts.append(f"'{m.title}': {m.state}, {m.progress()} steps{extra}")
+        from app.core.taskstate import display_state
+
+        shown = display_state(m.state, m.note, [st.state for st in m.steps])
+        parts.append(f"'{m.title}': {shown}, {m.progress()} steps{extra}")
     return ToolResult.success("; ".join(parts) + ".",
-                              missions=[{"title": m.title, "state": m.state, "progress": m.progress(),
+                              missions=[{"title": m.title, "state": m.state, "shown_as": display_state(m.state, m.note, [st.state for st in m.steps]), "progress": m.progress(),
                                          "milestones": [{"name": n, "done": d, "total": t} for n, d, t in m.milestones()]}
                                         for m in missions])
 

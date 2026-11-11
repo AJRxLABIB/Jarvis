@@ -98,6 +98,24 @@ AGENTS["analyst"] = AgentContract(
     frozenset({"memory", "files", "notes", "info"}), RiskLevel.SAFE, max_steps=8,
     deny_tools=frozenset({"forget", "forget_everything", "forget_history", "remember", "manage_memory"}))
 
+AGENTS["guardian"] = AgentContract(
+    "guardian", "security reviewer: reads permissions, the audit trail, security events and system state and reports risks - never changes anything "
+                "and cannot overrule the permission system",
+    frozenset({"system", "info", "windows"}), RiskLevel.SAFE, max_steps=6,
+    deny_tools=frozenset({"run_command", "windows_update", "power_control", "emergency", "change_setting"}))
+AGENTS["monitor"] = AgentContract(
+    "monitor", "watches health: PC resources, services, missions and devices, and reports what looks wrong - never changes anything",
+    frozenset({"system", "info", "automation", "phone"}), RiskLevel.SAFE, max_steps=6, max_seconds=120.0,
+    deny_tools=frozenset({"start_mission", "resume_mission", "run_workflow", "manage_automation", "phone_control", "text_contact", "call_contact", "whatsapp_message"}))
+AGENTS["phone"] = AgentContract(
+    "phone", "works with your paired phone: status, notifications, files and clipboard (never calls, texts, locks or wipes on its own)",
+    frozenset({"phone", "info"}), RiskLevel.MODERATE, max_steps=5,
+    deny_tools=frozenset({"text_contact", "call_contact", "whatsapp_message", "send_email"}))
+AGENTS["automator"] = AgentContract(
+    "automator", "designs and checks workflows: lists, simulates and proposes automations (saving or running one still needs you)",
+    frozenset({"automation", "info", "memory"}), RiskLevel.SAFE, max_steps=6,
+    deny_tools=frozenset({"run_workflow", "manage_automation", "start_mission", "resume_mission", "forget", "forget_everything", "forget_history", "manage_memory"}))
+
 DEFAULT_AGENT = "researcher"
 
 
