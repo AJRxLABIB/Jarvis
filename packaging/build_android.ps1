@@ -90,8 +90,10 @@ $sources = Get-ChildItem -Recurse -Path (Join-Path $app "src") -Filter *.java | 
 # lambda support (LambdaMetafactory); d8 desugars lambdas for Android below (--min-api 24).
 Run $javac -encoding UTF-8 -source 8 -target 8 -nowarn -classpath $androidJar -d "$work\classes" @sources
 
-$classes = Get-ChildItem -Recurse -Path "$work\classes" -Filter *.class | ForEach-Object { $_.FullName }
-Run $d8 --release --min-api 24 --lib $androidJar --output "$work\dex" @classes
+# One jar instead of hundreds of .class paths: d8.bat is a cmd.exe wrapper and the full list overflows its ~8k command-line limit.
+$jar = Join-Path $jdk.FullName "bin\jar.exe"
+Run $jar --create --file "$work\classes.jar" -C "$work\classes" .
+Run $d8 --release --min-api 24 --lib $androidJar --output "$work\dex" "$work\classes.jar"
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zipFile = [System.IO.Compression.ZipFile]::Open("$work\base.apk", "Update")

@@ -395,7 +395,7 @@ async def daily_briefing(args: BriefingArgs, ctx: ToolContext) -> ToolResult:
         parts.append("Coming up today: " + "; ".join(reminders) + ".")
     from app.tools.productivity import todo_summary
 
-    for name, line in (("todos", lambda: todo_summary(ctx)), ("todos", lambda: _promises_line(ctx, now)), ("goals", lambda: _goals_line(ctx, now)),
+    for name, line in (("todos", lambda: todo_summary(ctx)), ("todos", lambda: _promises_line(ctx, now)), ("todos", lambda: _idle_line(ctx)), ("goals", lambda: _goals_line(ctx, now)),
                        ("missions", lambda: _missions_line(ctx))):
         text = line() if name in show else ""
         if text:
@@ -423,6 +423,21 @@ async def _air_line(ctx: ToolContext) -> str:
     except Exception:
         log_event(_log, "briefing_air_skipped")
     return ""
+
+
+def _idle_line(ctx: ToolContext) -> str:
+    """What idle-time work found (app/core/idle_work.py); empty when nothing recent was stored."""
+    if ctx.database is None:
+        return ""
+    try:
+        import time as _t
+
+        from app.core import idle_work
+        from app.memory.settings_store import SettingsStore
+
+        return idle_work.briefing_line(SettingsStore(ctx.database), _t.time())
+    except Exception:
+        return ""
 
 
 def _promises_line(ctx: ToolContext, now) -> str:

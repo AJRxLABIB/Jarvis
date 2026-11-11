@@ -484,6 +484,43 @@ def _model_roles(ctx: AppContext, apply: bool) -> int:
         runner.stop()
 
 
+def _ground_trial(ctx: AppContext, model: str) -> int:
+    """`--ground-trial MODEL`: the screen-grounding trial (app/validation/grounding_trial.py). Uses a model that is ALREADY installed; downloads nothing."""
+    import time as _t
+
+    from app.ai.base import ModelInfo
+    from app.ai.manager import AIManager
+    from app.utils.async_runner import AsyncRunner
+    from app.validation import grounding_trial as GT
+
+    print("Switch to the window to test (e.g. Notepad or Settings). Capturing in 5 seconds...")
+    _t.sleep(5)
+    try:
+        controls, png, size = GT.collect_windows()
+    except Exception as exc:
+        print(f"Could not read the window: {exc}")
+        return EXIT_CHECK_FAILED
+    runner = AsyncRunner("ground").start()
+    manager = AIManager.from_settings(ctx.settings)
+    try:
+        installed = [m.name for m in runner.run(manager.models(), timeout=30)]
+        if model not in installed:
+            print(f"'{model}' is not installed. Installed: {', '.join(installed) or 'none'}. Nothing was downloaded.")
+            return EXIT_CHECK_FAILED
+
+        def ask(prompt: str) -> str:
+            reply = runner.run(manager.vision_chat(ModelInfo(model), "You locate controls in screenshots.", prompt, png), timeout=180)
+            return str(getattr(getattr(reply, "message", reply), "content", "") or getattr(reply, "content", "") or "")
+
+        print(GT.report(GT.run(model, controls, size, ask)))
+        return EXIT_OK
+    finally:
+        try:
+            runner.run(manager.aclose(), timeout=10)
+        finally:
+            runner.stop()
+
+
 def _compare_models(ctx: AppContext, names: str | None, switch: bool) -> int:
     from app import model_compare
     from app.ai import jarvis_model
@@ -1001,6 +1038,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="which installed model for which job (facts + your benchmarks); add --apply to save")
     mode.add_argument("--compare-models", nargs="?", const="", metavar="MODELS",
                       help="score installed models (or a comma-separated list) on the Bangla questions")
+    mode.add_argument("--ground-trial", metavar="MODEL",
+                      help="measure how well an installed vision model points at controls of the foreground window (clicks nothing)")
     mode.add_argument("--health-report", action="store_true",
                       help="self-test + benchmark + Bangla score + speed + mistakes, in one report")
     mode.add_argument("--make-jarvis-model", action="store_true",
@@ -1180,6 +1219,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code = _model_roles(ctx, args.apply)
         elif args.compare_models is not None:
             exit_code = _compare_models(ctx, args.compare_models or None, args.switch)
+        elif args.ground_trial:
+            exit_code = _ground_trial(ctx, args.ground_trial)
         elif args.health_report:
             exit_code = _health_report(ctx)
         elif args.restart:

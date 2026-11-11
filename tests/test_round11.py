@@ -62,7 +62,7 @@ def test_restore_test_upgrades_an_older_backup_the_way_a_real_restore_would(tmp_
     dest.execute("DROP TABLE expenses")                                     # ... nor v33
     dest.execute("DROP TABLE budgets")
     for table in ("phone_commands", "phone_state", "journal", "habit_checks", "habit_defs", "learning_turns",
-                  "growth_items", "decision_records", "preferences", "radar_feedback", "handoffs", "skill_runs", "workflow_parameters", "twin_observations", "media_segments", "media_assets", "commitments"):            # ... nor v34 / v37 / v41 / v42
+                  "growth_items", "decision_records", "preferences", "radar_feedback", "handoffs", "skill_runs", "workflow_parameters", "twin_observations", "media_segments", "media_assets", "commitments", "capability_leases", "predictions", "tech_experiences", "screen_history"):            # ... nor v34 / v37 / v41 / v42
         dest.execute(f"DROP TABLE {table}")
     dest.execute("DELETE FROM schema_migrations WHERE version >= 30")
     dest.commit()

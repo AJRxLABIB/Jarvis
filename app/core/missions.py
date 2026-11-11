@@ -319,6 +319,53 @@ class Outcome:
     ok: bool
 
 
+def _auto_lease(mission: "Mission", store: "MissionStore", executor) -> None:
+    """Limit the mission to the tools of its own plan (app/core/leases.py). Off with MISSION_AUTO_LEASE=false; a lease you made is never replaced.
+    A failure here never stops the mission from starting - the normal permission checks still apply to every step."""
+    try:
+        settings = getattr(getattr(executor, "context", None), "settings", None)
+        if settings is not None and not bool(getattr(settings, "mission_auto_lease", True)):
+            return
+        from app.core.leases import LeaseStore, ensure_auto
+
+        steps = []
+        for step in mission.steps:
+            tool = executor.registry.get(step.tool)
+            if tool is not None:
+                steps.append((step.tool, int(RiskLevel.DANGEROUS), bool(getattr(tool, "needs_network", False))))
+        ensure_auto(LeaseStore(store._db), str(mission.id), steps)
+    except Exception:
+        _log.debug("auto lease failed", exc_info=True)
+
+
+def _focus_step(store: "MissionStore", mission: "Mission", step: "Step") -> None:
+    """Narrow the mission's automatic lease to this step's tool. If it cannot be narrowed the plan-wide lease still applies."""
+    try:
+        from app.core.leases import LeaseStore
+
+        LeaseStore(store._db).focus(str(mission.id), step.tool)
+    except Exception:
+        _log.debug("lease focus failed", exc_info=True)
+
+
+def _predict_step(store: "MissionStore", step: "Step") -> str:
+    try:
+        from app.core import predictions
+
+        return predictions.auto_predict(store._db, step.tool, step.title)
+    except Exception:
+        return ""
+
+
+def _resolve_step(store: "MissionStore", pid: str, ok: bool, evidence: str) -> None:
+    try:
+        from app.core import predictions
+
+        predictions.auto_resolve(store._db, pid, ok, evidence)
+    except Exception:
+        pass
+
+
 async def run(mission: Mission, store: MissionStore, executor, *, approved: bool, skip_failed: bool = False,
               on_step=None) -> Outcome:
     """Run from the first unfinished step. ``approved``: you approved this exact plan."""
@@ -332,6 +379,7 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
                 store.save_step(mission, step)
                 break
     store.set_state(mission, "running")
+    _auto_lease(mission, store, executor)
     # A step still marked "running" was cut off (restart, crash, stop): we can't know whether it took effect.
     # Read-only steps are simply run again; anything else is never repeated blindly - you decide.
     for step in mission.steps:
@@ -378,6 +426,8 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
                 return Outcome(mission, note + ". Say 'continue my mission' to go on, or 'cancel the mission'.", False)
             if on_step is not None:
                 on_step(mission, step)
+            _focus_step(store, mission, step)
+            predicted = _predict_step(store, step)
             while True:
                 step.state, step.attempts = "running", step.attempts + 1
                 store.save_step(mission, step)
@@ -393,6 +443,7 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
                     step.inverse = {"tool": inverse.call.name, "arguments": dict(inverse.call.arguments),
                                     "description": inverse.description} if inverse is not None else None
                     store.save_step(mission, step)
+                    _resolve_step(store, predicted, True, step.result)
                     break
                 level = int(execution.level) if execution.level is not None else 3
                 from app.core import retry
@@ -407,6 +458,7 @@ async def run(mission: Mission, store: MissionStore, executor, *, approved: bool
                 step.result = f"{step.result} ({why})" if step.result else why
                 step.state = "failed"
                 store.save_step(mission, step)
+                _resolve_step(store, predicted, False, step.result)
                 note = f"Paused at step {step.n} ({step.title}): {result.message}"
                 store.set_state(mission, "paused", note)
                 _publish("MissionPaused", title=mission.title, note=note)

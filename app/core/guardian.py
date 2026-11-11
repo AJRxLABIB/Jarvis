@@ -174,7 +174,7 @@ def integrity_changes(baseline: dict[str, Any] | None, now: Integrity, missing: 
     if baseline is None:
         return [], new_base
     out = []
-    for path, (digest, size, mtime) in now.items():
+    for path, (digest, size, _mtime) in now.items():
         old = baseline.get(path)
         if old is None or old[0] == digest:
             continue
@@ -204,7 +204,7 @@ def _public(ip: str) -> bool:
 def network_changes(baseline: dict[str, Any] | None, rows: Iterable[Connection]) -> tuple[list[Incident], dict[str, Any]]:
     """(incidents, new baseline). Baseline = {"listen": ["prog:port"], "dest": ["prog|ip"]}. None = first look, no alarm."""
     listen, dest = set(), set()
-    for prog, lip, lport, rip, rport, status in rows:
+    for prog, lip, lport, rip, _rport, status in rows:
         if status == "LISTEN" and lip not in ("127.0.0.1", "::1"):
             listen.add(f"{prog}:{lport}")
         elif status == "ESTABLISHED" and _public(rip):

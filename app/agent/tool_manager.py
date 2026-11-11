@@ -290,6 +290,9 @@ class ToolExecutor:
             return done(gate.result, gate.level, gate.decision)
         gate.record = record
         record.level = int(gate.level) if gate.level is not None else 0     # the real, argument-based risk
+        denied = self._lease_denies(tool, call, mission, record.level)
+        if denied is not None:
+            return done(denied, gate.level, gate.decision)
         self._guard_uncertain_retry(tool, record, gate)
         if gate.decision == Decision.CONFIRM:
             record.to(State.AWAITING_APPROVAL, "asking")
@@ -302,8 +305,52 @@ class ToolExecutor:
         stale = self._stale_approval(record, args)
         if stale is not None:
             return done(stale, gate.level, gate.decision)
+        predicted = self._predict(tool, mission, record.level)
         outcome = await self._run_checked(tool, call, args, gate)
+        self._resolve_prediction(predicted, outcome)
         return done(outcome, gate.level, gate.decision)
+
+    def _predict(self, tool: Tool, mission: str, level: int) -> str:
+        """Before a call that changes something (or that can verify itself): record "this will succeed" (app/core/predictions.py). Mission steps are
+        predicted by the mission runner, read-only calls are skipped (they would only add noise). Never blocks or fails the call."""
+        db = getattr(self.context, "database", None)
+        if mission or db is None or (level < 1 and tool.verify is None):
+            return ""
+        try:
+            from app.core import predictions
+
+            return predictions.auto_predict(db, tool.name)
+        except Exception:
+            return ""
+
+    def _resolve_prediction(self, pid: str, outcome: ToolResult) -> None:
+        if not pid:
+            return
+        try:
+            from app.core import predictions
+
+            evidence = (outcome.message or outcome.error or "")[:200] or ("ended ok" if outcome.ok else "failed")
+            predictions.auto_resolve(self.context.database, pid, bool(outcome.ok), evidence)
+        except Exception:
+            pass
+
+    def _lease_denies(self, tool: Tool, call: ToolCall, mission: str, level: int) -> ToolResult | None:
+        """A mission with a capability lease may only do what the lease lists (app/core/leases.py). Runs AFTER the permission gate, so a lease can
+        only restrict. No mission / no lease / no database = unchanged behaviour. A lease check that itself fails blocks the call (fail closed)."""
+        db = getattr(self.context, "database", None)
+        if not mission or db is None:
+            return None
+        try:
+            from app.core.leases import LeaseStore
+
+            ok, why = LeaseStore(db).authorize(mission, tool.name, level, bool(tool.needs_network), dict(call.arguments or {}))
+        except Exception:
+            _log.exception("lease check failed")
+            ok, why = False, "the mission's permission lease could not be checked"
+        if ok:
+            return None
+        self._audit("lease_denied", call, level=level, decision="blocked", details={"mission": mission, "reason": why})
+        return ToolResult.failure("lease_denied", f"Not done: {why}. Widen the lease yourself ('lease' tool) if this step should be allowed.")
 
     def _prepare(self, call: ToolCall):
         """(tool, call, args) ready to check, or the ToolResult that ends the call (unknown / malformed / precheck)."""

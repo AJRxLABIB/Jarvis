@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 CRITICAL, IMPORTANT, ACTION, ROUTINE, PROMO, SUSPICIOUS = "critical", "important", "action_required", "routine", "promotional", "suspicious"

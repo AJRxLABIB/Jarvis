@@ -217,6 +217,21 @@ class SendEmailArgs(ToolArgs):
 
 def send_email(args: SendEmailArgs, ctx: ToolContext, namespace: Any = None) -> ToolResult:
     if namespace is None:
+        from app.core import mail_smtp
+
+        acct = mail_smtp.account(ctx.settings) if getattr(ctx, "settings", None) is not None else None
+        if acct is not None:                                   # the mailbox from .env (same account the IMAP reader uses)
+            from app.utils import network
+
+            reason = network.offline_reason(ctx.settings)
+            if reason is not None:
+                raise ToolError(reason, "offline")
+            try:
+                mail_smtp.send(acct, args.to, args.subject, args.body)
+            except mail_smtp.SendError as exc:
+                raise ToolError(str(exc), "send_failed") from exc
+            return ToolResult.success(f"Sent the email to {args.to} from {acct[2]}.", to=args.to, via="smtp")
+    if namespace is None:
         _outlook()
         import win32com.client
 
@@ -238,7 +253,7 @@ TOOLS: tuple[Tool, ...] = (
          triage_emails, TriageArgs, RiskLevel.SAFE, "office", timeout=60),
     Tool("email_draft", "Write, list, show, edit, approve or discard email drafts (stored locally, never sent from "
          "here).", email_draft, DraftArgs, RiskLevel.SAFE, "office", timeout=15),
-    Tool("send_email", "Send an email from the user's Outlook (always asks first).", send_email, SendEmailArgs,
+    Tool("send_email", "Send an email (always asks first, showing the full message): from the mailbox set up in .env over SMTP when IMAP_USER / IMAP_PASSWORD are set, otherwise from Outlook.", send_email, SendEmailArgs,
          RiskLevel.DANGEROUS, category="office", timeout=30,
          confirmation=lambda a, _: f"Send this email to {a.to}?\nSubject: {a.subject}\n\n{a.body[:400]}"),
 )

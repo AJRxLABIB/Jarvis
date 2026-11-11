@@ -179,6 +179,8 @@ class Settings(BaseModel):
     edge_profile: str = Field(default="last", max_length=80)
     context_window_titles: bool = True  # context engine: read the foreground window's title (never the screen)
     screen_capture_enabled: bool = False  # opt-in: allow screenshots, reading text on screen, describing it
+    screen_history_enabled: bool = False  # opt-in: allow 'start screen history' (TEXT of the window in front, never pictures; needs SCREEN_CAPTURE_ENABLED too)
+    screen_history_days: int = Field(default=7, ge=1, le=90)  # how long screen-history text is kept
     speech_dataset: Literal["off", "corrections", "all"] = "off"  # keep your voice commands to train the recognizer
     screenshot_dir: Path | None = None  # empty = your Downloads folder
     screen_blocked_windows: str = Field(default=DEFAULT_BLOCKED_WINDOWS, max_length=1000)
@@ -253,10 +255,15 @@ class Settings(BaseModel):
     imap_user: str = Field(default="", max_length=200)  # the mail address you sign in with
     imap_password: str = Field(default="", max_length=400, repr=False)  # an APP PASSWORD from the mail account's security page (secret; encrypted on the next start)
     imap_folder: str = Field(default="INBOX", max_length=120)
+    smtp_host: str = Field(default="", max_length=200)  # for sending mail; empty = worked out from IMAP_USER for the big providers
+    smtp_port: int = Field(default=0, ge=0, le=65535)  # 0 = automatic (465, or 587 where the provider needs STARTTLS)
     github_token: str = Field(default="", max_length=400, repr=False)  # read-only GitHub access token (secret)
     google_client_id: str = Field(default="", max_length=200)  # your own Google OAuth "Desktop app" client (Calendar / Drive)
     google_client_secret: str = Field(default="", max_length=200, repr=False)  # its secret (secret setting)
     cyber_guardian: bool = False  # OFF by default: watch for unusual file bursts, startup changes, new listeners and stale backups (names/times only; never stops anything)
+    mission_auto_lease: bool = True  # every mission gets a permission lease limited to the tools in its approved plan (it can only restrict)
+    idle_work_enabled: bool = True  # light local housekeeping while you are away (never on battery, never when the PC is busy)
+    idle_work_after_minutes: int = Field(default=10, ge=2, le=240)  # minutes without keyboard / mouse before idle work may start
     guardian_integrity_files: str = ""  # files whose content the guardian checks for changes (hosts file, config...), separated by ';'
     guardian_folders: str = ""  # folders the guardian watches, separated by ';' (empty = Documents, Desktop, Pictures)
     process_history: bool = False  # OFF by default: also record the top programs' names with CPU / memory numbers (for per-program baselines)

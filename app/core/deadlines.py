@@ -13,7 +13,7 @@ Pure ``assess`` over plain rows; ``load`` reads the database.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 
 SOON_TODO_H = 48

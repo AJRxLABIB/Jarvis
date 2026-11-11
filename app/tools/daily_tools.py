@@ -52,6 +52,45 @@ def scan_mail(ctx: ToolContext, count: int = 25) -> tuple[int, int, str]:
     return new, ledger.settle_from(seen), note
 
 
+MESSAGE_SOURCES = ("whatsapp", "sms", "message", "messenger", "telegram", "signal", "viber", "imo")
+
+
+def message_items(chats: list[dict[str, Any]], notifications: list[dict[str, Any]], now: float) -> list[C.Found]:
+    """Requests made TO you in chat messages: the last unread WhatsApp line per chat (all the PC app shows) and stored phone notifications from message apps.
+    Only what others wrote is seen here, so only "they asked you" items are found - your own promises in chats are not visible to Jarvis."""
+    import hashlib
+
+    found: list[C.Found] = []
+    for chat in chats:
+        text, who = str(chat.get("last_message_untrusted") or ""), str(chat.get("name") or "")
+        if text and who:
+            found += C.extract(text, mine=False, who=who, source="whatsapp", ref="wa-" + hashlib.sha256(f"{who}|{text}".encode()).hexdigest()[:12], when=now)
+    for n in notifications:
+        src = str(n.get("source") or "").lower()
+        text, who = str(n.get("body") or ""), str(n.get("title") or "")
+        if text and who and any(s in src for s in MESSAGE_SOURCES):
+            found += C.extract(text, mine=False, who=who, source="phone", ref="ph-" + hashlib.sha256(f"{who}|{text}".encode()).hexdigest()[:12], when=now)
+    return found
+
+
+def scan_messages(ctx: ToolContext) -> tuple[int, list[str]]:
+    """Adds requests found in WhatsApp previews and phone message notifications to the ledger. -> (new items, sources that could not be read)."""
+    chats, notes, missed = [], [], []
+    try:
+        from app.tools.messages import read_whatsapp
+
+        chats = read_whatsapp(NoArgs(), ctx).data.get("chats", [])
+    except Exception:
+        missed.append("WhatsApp")
+    try:
+        from app.core.notifications import NotificationCenter
+
+        notes = [{"title": n.title, "body": n.body, "source": n.source} for n in NotificationCenter(ctx.database).items(unread_only=False, limit=80)]
+    except Exception:
+        missed.append("phone notifications")
+    return _ledger(ctx).add(message_items(chats, notes, time.time())), missed
+
+
 class CommitArgs(ToolArgs):
     action: Literal["list", "scan", "add", "done", "dismiss", "reopen"] = Field(default="list", description="list = show open items; scan = read recent mail and update; add = record one "
                                                                                           "yourself; done / dismiss / reopen = change one item")
@@ -89,8 +128,10 @@ async def commitments(args: CommitArgs, ctx: ToolContext) -> ToolResult:
 
             if not isinstance(exc, MailError):
                 raise
-            raise ToolError(str(exc), "mail_unavailable") from exc
-        extra = f"Scan: {new} new, {answered} probably settled" + (f"; {note}" if note else "") + ".\n"
+            new, answered, note = 0, 0, f"mail was not read ({exc})"      # messages are still scanned below
+        from_messages, missed = await asyncio.to_thread(scan_messages, ctx)
+        extra = (f"Scan: {new} new from mail, {from_messages} new from messages, {answered} probably settled" + (f"; {note}" if note else "")
+                 + (f"; not checked: {', '.join(missed)}" if missed else "") + ".\n")
     items = ledger.items()
     return ToolResult.success(extra + C.describe(items), open=len(items), note=NOTE)
 

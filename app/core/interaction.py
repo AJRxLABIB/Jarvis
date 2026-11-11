@@ -54,8 +54,10 @@ def advise(c: Context) -> Advice:
     if c.in_meeting:
         no("voice", "you are in a meeting: the microphone and speaker would be heard")
         speak, note = False, "A meeting is in progress."
-        score["keyboard"] += 3; why["keyboard"] = "silent, fine during a meeting"
-        score["phone"] += 2; why["phone"] = "silent text from your phone"
+        score["keyboard"] += 3
+        why["keyboard"] = "silent, fine during a meeting"
+        score["phone"] += 2
+        why["phone"] = "silent text from your phone"
     if c.mode in quiet_modes:
         speak = False
         note = (note + f" {c.mode.capitalize()} mode keeps replies silent.").strip()
@@ -69,20 +71,24 @@ def advise(c: Context) -> Advice:
         if c.camera_available is False:
             no("gestures", "no camera available")
         else:
-            score["gestures"] += 1; why["gestures"] = "hands-free and silent" + ("" if c.camera_available else " (camera state unknown)")
+            score["gestures"] += 1
+            why["gestures"] = "hands-free and silent" + ("" if c.camera_available else " (camera state unknown)")
     else:
         no("gestures", "gesture control is switched off")
     if c.phone_connected is False:
         no("phone", "no paired phone is connected")
     elif c.phone_connected:
-        score["phone"] += 1; why["phone"] = why["phone"] or "your phone is connected"
+        score["phone"] += 1
+        why["phone"] = why["phone"] or "your phone is connected"
     if c.fullscreen:
-        score["phone"] += 2; score["gestures"] += 1 if score["gestures"] > -99 else 0
+        score["phone"] += 2
+        score["gestures"] += 1 if score["gestures"] > -99 else 0
         why["phone"] = "a full-screen app is in front; the phone does not cover it"
         if score["keyboard"] <= 0:
             score["keyboard"] -= 1
     if c.typing_recent:
-        score["keyboard"] += 3; why["keyboard"] = "you are typing right now"
+        score["keyboard"] += 3
+        why["keyboard"] = "you are typing right now"
     if score["voice"] > -99 and not c.in_meeting:
         score["voice"] += 2
         why["voice"] = "a microphone is available" + (" (not confirmed)" if c.mic_available is None else "")

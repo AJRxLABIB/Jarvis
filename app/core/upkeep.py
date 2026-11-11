@@ -70,6 +70,8 @@ class Upkeep:
 
     def run_once(self) -> dict[str, bool]:
         """Blocking version (used in a worker thread and in tests). Returns what it did."""
+        from app.core import attention            # was missing here: the mode hold below silently never applied, and the sensor-rule line raised
+
         did = {"recorded": False, "backed_up": False}
         now = self.clock()
         if self._on("metrics_history"):
@@ -130,6 +132,11 @@ class Upkeep:
                         did["sensor_alerts"] = True
             except Exception:
                 _log.debug("sensor rules failed", exc_info=True)
+        if self._on("idle_work_enabled"):
+            try:
+                did.update(self._idle_work())
+            except Exception:
+                _log.debug("idle work failed", exc_info=True)
         try:
             from app.tools import transaction_tool
 
@@ -150,6 +157,31 @@ class Upkeep:
             except Exception:
                 _log.warning("memory retention failed", exc_info=True)
         return did
+
+    def _idle_work(self) -> dict[str, bool]:
+        """Idle-time housekeeping (app/core/idle_work.py): only when you are away, on mains power, with a quiet PC and a mode that allows background work."""
+        import psutil
+
+        from app.core import attention, idle_work
+        from app.memory.settings_store import SettingsStore
+        from app.tools import winapi
+
+        def idle_s() -> float:
+            return winapi.seconds_since_input() if winapi.is_windows() else 0.0     # elsewhere "idle" cannot be read, so it never runs by itself
+
+        after = float(getattr(self.settings, "idle_work_after_minutes", 10) or 10)
+        battery = psutil.sensors_battery()
+        ok, _why = idle_work.should_run(idle_s(), after, bool(battery and not battery.power_plugged), psutil.cpu_percent(None), attention.allow("background")[0])
+        if not ok:
+            return {}
+        store = SettingsStore(self.database)
+        speed = idle_work.speed_job(self.settings, store) if self.settings is not None else None
+        extra = ((speed,) if speed else ()) + ((idle_work.merge_job(self.settings, store),) if self.settings is not None else ())
+        worker = idle_work.IdleWorker(self.database, store, idle_work.JOBS + extra, still_idle=lambda: idle_s() >= after * 60)
+        done = worker.run_due()
+        for d in done:
+            log_event(_log, "idle_work", job=d["job"], ok=d["ok"], result=d["result"], ms=d["ms"])
+        return {"idle_work": True} if done else {}
 
     _last_retention: datetime | None = None
     _last_guardian: datetime | None = None

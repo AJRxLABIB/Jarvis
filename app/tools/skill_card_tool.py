@@ -14,7 +14,6 @@ class SkillCardArgs(ToolArgs):
 
 def skill_card(args: SkillCardArgs, ctx: ToolContext) -> ToolResult:
     from app.automation import skill_card as S
-    from app.automation.tasks import AutomationStore
 
     store = ctx.get_automation_store()
     if store is None:

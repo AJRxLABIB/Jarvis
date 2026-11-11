@@ -1214,6 +1214,82 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX idx_commitments_open ON commitments (status, kind, thread)",
         ),
     ),
+    Migration(
+        44,
+        "leases_predictions_experiences",
+        (
+            # mission-scoped capability leases: can only restrict what a mission may call
+            """
+            CREATE TABLE capability_leases (
+                mission   TEXT PRIMARY KEY,
+                tools     TEXT NOT NULL,
+                folder    TEXT NOT NULL DEFAULT '',
+                network   INTEGER NOT NULL DEFAULT 0,
+                max_level INTEGER NOT NULL DEFAULT 2,
+                expires   REAL NOT NULL,
+                max_calls INTEGER NOT NULL DEFAULT 100,
+                calls     INTEGER NOT NULL DEFAULT 0,
+                revoked   INTEGER NOT NULL DEFAULT 0,
+                created   REAL NOT NULL
+            )
+            """,
+            # what Jarvis expected before acting, and what really happened (its own track record)
+            """
+            CREATE TABLE predictions (
+                id         TEXT PRIMARY KEY,
+                topic      TEXT NOT NULL,
+                claim      TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                expect     TEXT NOT NULL DEFAULT '',
+                created    REAL NOT NULL,
+                outcome    TEXT NOT NULL DEFAULT '',
+                evidence   TEXT NOT NULL DEFAULT '',
+                resolved   REAL
+            )
+            """,
+            "CREATE INDEX idx_predictions_topic ON predictions (topic, outcome)",
+            # technical problems: what failed, what worked, how it was verified
+            """
+            CREATE TABLE tech_experiences (
+                id           TEXT PRIMARY KEY,
+                problem      TEXT NOT NULL,
+                error        TEXT NOT NULL DEFAULT '',
+                environment  TEXT NOT NULL DEFAULT '{}',
+                failed       TEXT NOT NULL DEFAULT '[]',
+                solution     TEXT NOT NULL,
+                verification TEXT NOT NULL DEFAULT '',
+                created      REAL NOT NULL,
+                source       TEXT NOT NULL DEFAULT 'user'
+            )
+            """,
+        ),
+    ),
+    Migration(
+        45,
+        "lease_auto_flag",
+        ("ALTER TABLE capability_leases ADD COLUMN auto INTEGER NOT NULL DEFAULT 0",),   # 1 = made by Jarvis from the approved plan (may be renewed), 0 = made by you
+    ),    Migration(
+        46,
+        "lease_step_focus",
+        ("ALTER TABLE capability_leases ADD COLUMN focus TEXT NOT NULL DEFAULT ''",),   # automatic leases: the tool of the step in progress ('' = any tool of the plan)
+    ),    Migration(
+        47,
+        "screen_history",
+        (
+            # opt-in: TEXT read from the window in front (never pictures), bounded by SCREEN_HISTORY_DAYS
+            """
+            CREATE TABLE screen_history (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts     REAL NOT NULL,
+                app    TEXT NOT NULL DEFAULT '',
+                title  TEXT NOT NULL DEFAULT '',
+                text   TEXT NOT NULL,
+                digest TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_screen_history_ts ON screen_history (ts)",
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
