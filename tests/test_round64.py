@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core import app_profiles, attention, event_intel as EI, gitinfo, guardian, meeting, modes, office_info, retention, transactions as T
+from app.core import app_profiles, attention, event_intel as EI, gitinfo, guardian, meeting, office_info, retention, transactions as T
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
 

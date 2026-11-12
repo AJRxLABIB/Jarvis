@@ -101,7 +101,7 @@ def test_priority_order_and_concurrency_limit():
         s = R.WorkloadScheduler(max_concurrent=1)
         order, gate = [], asyncio.Event()
         async def first(): await gate.wait(); order.append("first")
-        def job(n): 
+        def job(n):
             async def w(): order.append(n)
             return w
         s.submit(R.P2, "first", first)

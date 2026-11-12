@@ -11,13 +11,13 @@ from app.gesture import engine as eng
 from app.gesture import macros, metrics, profiles
 from app.gesture import safety as sf
 from app.gesture.service import GestureService
-from tests.test_gesture import SCREEN, make_service, wait_for
+from tests.test_gesture import SCREEN
 from app.gesture.landmarks import synthetic_hand
 
 
 # ---------------------------------------------------------------- profiles
 def test_every_profile_is_complete_and_never_binds_a_tool():
-    for name, p in profiles.PROFILES.items():
+    for name in profiles.PROFILES:
         s = profiles.settings_for(name)
         assert s["reach"] in ("small", "medium", "large") and s["swipe"] in ("off", "browser", "desktops", "slides")
         assert not any(k in s for k in ("tool", "mapping", "macros")), name          # input behaviour only

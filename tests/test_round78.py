@@ -140,7 +140,7 @@ def test_observe_failure_cancel_and_cancel_api():
     gw = G.Gateway()
 
     async def fail():
-        async with gw.observe("chat", "m") as r:
+        async with gw.observe("chat", "m"):
             raise ValueError("model gone")
 
     try:

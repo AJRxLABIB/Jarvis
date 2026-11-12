@@ -1,6 +1,6 @@
 """Which GPU JARVIS uses on a laptop with two: GPU_PREFERENCE = auto | integrated | nvidia.
 
-``integrated`` (e.g. Intel UHD instead of the RTX): 
+``integrated`` (e.g. Intel UHD instead of the RTX):
 * CUDA_VISIBLE_DEVICES=-1 in this process, before speech / voice libraries load, so nothing here uses the NVIDIA card; Ollama started by
   JARVIS inherits it. OLLAMA_VULKAN=1 is also passed so a recent Ollama may use the Intel GPU through Vulkan (unverified, version dependent).
 * Windows' own per-app graphics preference (Settings > System > Display > Graphics) is set to "Power saving" for the program that runs

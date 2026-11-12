@@ -136,6 +136,21 @@ def _wire(ctx: ToolContext):
     return SERVICE
 
 
+def diagnostic(ctx: ToolContext) -> list[str]:
+    """What is ready and what is missing for gesture control, without touching the camera."""
+    from app.gesture.detector import availability
+    from app.gesture.service import SERVICE
+
+    lines = [f"Setting gesture_control: {'on' if ctx.settings.gesture_control else 'off (turn it on with the enable action)'}"]
+    if ctx.paths is not None:
+        ready, why = availability(ctx.paths.models_dir)
+        lines.append("Tracking model and mediapipe: ready" if ready else f"Not ready: {why}")
+    st = SERVICE.status()
+    lines.append(f"Service: {st['state']} ({st['reason']}). Camera: {st['camera']}.")
+    lines.append("Real tracking accuracy is only verified on your PC with a webcam.")
+    return lines
+
+
 async def gesture_control(args: GestureArgs, ctx: ToolContext) -> ToolResult:
     from app.core import emergency
     from app.gesture.service import SERVICE

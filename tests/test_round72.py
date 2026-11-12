@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from datetime import date, datetime, timezone
+from datetime import date
 
-import pytest
 
 from app.core import deadlines as D, investigate as I, resources as R
 

@@ -84,7 +84,6 @@ def test_host_and_origin_checks():
 
 @pytest.fixture()
 def live(tmp_path):
-    import asyncio
 
     class AsyncExec:
         async def execute(self, call):

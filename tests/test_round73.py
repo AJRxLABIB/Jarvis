@@ -1,7 +1,6 @@
 """Round 73 (PC side of JARVIS Mobile 1.5): phone context validation, freshness, check-in storage, tool."""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 
 from app.core import phone_context as P

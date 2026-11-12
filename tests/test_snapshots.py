@@ -1,5 +1,4 @@
 import asyncio
-from types import SimpleNamespace
 
 from app.core import snapshots as S
 
@@ -76,7 +75,6 @@ def test_recovery_report_for_an_interrupted_mission(tmp_path):
 def test_tool_save_show_and_recovery(tmp_path):
     from app.core.reliability_lab import _executor
     from app.tools import snapshot_tool as T
-    from app.tools.base import ToolContext
 
     ex, _, _, db = _executor(tmp_path, True)
     f = tmp_path / "a.txt"; f.write_text("x")

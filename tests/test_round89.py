@@ -81,3 +81,11 @@ def test_abstention_prompt_and_reply_detection():
     case = [c for c in LM.builtin() if c.abstention][0]
     assert LM.answer_ok(case, "I don't know - that is not in the saved sessions.")
     assert not LM.answer_ok(case, "Your cat is called Max.")
+
+
+def test_gesture_diagnostic_action_does_not_crash():
+    from types import SimpleNamespace as NS
+    from app.tools.gesture_tool import diagnostic
+
+    lines = diagnostic(NS(settings=NS(gesture_control=False), paths=None))
+    assert lines and "off" in lines[0]

@@ -130,7 +130,6 @@ def _db(p):
 def test_index_zone_blocks_history_indexing(tmp_path):
     import asyncio
     from app.core import privacy_zones as Z
-    from app.memory.database import Database
     from app.memory.semantic import SemanticIndex
     async def emb(texts): return [[1.0, 0.0] for _ in texts]
     idx = SemanticIndex(_db(tmp_path), emb, "m")

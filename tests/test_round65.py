@@ -81,7 +81,6 @@ def test_describe_states_when_foreground_is_unknown():
 
 
 def test_capture_tools_are_blocked_inside_a_zone():
-    import asyncio
 
     from app.agent.tool_manager import CAPTURE_TOOLS
     assert "take_screenshot" in CAPTURE_TOOLS
@@ -98,7 +97,6 @@ def test_enforcement_points_are_wired():
 
 
 def test_zone_tool_status_and_edit(tmp_path):
-    import asyncio
 
     from app.memory.database import Database
     from app.tools import privacy_zone_tool as PT

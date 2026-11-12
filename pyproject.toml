@@ -20,7 +20,7 @@ select = ["E", "F", "W", "B"]
 ignore = ["E501", "B008", "B904", "B023", "B905", "E731", "B017", "B027"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["F811"]  # pytest fixtures imported from other test modules
+"tests/*" = ["F811", "E701", "E702", "E402"]  # fixtures imported from other test modules; compact one-line test setup is a style choice
 
 [tool.mypy]
 python_version = "3.12"

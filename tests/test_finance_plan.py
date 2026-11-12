@@ -99,7 +99,6 @@ def test_scenarios_compare_with_the_same_assumptions(env):
 
 
 def test_tool_import_asks_and_preview_is_safe(env):
-    import asyncio
     from types import SimpleNamespace
 
     from app.tools import finance_plan_tool as T

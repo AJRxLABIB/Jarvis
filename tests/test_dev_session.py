@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 
 import pytest
 
-from app.ai.base import ToolCall
 from app.core import dev_session as DS
 from app.security.command_executor import CommandExecutor, CommandOutput
 from app.tools import dev_session_tool as T

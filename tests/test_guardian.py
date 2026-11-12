@@ -160,7 +160,6 @@ def test_read_files_ignores_missing_folders_and_returns_none_when_nothing_is_rea
 def test_tool_flow_and_notifications(store, tmp_path):
     from app.core.notifications import NotificationCenter
     from app.tools import guardian_tool as T
-    from app.tools.base import ToolContext
 
     db, s, _ = store
     cur = {"s": []}
