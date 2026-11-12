@@ -259,6 +259,47 @@ def file_attribution(args: AttributionArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success(FA.describe(changes, notes, args.folder.strip()), changes=len(changes), notes=notes)
 
 
+class MissionReportArgs(ToolArgs):
+    action: Literal["report", "analytics"] = Field(default="report", description="report = what failed, why, what succeeded, what remains and whether a retry is safe, for one mission; "
+                                                                                 "analytics = completion rate, typical duration and the steps that fail most, across missions")
+    mission: str = Field(default="", max_length=60, description="report: the mission id (empty = the most recent one)")
+
+
+def mission_report(args: MissionReportArgs, ctx: ToolContext) -> ToolResult:
+    from app.core import mission_report as MR
+    from app.core.missions import MissionStore
+
+    db = _db(ctx)
+    if args.action == "analytics":
+        a = MR.analytics(db)
+        return ToolResult.success(MR.describe_analytics(a), **{k: v for k, v in a.items() if k != "failing_tools"})
+    store = MissionStore(db)
+    try:
+        mission = store.get(args.mission.strip()) if args.mission.strip() else (store.recent(1) or [None])[0]
+    except Exception:
+        mission = None
+    if mission is None:
+        raise ToolError("There is no such mission." if args.mission.strip() else "No missions yet.", "not_found")
+    reg = ctx.get_tool_registry() if hasattr(ctx, "get_tool_registry") else None
+    r = MR.report(mission, reg)
+    return ToolResult.success(MR.describe(r), failed=len(r["failed"]), remaining=len(r["remaining"]), retry_safe=[f["retry_safe"] for f in r["failed"]])
+
+
+class MoveCheckArgs(ToolArgs):
+    folder: str = Field(min_length=1, max_length=260, description="The project folder to check")
+    destination: str = Field(default="", max_length=260, description="Where it would move to (only mentioned in the answer; nothing is moved)")
+
+
+def project_move_check(args: MoveCheckArgs, ctx: ToolContext) -> ToolResult:
+    from app.core import project_move as PM
+
+    try:
+        rep = PM.check(args.folder, PM.running_processes)
+    except FileNotFoundError as exc:
+        raise ToolError(str(exc).capitalize() + ".", "not_found") from exc
+    return ToolResult.success(PM.describe(rep, args.destination.strip()), findings=len(rep.findings), kinds=sorted({f.kind for f in rep.findings}), files_read=rep.files_read)
+
+
 class ApiLeadArgs(ToolArgs):
     app: str = Field(min_length=1, max_length=60, description="The program or service to look up, e.g. 'spotify', 'notion', 'obs studio'")
 
@@ -286,6 +327,11 @@ TOOLS: tuple[Tool, ...] = (
     Tool("file_attribution", "Which PROGRAM changed, created or deleted files, from Windows' own audit / Sysmon records when the user has switched them on, or how to switch them on "
          "('which program changed files in my Documents', 'who deleted that file'). Read-only; paths and program names only.", file_attribution, AttributionArgs, RiskLevel.SAFE,
          "system", timeout=40),
+    Tool("mission_report", "After a mission stops: what failed and the probable cause, which steps succeeded, what remains, whether a retry is safe or needs a check first, and another "
+         "way forward; or statistics across missions ('why did the mission fail', 'can I retry it', 'how reliable are my missions').", mission_report, MissionReportArgs,
+         RiskLevel.SAFE, "automation", timeout=15),
+    Tool("project_move_check", "What would break if a project folder moved (e.g. from C: to D:): a static check for a virtual environment, files that contain the folder's own path, "
+         "Git pointer files, links and programs running from it. Nothing is moved or run.", project_move_check, MoveCheckArgs, RiskLevel.SAFE, "dev", timeout=60),
     Tool("find_app_api", "Search the web for a program's official API or SDK documentation and return the links as unverified leads ('does Spotify have an API', 'find the Notion SDK'). "
          "Use discover_integration for what is available on this PC.", find_app_api, ApiLeadArgs, RiskLevel.SAFE, category="web", needs_network=True, timeout=30),
     Tool("idle_work", "What Jarvis's idle-time housekeeping actually did while the user was away (with real results), or run the due jobs now ('what did you do while I was away', "

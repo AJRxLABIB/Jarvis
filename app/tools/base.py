@@ -149,6 +149,7 @@ class ToolContext:
     mode_control: Callable[[str], str] | None = None  # modes (set by the window)
     emergency: Callable[[str], str] | None = None  # emergency controls by voice: off only (set by the window)
     agent_contract: Any = None  # app.core.agents.AgentContract: a role-scoped limit the current task runs under
+    agent_run: Any = None       # {"id", "agent", "started", "expires"}: the identity of the delegated run in progress (app/core/orchestrator.py)
 
     def get_path_policy(self) -> Any:
         if self.path_policy is None:

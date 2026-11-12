@@ -88,6 +88,9 @@ def trust_plugin(folder: Path, name: str) -> dict:
                 "sha256": digest, "tools": {n: int(v) for n, v in info["tools"].items()},
                 "capabilities": sorted(_detected(path)),
                 "trusted_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    from app.security import manifest_sign
+
+    manifest["sig"] = manifest_sign.sign(Path(folder), manifest)   # only this installation can produce it (app/security/manifest_sign.py)
     manifest_path(path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     log_event(_log, "plugin_trusted", plugin=name, tools=sorted(manifest["tools"]))
     return manifest
@@ -105,9 +108,43 @@ def plugin_status(folder: Path) -> list[dict]:
         manifest = _manifest(path)
         status = "untrusted" if manifest is None else "trusted" if manifest.get("sha256") == file_sha(path) \
             else "changed"
+        if status == "trusted" and _signature_problem(folder, manifest):
+            status = "changed"                                      # a manifest this installation did not sign is not believed
         out.append({"name": path.stem, "status": status, "version": (manifest or {}).get("version", ""),
                     "tools": sorted((manifest or {}).get("tools", {}))})
     return out
+
+
+def _signature_problem(folder: Path, manifest: dict) -> str:
+    """'' when the manifest's signature is valid. Manifests written before signing existed (no signing key on this PC yet) are adopted ONCE: they are
+    signed in place on first sight, and from then on every manifest must carry a valid signature."""
+    from app.security import manifest_sign
+
+    folder = Path(folder)
+    if "sig" not in manifest and not manifest_sign.has_key(folder):
+        return ""                                                   # legacy install, nothing signed yet: adopted by ``_adopt_legacy``
+    ok, why = manifest_sign.verify(folder, manifest)
+    return "" if ok else why
+
+
+def _adopt_legacy(folder: Path) -> int:
+    """First start after signing was introduced: sign the manifests that were already trusted (file hash still matching). Returns how many."""
+    from app.security import manifest_sign
+
+    folder = Path(folder)
+    if manifest_sign.has_key(folder):
+        return 0
+    adopted = 0
+    for path in sorted(folder.glob("*.py")):
+        manifest = _manifest(path)
+        if manifest is None or "sig" in manifest or manifest.get("sha256") != file_sha(path):
+            continue
+        manifest["sig"] = manifest_sign.sign(folder, manifest)
+        manifest_path(path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        adopted += 1
+    if adopted:
+        log_event(_log, "plugin_manifests_signed", count=adopted)
+    return adopted
 
 
 def _manifest(path: Path) -> dict | None:
@@ -123,6 +160,10 @@ def load_plugins(folder: Path, registry) -> PluginReport:
     folder = Path(folder)
     if not folder.is_dir():
         return PluginReport((), ())
+    try:
+        _adopt_legacy(folder)
+    except Exception:
+        _log.warning("could not sign existing plugin manifests", exc_info=True)
     for path in sorted(folder.glob("*.py")):
         if path.name.startswith("_"):
             continue
@@ -132,6 +173,9 @@ def load_plugins(folder: Path, registry) -> PluginReport:
                 raise PermissionError("not trusted yet (Menu -> Plugins -> Trust)")
             if manifest.get("sha256") != file_sha(path):
                 raise PermissionError("the file changed since you trusted it; check it and trust it again")
+            problem = _signature_problem(folder, manifest)
+            if problem:
+                raise PermissionError(problem)
             _module, tools = _import(path)
             approved: dict = manifest["tools"]
             for tool in tools:

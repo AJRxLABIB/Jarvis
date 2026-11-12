@@ -68,6 +68,8 @@ class WhatIfArgs(ToolArgs):
     extra_daily_hours: float = Field(default=0.0, ge=0, le=12, description="Hours per day protected for something else, e.g. studying")
     extra_label: str = Field(default="", max_length=60, description="What the protected time is for (e.g. 'studying')")
     days: int = Field(default=14, ge=1, le=60, description="How many days ahead to simulate")
+    busy: str = Field(default="", max_length=300, description="Hours already taken on specific days, e.g. '2026-11-14=3, 2026-11-15=8' (meetings, travel)")
+    skip_weekends: bool = Field(default=False, description="Do not schedule work on Saturday and Sunday")
 
 
 def _pairs(text: str) -> dict[str, float]:
@@ -96,8 +98,15 @@ def schedule_whatif(args: WhatIfArgs, ctx: ToolContext) -> ToolResult:
             adds.append({"text": bits[0], "hours": float(bits[1]) if len(bits) > 1 else 1.0, "due": bits[2] if len(bits) > 2 else None})
         except ValueError:
             raise ToolError(f"'{part.strip()}' should look like text|hours|YYYY-MM-DD.", "bad_argument")
+    busy = {}
+    for k, v in _pairs(args.busy).items():
+        try:
+            busy[date.fromisoformat(k)] = round(v * 60)
+        except ValueError:
+            raise ToolError(f"'{k}' is not a YYYY-MM-DD date.", "bad_argument")
     c = S.simulate(todos, today, args.hours_per_day, _pairs(args.estimates), {k: int(v) for k, v in _pairs(args.postpone).items()}, adds,
-                   [x.strip() for x in args.drop.split(",") if x.strip()], args.extra_daily_hours, args.extra_label, horizon=args.days)
+                   [x.strip() for x in args.drop.split(",") if x.strip()], args.extra_daily_hours, args.extra_label,
+                   busy=busy or None, horizon=args.days, skip_weekdays=(5, 6) if args.skip_weekends else ())
     return ToolResult.success(S.describe(c), confidence=c.confidence, changes=len(c.changes))
 
 

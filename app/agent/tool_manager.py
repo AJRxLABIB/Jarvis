@@ -236,6 +236,10 @@ class ToolExecutor:
     def _audit(self, event: str, call: ToolCall, **kwargs: Any) -> None:
         if self.audit is not None:
             details = {"arguments": dict(call.arguments), **kwargs.pop("details", {})}
+            run = getattr(self.context, "agent_run", None)
+            if isinstance(run, dict) and run.get("id"):             # which delegated agent run did this (app/core/orchestrator.py)
+                details.setdefault("agent", run.get("agent"))
+                details.setdefault("agent_run", run.get("id"))
             self.audit.record(event, tool=call.name, details=details, **kwargs)
 
     async def execute(self, call: ToolCall, *, user_command: bool = False, preapproved: bool = False,
@@ -448,6 +452,12 @@ class ToolExecutor:
                             details={"agent": contract.name, "reason": why})
                 return gate.end(ToolResult.failure("agent_not_allowed",
                                 f"Not done: {why}. Do it yourself or give the task to a different agent."))
+
+        run = getattr(self.context, "agent_run", None)
+        if contract is not None and isinstance(run, dict) and time.time() > float(run.get("expires", 0) or 0):
+            self._audit("agent_run_expired", call, level=int(level), decision="blocked", details={"agent": contract.name})
+            return gate.end(ToolResult.failure("agent_run_expired", f"Not done: the {contract.name} agent's time for this task has run out. "
+                                               "Start the task again or do this step yourself."))
 
         from app.core import runs
         from app.security.taint import egress_reason

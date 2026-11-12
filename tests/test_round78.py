@@ -179,3 +179,15 @@ def test_manager_chat_goes_through_gateway(monkeypatch):
 
     assert asyncio.run(Fake().chat([])) == "reply"
     assert gw.history[-1].capability == "chat" and gw.history[-1].model == "fake" and gw.history[-1].state == G.COMPLETED
+
+
+def test_whatif_busy_days_and_weekends():
+    from datetime import date
+    from app.core import schedule_sim as S
+
+    todos = [{"id": 1, "text": "a (4h)", "due": "2026-11-16"}]
+    free = S.simulate(todos, date(2026, 11, 13), 4.0, horizon=7)
+    assert free.baseline.outcomes[0].finish == date(2026, 11, 13)
+    busy = S.simulate(todos, date(2026, 11, 13), 4.0, busy={date(2026, 11, 13): 240}, horizon=7, skip_weekdays=(5, 6))
+    assert busy.baseline.outcomes[0].finish == date(2026, 11, 16)
+    assert "weekdays only" in busy.assumptions[0]

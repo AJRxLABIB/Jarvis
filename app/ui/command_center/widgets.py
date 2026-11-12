@@ -37,6 +37,7 @@ SECTIONS: tuple[tuple[str, str, str], ...] = (
     ("daily", "Daily", "What needs you now, promises and waiting-for, air and rain around you, PC check-up"),
     ("governance", "Trust & learning", "Mission permission leases, prediction track record, technical experiences, opportunities"),
     ("capture", "Screen history", "Opt-in: text of the window in front (no pictures), and teaching a routine by clicking"),
+    ("analytics", "Analytics", "Mission completion, prediction accuracy, verification coverage, paused services, AI requests, resources"),
     ("providers", "AI engines", "Local AI engines: Ollama and Foundry Local"),
     ("gestures", "Gestures", "Control the mouse with your hand: live status, skeleton preview, calibration, tutorial, emergency stop"),
 )

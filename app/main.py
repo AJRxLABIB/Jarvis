@@ -484,6 +484,51 @@ def _model_roles(ctx: AppContext, apply: bool) -> int:
         runner.stop()
 
 
+def _longmem_eval(ctx: AppContext, file: str, with_model: bool) -> int:
+    """`--longmem-eval [FILE] [--full]` (app/longmem_eval.py). Retrieval needs no model; --full asks the configured chat model."""
+    from app import longmem_eval as LM
+
+    if file:
+        path = Path(file).expanduser()
+        if not path.is_file():
+            print(f"No such file: {path}")
+            return EXIT_CHECK_FAILED
+        try:
+            cases = LM.load(path)
+        except (ValueError, OSError) as exc:
+            print(f"Could not read {path.name}: {exc}")
+            return EXIT_CHECK_FAILED
+        source = f"{path.name}"
+        if not cases:
+            print("That file has no questions in the LongMemEval layout.")
+            return EXIT_CHECK_FAILED
+    else:
+        cases, source = LM.builtin(), "built-in cases"
+    ask = None
+    runner = manager = None
+    if with_model:
+        from app.ai.base import ChatMessage
+        from app.ai.manager import AIManager
+        from app.utils.async_runner import AsyncRunner
+
+        runner = AsyncRunner("longmem").start()
+        manager = AIManager.from_settings(ctx.settings)
+
+        def ask(question: str, context: str) -> str:
+            reply = runner.run(manager.chat([ChatMessage.system(LM.SYSTEM),
+                                             ChatMessage.user(f"{context}\n\nQuestion: {question}")]), timeout=180)
+            return str(reply.message.content or "")
+    try:
+        print(LM.report(LM.run(cases, ask), source, with_answers=with_model))
+        return EXIT_OK
+    finally:
+        if runner is not None:
+            try:
+                runner.run(manager.aclose(), timeout=10)
+            finally:
+                runner.stop()
+
+
 def _ground_trial(ctx: AppContext, model: str) -> int:
     """`--ground-trial MODEL`: the screen-grounding trial (app/validation/grounding_trial.py). Uses a model that is ALREADY installed; downloads nothing."""
     import time as _t
@@ -1038,6 +1083,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="which installed model for which job (facts + your benchmarks); add --apply to save")
     mode.add_argument("--compare-models", nargs="?", const="", metavar="MODELS",
                       help="score installed models (or a comma-separated list) on the Bangla questions")
+    mode.add_argument("--memory-eval", action="store_true",
+                      help="check the memory rules (updates, history, forgetting, expiry, privacy) on a throw-away database")
+    mode.add_argument("--longmem-eval", nargs="?", const="", metavar="FILE",
+                      help="long-term memory retrieval check in the LongMemEval format (built-in cases, or a dataset file); add --full to also ask the model")
     mode.add_argument("--ground-trial", metavar="MODEL",
                       help="measure how well an installed vision model points at controls of the foreground window (clicks nothing)")
     mode.add_argument("--health-report", action="store_true",
@@ -1219,6 +1268,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code = _model_roles(ctx, args.apply)
         elif args.compare_models is not None:
             exit_code = _compare_models(ctx, args.compare_models or None, args.switch)
+        elif args.memory_eval:
+            from app import memory_eval
+
+            results = memory_eval.run()
+            print(memory_eval.report(results))
+            exit_code = EXIT_OK if all(r.passed for r in results) else EXIT_CHECK_FAILED
+        elif args.longmem_eval is not None:
+            exit_code = _longmem_eval(ctx, args.longmem_eval, args.full)
         elif args.ground_trial:
             exit_code = _ground_trial(ctx, args.ground_trial)
         elif args.health_report:

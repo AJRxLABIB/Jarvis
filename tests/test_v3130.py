@@ -88,10 +88,18 @@ def test_plugins_cannot_add_tools_or_lower_risk_after_trust(tmp_path: Path) -> N
     (tmp_path / "p.py").write_text(PLUGIN)
     trust_plugin(tmp_path, "p")
     data = json.loads(manifest_path(tmp_path / "p.py").read_text())
+    from app.security import manifest_sign
+
     data["tools"] = {"say_hello": 2}  # it was trusted as DANGEROUS; now it says SAFE
+    manifest_path(tmp_path / "p.py").write_text(json.dumps(data))
+    # an edited manifest no longer gets as far as the tool checks: its signature is wrong (app/security/manifest_sign.py)
+    assert "signature does not match" in load_plugins(tmp_path, build_default_registry()).failed[0][1]
+    # the tool checks themselves still hold for a manifest this installation really signed
+    data["sig"] = manifest_sign.sign(tmp_path, data)
     manifest_path(tmp_path / "p.py").write_text(json.dumps(data))
     assert "lowered its risk" in load_plugins(tmp_path, build_default_registry()).failed[0][1]
     data["tools"] = {"other": 0}
+    data["sig"] = manifest_sign.sign(tmp_path, data)
     manifest_path(tmp_path / "p.py").write_text(json.dumps(data))
     assert "wasn't in what you trusted" in load_plugins(tmp_path, build_default_registry()).failed[0][1]
 

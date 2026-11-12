@@ -19,24 +19,19 @@ def test_clean_runs_never_step_down(tmp_path):
     assert gl_guard.overrides(0, _settings()) == {}
 
 
-def test_crash_after_window_shown_steps_down_then_painter(tmp_path):
+def test_crash_only_skips_the_intro_and_never_changes_core_or_quality(tmp_path):
     gl_guard.decide(tmp_path, False)
     gl_guard.mark(tmp_path, gl_guard.SHOWING)
     strikes = gl_guard.decide(tmp_path, previous_crashed=True)
     assert strikes == 1
-    first = gl_guard.overrides(strikes, _settings())
-    assert first == {"intro_animation": False, "visual_quality": "balanced"}          # the 3D core stays, started the safe way
-    assert "flat core" not in gl_guard.notice(strikes, first)
-    gl_guard.mark(tmp_path, gl_guard.SHOWING)
-    strikes = gl_guard.decide(tmp_path, previous_crashed=True)
-    second = gl_guard.overrides(strikes, _settings())
-    assert second["core_renderer"] == "painter"
-    assert "--reset-gl-guard" in gl_guard.notice(strikes, second)
-
-
-def test_explicit_choices_are_respected(tmp_path):
-    assert "core_renderer" not in gl_guard.overrides(3, _settings(core_renderer="gl"))
-    assert "visual_quality" not in gl_guard.overrides(1, _settings(visual_quality="low"))
+    assert gl_guard.overrides(strikes, _settings()) == {"intro_animation": False}
+    for n in (2, 3, 9):                                                # however often: the 3D core and its quality stay
+        for st in (_settings(), _settings(visual_quality="high"), _settings(core_renderer="gl")):
+            out = gl_guard.overrides(n, st)
+            assert out == {"intro_animation": False} and "core_renderer" not in out and "visual_quality" not in out
+    text = gl_guard.notice(1, {"intro_animation": False})
+    assert "unchanged" in text and "--reset-gl-guard" in text and "flat core is used" not in text
+    assert "CORE_RENDERER=painter" in gl_guard.notice(3, {"intro_animation": False})     # offered, never applied
 
 
 def test_stable_with_full_settings_clears_but_downgraded_keeps(tmp_path):

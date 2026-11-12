@@ -122,9 +122,9 @@ def schedule(tasks: list[Task], today: date, hours_per_day: float, busy: dict[da
 def simulate(todos: list[dict], today: date, hours_per_day: float = 6.0, estimates: dict[str, float] | None = None,
              postpone: dict[str, int] | None = None, add: list[dict] | None = None, drop: list[str] | None = None,
              extra_daily_hours: float = 0.0, extra_label: str = "", scenario_hours_per_day: float | None = None,
-             busy: dict[date, int] | None = None, horizon: int = 30) -> Comparison:
+             busy: dict[date, int] | None = None, horizon: int = 30, skip_weekdays: tuple[int, ...] = ()) -> Comparison:
     base_tasks = tasks_from(todos, estimates)
-    base = schedule(base_tasks, today, hours_per_day, busy, horizon=horizon)
+    base = schedule(base_tasks, today, hours_per_day, busy, skip_weekdays, horizon=horizon)
     tasks = [Task(**t.__dict__) for t in base_tasks]
     changes: list[str] = []
     for k, days in (postpone or {}).items():
@@ -149,10 +149,10 @@ def simulate(todos: list[dict], today: date, hours_per_day: float = 6.0, estimat
     hpd = scenario_hours_per_day if scenario_hours_per_day is not None else hours_per_day
     if scenario_hours_per_day is not None and scenario_hours_per_day != hours_per_day:
         changes.append(f"working hours {hours_per_day:g} -> {scenario_hours_per_day:g} h/day")
-    sc = schedule(tasks, today, hpd, busy, extra_daily_min=extra, horizon=horizon)
+    sc = schedule(tasks, today, hpd, busy, skip_weekdays, extra_daily_min=extra, horizon=horizon)
 
     guessed = sum(1 for t in base_tasks if t.guessed)
-    assumptions = [f"{hours_per_day:g} productive hours per day, every day (weekends included unless you say otherwise)",
+    assumptions = [f"{hours_per_day:g} productive hours per day, " + ("weekdays only" if skip_weekdays else "every day (weekends included unless you say otherwise)"),
                    f"{guessed} of {len(base_tasks)} tasks have no effort estimate and use a flat {DEFAULT_MIN} min guess" if guessed else "every task has an effort estimate",
                    "calendar events counted" if busy else "no calendar events counted - free time is an assumption",
                    "no breaks, interruptions or estimate overruns are modelled"]

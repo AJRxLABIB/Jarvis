@@ -20,7 +20,7 @@ TRANSIENT = frozenset({"timeout", "offline", "rate_limited", "launch_failed", "e
                        "internal"})
 RESOURCE = frozenset({"out_of_memory", "resource_busy", "disk_full"})
 VERIFICATION = frozenset({"not_verified", "not_visible", "still_open", "still_exists"})
-PERMISSION = frozenset({"blocked", "denied", "locked", "protected", "permission_error", "agent_contract_denied",
+PERMISSION = frozenset({"blocked", "denied", "locked", "protected", "permission_error", "agent_contract_denied", "agent_run_expired", "lease_denied",
                         "needs_approval", "sensitive"})
 VALIDATION = frozenset({"invalid_arguments", "invalid_plan", "invalid_steps", "invalid_name", "invalid_time",
                         "invalid_days", "invalid_date", "invalid_watch", "unknown_tool", "missing_name",

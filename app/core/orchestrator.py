@@ -60,11 +60,30 @@ class TeamOutcome:
 def under_contract(context: Any, contract: AgentContract | None) -> Iterator[None]:
     """Run the enclosed executor calls with ``contract`` active on the context, then restore what was there."""
     previous = getattr(context, "agent_contract", None)
+    previous_run = getattr(context, "agent_run", None)
     context.agent_contract = contract
+    try:
+        context.agent_run = new_agent_run(contract) if contract is not None else None
+    except Exception:
+        pass                                                        # a context that cannot hold a run id still gets the contract
     try:
         yield
     finally:
         context.agent_contract = previous
+        try:
+            context.agent_run = previous_run
+        except Exception:
+            pass
+
+
+def new_agent_run(contract: AgentContract, now: float | None = None) -> dict[str, Any]:
+    """The identity of ONE delegated run: a random id, the agent's name and the moment its authority ends (the contract's time budget).
+    The executor refuses calls after that moment and writes the id into every audit record of the run, so each action is attributable."""
+    import secrets
+    import time as _time
+
+    start = _time.time() if now is None else now
+    return {"id": "ar-" + secrets.token_hex(6), "agent": contract.name, "started": start, "expires": start + float(contract.max_seconds)}
 
 
 def validate_plan(raw_steps: Any, registry: Any) -> list[AgentStep]:

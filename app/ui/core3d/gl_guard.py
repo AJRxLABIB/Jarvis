@@ -3,9 +3,10 @@
 Some GPU drivers crash natively (access violation, no Python frame) right after the 3D window first appears, e.g.
 when the GPU is also busy loading the local AI and speech models. That crash can't be caught, so it is remembered:
 data/gl_guard.json records whether the last run got past "window shown" to "GL stable". If a run crashed in between,
-the next start steps down - safe start (no intro/fades) + balanced quality, then the flat (painter) core - and says
-so. A run that reaches "stable" at full settings clears the strikes. ``python run.py --reset-gl-guard`` (or deleting
-the file) restores everything; CORE_RENDERER=gl in .env bypasses the step-down to the painter core.
+the next start skips the start-up intro and fades - and says so. The 3D core and its quality are never stepped down
+(the flat core is used only when CORE_RENDERER=painter is set by hand, or when OpenGL is not available at all).
+A run that reaches "stable" at full settings clears the strikes. ``python run.py --reset-gl-guard`` (or deleting
+the file) restores the intro.
 """
 
 from __future__ import annotations
@@ -50,28 +51,23 @@ def decide(data_dir: Path, previous_crashed: bool) -> int:
 
 
 def overrides(strikes: int, settings) -> dict:
-    """Settings for THIS run only (nothing is written to .env)."""
+    """Settings for THIS run only (nothing is written to .env).
+
+    The 3D core and its quality are NEVER changed here (the owner's decision: always the full 3D core at the chosen quality). After a crashed start
+    only the start-up intro and fades are skipped - they are the part that differs between a start that crashed and one that ran. To use the flat
+    core you have to choose it yourself with CORE_RENDERER=painter in .env."""
     if strikes <= 0:
         return {}
-    out: dict = {"intro_animation": False}
-    if getattr(settings, "visual_quality", "auto") in ("auto", "high"):
-        out["visual_quality"] = "balanced"
-    # One crash keeps the 3D core but starts it the safe way: on this project's test machine that start ran for hours while the
-    # full start (intro + fades + high quality) crashed. Only a crash in the safe start too falls back to the flat core.
-    if strikes >= 2 and getattr(settings, "core_renderer", "auto") == "auto":
-        out["core_renderer"] = "painter"
-    return out
+    return {"intro_animation": False}
 
 
 def notice(strikes: int, changed: dict) -> str:
     if not changed:
         return ""
-    parts = ["the start-up intro and fades are off", "quality is balanced" if "visual_quality" in changed else ""]
-    if changed.get("core_renderer") == "painter":
-        parts.append("the flat core is used instead of the 3D one")
-    done = ", ".join(p for p in parts if p)
-    return (f"Jarvis crashed while the 3D core started ({strikes}x). To keep it running, {done} for now. "
-            "'python run.py --reset-gl-guard' restores the full start; if that crashes again, this safe start comes back.")
+    more = (" It has now crashed several starts in a row: if it keeps happening, update the graphics driver, or set VISUAL_QUALITY=balanced "
+            "(or CORE_RENDERER=painter for the flat core) in .env - Jarvis will not switch them for you.") if strikes >= 3 else ""
+    return (f"Jarvis crashed while the 3D core started ({strikes}x). The 3D core and its quality are unchanged; only the start-up intro and fades "
+            f"are skipped for now. 'python run.py --reset-gl-guard' brings the intro back.{more}")
 
 
 def mark(data_dir: Path, phase: str, *, full_settings: bool = True) -> None:
