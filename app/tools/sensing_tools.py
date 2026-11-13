@@ -78,7 +78,9 @@ async def _detector_note(image: bytes, ctx: ToolContext) -> str:
         with Image.open(io.BytesIO(image)) as im:
             size = im.size
         found = await asyncio.to_thread(det.detect, image)
-        return "\n\n" + OD.describe(found, size, det.name)
+        from app.core import scene_graph as SG
+
+        return "\n\n" + OD.describe(found, size, det.name) + ("\n\n" + SG.build(found, size).text() if len(found) > 1 else "")
     except OD.DetectorError as exc:
         return f"\n\nObject detector skipped: {exc}."
     except Exception as exc:

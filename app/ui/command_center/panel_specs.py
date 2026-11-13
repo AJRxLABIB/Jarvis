@@ -143,6 +143,7 @@ PANELS += (
           (Block("Missions: completion and failing steps", "mission_report", {"action": "analytics"}),
            Block("Predictions: said vs happened", "predictions", {"action": "report"}),
            Block("Which tools verify their results", "verification_coverage", {}),
+           Block("Experiments: hypotheses and how well supported", "experiment_log", {"action": "list"}),
            Block("Paused online services", "service_breakers", {"action": "status"}),
            Block("AI requests running and recent", "inference_queue", {}),
            Block("GPU, memory and loaded models", "resources", {})),

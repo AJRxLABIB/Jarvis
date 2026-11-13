@@ -957,3 +957,33 @@ LongMemEval-format retrieval check (`app/longmem_eval.py`, `python run.py --long
 ## Round 90
 - `schedule_whatif`: added `busy` (hours already taken on given dates) and `skip_weekends`; assumptions line states them. Calendar is still not read automatically (Google OAuth is async/optional). Tested with fakes only.
 - Round 90b: abstention rule added to the real system prompt (memories block) and the longmem eval prompt (`LM.SYSTEM`). Re-run `python run.py --longmem-eval --full` to see if abstention improves (model-dependent, unverified).
+
+## Round 91 (audit of the "Next-Generation Autonomous Personal AI Ecosystem" prompt)
+Audit result: nine of the ten upgrades are already covered in whole or part by existing modules (foundry.py = parameterised-workflow foundry, never generated code;
+capability_gaps.py; reliability_lab.py + replay.py + model_compare.py; knowledge_graph.py + synthesis.py + research_store.py + decisions.py; app_profiles.py +
+app_adapters.py; device_mesh.py + handoff.py + device_capabilities.py; twin.py + schedule_sim.py + predictions.py; guardian.py + anomaly.py; automation workflows;
+events.py). Built only the genuine gaps:
+- `app/core/ui_drift.py` + tool `ui_drift`: versioned control fingerprints, interface diff (renamed / gone / new, compatibility score), control resolver that
+  only calls a replacement SAFE with an identity signal, a clear winner and a margin; profile learn/rollback (MODERATE, asks first). Live reader uses UI Automation: UNVERIFIED on real programs.
+- `app/core/task_placement.py` + tool `place_task`: which trusted device should do a task; hard exclusions (offline, untrusted, privacy class, missing ability, memory/GPU/battery)
+  with reasons, then ranking. Recommendation only; unknown readings are never invented.
+- `app/core/knowledge_action.py` + tool `doc_to_plan`: extracts recommendations/requirements/claims/assumptions/risks from untrusted text, compares with the real source/tests/docs,
+  drafts gap-first proposals with tests and acceptance criteria, flags feasibility. Keyword evidence finds related code; it does not prove a feature works.
+Tests: tests/test_round91.py (14, fakes only). NOT built (blocked or already present): generated-code foundry (needs a real OS sandbox, e.g. Windows Sandbox - not decided),
+visual workflow node editor, knowledge-fabric graph UI extensions, Reality Lab independent verifiers for every scenario, Android AppFunctions (Kotlin/Gradle).
+- Round 91b: `app/core/claim_verify.py` + tool `verify_claim`: independent check of "it saved / it committed" claims (file exists, size, recent, expected text, really reopens as docx/xlsx/pdf/json/zip; git branch, latest message, exact files touched, clean tree). Read-only, never returns contents; unreadable evidence = UNVERIFIED, not success. Tested with a real temp folder and a fake git runner; not run against a real repository or Office files.
+
+## Round 92 (audit of the "Unified Cognitive Intelligence Architecture" prompt)
+Audit: most layers already exist (orchestrator + agent contracts + blackboard = brain network; request_context + context engine = context compiler; investigate/root_cause =
+diagnosis; predictions/twin/schedule_sim = predictive; memory + knowledge_graph + synthesis; model benchmark/resources = model portfolio; guardian/leases/permissions = trust;
+Reality/Reliability labs; Analytics panel). Genuine gaps built:
+- `app/core/cognition.py` + tool `cognitive_plan`: reasoning level 1-5 with budgets, multi-objective split, role selection, one clarifying question only when it matters,
+  metacognitive pre-mortem / post-check (a lesson is learnable only when VERIFIED), early stopping, GPU-memory / power-mode caps. ADVISORY: it does not yet change which model the chat loop picks.
+- `app/core/interbrain.py`: typed InterBrain message contract (completion claims must cite evidence), bounded per-task channel + readable timeline, evidence-weighted debate
+  (no evidence = no score, open severe challenge = contested). Core + tests only; not yet wired into the live mission loop.
+- `app/core/experiments.py` + tool `experiment_log` (+ Analytics panel block): experiment records whose conclusion is graded correlation only / supported / contradicted / inconclusive.
+Tests: tests/test_round92.py (17, no model). NOT built / not claimed: scene-graph vision, YOLO/ONNX object detection upgrade, a dedicated "Cognitive Lab" brain-network visual,
+architecture diagrams, live-wiring of levels into model routing, real-device validation. Heuristics are rules of thumb with constants to tune from measured outcomes.
+- Round 92b: `app/core/scene_graph.py` (detections -> objects + box-geometry relations inside/contains/on/left_of/above/overlaps, appeared/gone/moved diff; no depth or identity claims),
+  shown after the detector evidence in `analyze_photo` when a detector model is installed. `docs/ARCHITECTURE_DIAGRAMS.md`: 12 Mermaid diagrams of REAL modules, each box marked
+  implemented / advisory / unverified. Tests: tests/test_scene_graph.py (4). The detector itself is still unverified on real photos.
