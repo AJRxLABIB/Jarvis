@@ -284,6 +284,12 @@ class ToolExecutor:
             return ToolExecution(call, result, level, decision, elapsed, record.id if record is not None else None)
 
         prepared = self._prepare(call)
+        if isinstance(prepared, ToolResult) and prepared.error == "invalid_arguments":
+            fixed = await self._schema_repair(call, prepared.message)
+            if fixed is not None:
+                again = self._prepare(fixed)
+                if not isinstance(again, ToolResult):
+                    prepared = again                      # the repaired call still goes through every check below
         if isinstance(prepared, ToolResult):
             return done(prepared)
         tool, call, args = prepared
@@ -390,6 +396,31 @@ class ToolExecutor:
             return None
         self._audit("lease_denied", call, level=level, decision="blocked", details={"mission": mission, "reason": why})
         return ToolResult.failure("lease_denied", f"Not done: {why}. Widen the lease yourself ('lease' tool) if this step should be allowed.")
+
+    async def _schema_repair(self, call: ToolCall, problem: str) -> ToolCall | None:
+        """Invalid arguments: ask the model once more with the answer FORCED into the tool's JSON schema (app/ai/manager.py ``structured``).
+
+        This is the model correcting its own call - not a guess by Jarvis - so the result is treated exactly like a new call: validated,
+        permission-checked, confirmed and audited as usual. Off with TOOL_SCHEMA_REPAIR=false; skipped when no AI is attached."""
+        ai = getattr(self.context, "ai", None)
+        tool = self.registry.get(call.name)
+        if ai is None or tool is None or not getattr(self.context.settings, "tool_schema_repair", True) or not hasattr(ai, "structured"):
+            return None
+        try:
+            from app.ai.base import ChatMessage
+
+            schema = tool.args_model.model_json_schema()
+            given = json.dumps(call.arguments, default=str)[:1500] if not call.parse_error else str(call.parse_error)[:300]
+            data = await asyncio.wait_for(ai.structured([
+                ChatMessage.system("Correct the arguments of a tool call. Reply with the corrected arguments only, as JSON. Keep the user's intent; do not add actions."),
+                ChatMessage.user(f"Tool: {tool.name} - {tool.description[:300]}\nArguments given: {given}\nProblem: {problem[:400]}")], schema), 45)
+        except Exception:
+            _log.debug("schema repair failed", exc_info=True)
+            return None
+        if not isinstance(data, dict):
+            return None
+        log_event(_log, "arguments_schema_repaired", tool=tool.name)
+        return ToolCall(call.name, data, id=call.id)
 
     def _prepare(self, call: ToolCall):
         """(tool, call, args) ready to check, or the ToolResult that ends the call (unknown / malformed / precheck)."""
@@ -723,12 +754,28 @@ class ToolExecutor:
                 ok, found = await asyncio.wait_for(asyncio.to_thread(tool.verify, args, outcome, self.context), 10.0)
         except Exception:
             _log.warning("verification of %s failed to run", tool.name, exc_info=True)
+            self._evidence(tool, "unreadable", "the check itself could not run")
             return ToolResult(True, outcome.message, {**outcome.data, "verification": "UNCERTAIN"})  # can't check: say what the tool said, claim no more
         self._audit("verification", call, details={"ok": ok, "found": found})
+        self._evidence(tool, "pass" if ok else "fail", str(found or ""))
         if ok:
             return ToolResult(True, outcome.message, {**outcome.data, "verified": True, "verification": "VERIFIED"})
         return ToolResult.failure("not_verified", f"{outcome.message} But when I checked, {found}.",
                                   **{**outcome.data, "verified": False, "verification": "FAILED"})
+
+    def _evidence(self, tool: Tool, status: str, observed: str) -> None:
+        """One evidence row per world check (app/core/action_evidence.py). Recording must never break or slow the call path."""
+        db = getattr(self.context, "database", None)
+        if db is None:
+            return
+        try:
+            from app.core import action_evidence as AE
+
+            run = getattr(self.context, "agent_run", None) or {}
+            AE.Store(db).add(AE.Evidence(action=tool.name, verifier=f"{tool.name}.verify", source="world_check", status=status,
+                                         execution=str(run.get("id", "")) if isinstance(run, dict) else "", observed=observed[:300]))
+        except Exception:
+            _log.debug("could not record action evidence", exc_info=True)
 
     def _stamp_verification(self, tool: Tool, args: Any, outcome: ToolResult) -> ToolResult:
         """Every successful result carries one standard verification state (VERIFIED / FAILED / UNCERTAIN / NOT_SUPPORTED / NOT_REQUIRED).

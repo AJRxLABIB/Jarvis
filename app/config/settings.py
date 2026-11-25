@@ -146,6 +146,7 @@ class Settings(BaseModel):
     silence_timeout: float = Field(default=0.7, ge=0.3, le=5.0)   # unfinished sentences still get a grace period
     speech_start_timeout: float = Field(default=6.0, ge=1.0, le=30.0)
     max_record_seconds: float = Field(default=15.0, ge=2.0, le=120.0)
+    network_allowlist: str = ""  # restricted network: comma-separated internet hosts that may be reached (sub-domains included); empty = no restriction
     offline_mode: str = "auto"  # auto = online, offline only while there's no internet | on | off
     debug: bool = False
     log_level: str = "INFO"
@@ -263,6 +264,9 @@ class Settings(BaseModel):
     cyber_guardian: bool = False  # OFF by default: watch for unusual file bursts, startup changes, new listeners and stale backups (names/times only; never stops anything)
     mission_auto_lease: bool = True  # every mission gets a permission lease limited to the tools in its approved plan (it can only restrict)
     idle_work_enabled: bool = True  # light local housekeeping while you are away (never on battery, never when the PC is busy)
+    reasoning_routing: bool = False  # let the reasoning level (app/core/cognition.py) nudge the model role: level >= 3 -> smart model, level 1 -> fast. Off until you have measured it.
+    tool_schema_repair: bool = True  # when a tool call has invalid arguments, ask the model ONCE more with the reply forced into the tool's schema (one extra short model call, only on failure)
+    two_step_tools: bool = False  # first let the model pick tool NAMES from a short list, then give it only those tools' schemas (one extra short call; unmeasured - off by default)
     idle_work_after_minutes: int = Field(default=10, ge=2, le=240)  # minutes without keyboard / mouse before idle work may start
     guardian_integrity_files: str = ""  # files whose content the guardian checks for changes (hosts file, config...), separated by ';'
     guardian_folders: str = ""  # folders the guardian watches, separated by ';' (empty = Documents, Desktop, Pictures)
@@ -342,6 +346,10 @@ class Settings(BaseModel):
     @property
     def forced_offline(self) -> bool:
         return self.offline_mode == "on"
+
+    @property
+    def network_hosts(self) -> tuple[str, ...]:
+        return tuple(h for h in (x.strip().lower().rstrip(".") for x in self.network_allowlist.split(",")) if h)
 
     @field_validator("wake_word_engine")
     @classmethod

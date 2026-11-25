@@ -26,7 +26,7 @@ from typing import Any, Awaitable, Callable
 MIN_CASES = 8
 MIN_GAIN = 0.05
 FASTER = 0.8                  # 20 % quicker counts when the score is equal
-MAX_CANDIDATES = 4
+MAX_CANDIDATES = 6
 HISTORY = "self_improve.jsonl"
 TUNED_PREFIX = "jarvis-tuned"      # made by scripts/finetune_llm.py from YOUR good requests
 
@@ -48,6 +48,7 @@ class Score:
     errors: list[str] = field(default_factory=list)
     weight: float = 0.0
     weight_right: float = 0.0
+    misses: list[dict] = field(default_factory=list)       # {"request", "expected", "chose"} for each wrong answer (request text cut and redacted-length only)
 
     @property
     def accuracy(self) -> float:
@@ -78,9 +79,15 @@ async def evaluate(ask: Ask, model: str, candidate: Candidate, cases: list[dict]
         w = HARD_WEIGHT if case.get("hard") else 1.0
         score.weight += w
         score.right += int(chosen == case["expect_tool"])
+        if chosen != case["expect_tool"] and len(score.misses) < 30:
+            score.misses.append({"request": str(case["request"])[:90], "expected": case["expect_tool"], "chose": chosen})
         score.weight_right += w * int(chosen == case["expect_tool"])
         score.malformed += int(malformed)
     return score
+
+
+SLOWER = 2.0      # a candidate more than this many times slower must be MUCH more accurate (BIG_GAIN) to be adopted
+BIG_GAIN = 0.20
 
 
 def better(new: Score, current: Score) -> tuple[bool, str]:
@@ -88,6 +95,11 @@ def better(new: Score, current: Score) -> tuple[bool, str]:
         return False, f"only {new.cases} test request(s); I need at least {MIN_CASES} from your real use"
     if new.malformed > current.malformed:
         return False, "it made more broken tool calls"
+    if new.errors and len(new.errors) > len(current.errors):
+        return False, "it failed to answer more of the test requests"
+    if new.avg_seconds > current.avg_seconds * SLOWER and current.avg_seconds >= 0.05 and new.accuracy < current.accuracy + BIG_GAIN:
+        return False, (f"{new.avg_seconds / max(current.avg_seconds, 0.01):.1f}x slower ({new.avg_seconds:.0f} s vs {current.avg_seconds:.0f} s) "
+                       f"for only {new.accuracy:.0%} vs {current.accuracy:.0%} right tool - too slow for a voice assistant")
     if new.accuracy >= current.accuracy + MIN_GAIN:
         return True, f"right tool {new.accuracy:.0%} vs {current.accuracy:.0%}"
     if new.accuracy >= current.accuracy and current.avg_seconds >= 0.05 and new.avg_seconds <= current.avg_seconds * FASTER:
@@ -103,8 +115,10 @@ def candidates(current_base: str, current_temperature: float, models, total_ram:
     out = [Candidate(current_base, current_temperature, "current")]
     if current_temperature > 0.15:
         out.append(Candidate(current_base, round(max(0.1, current_temperature - 0.15), 2), "more exact"))
-    others = [m for m in models if m.can_chat and m.supports_tools and not m.supports_vision and not is_jarvis(m.name)
-              and m.name.split(":")[0] != current_base.split(":")[0] and could_ever_fit(m.size_bytes, total_ram)]
+    # Tool support UNKNOWN (an Ollama list without capabilities) is tried, not dropped: a model that cannot call tools simply scores 0.
+    # A model that sees images AND calls tools (e.g. qwen3.5) is a chat candidate; a vision-only model is not.
+    others = [m for m in models if m.can_chat and m.supports_tools is not False and not getattr(m, "is_vision_only", False)
+              and not is_jarvis(m.name) and m.name != current_base and could_ever_fit(m.size_bytes, total_ram)]
     # a model fine-tuned on your own use (scripts/finetune_llm.py -> "jarvis-tuned") is tried first
     for m in sorted(others, key=lambda m: (not m.name.startswith(TUNED_PREFIX), -(m.size_bytes or 0))):
         out.append(Candidate(m.name, current_temperature,
@@ -131,10 +145,15 @@ async def run(ask: Ask, apply: Callable[[Candidate], Awaitable[None]], cases: li
         model = model_for(option) if model_for else option.base
         scores.append(await evaluate(ask, model, option, cases))
     current = scores[0]
+    if current.cases and len(current.errors) >= current.cases:       # the current set-up never answered: a 0% here would be a lie about the model
+        rows = [{"base": s.candidate.base, "temperature": s.candidate.temperature, "label": s.candidate.label, "accuracy": round(s.accuracy, 3),
+                 "malformed": s.malformed, "avg_seconds": round(s.avg_seconds, 2), "errors": s.errors[:3]} for s in scores]
+        return Outcome(False, f"The test could not run: the current model ({model_for(options[0]) if model_for else options[0].base}) never answered "
+                              f"({current.errors[0]}). Nothing was changed.", rows)
     best = max(scores[1:], key=lambda s: (s.accuracy, -s.malformed, -s.avg_seconds), default=None)
     rows = [{"base": s.candidate.base, "temperature": s.candidate.temperature, "label": s.candidate.label,
              "accuracy": round(s.accuracy, 3), "malformed": s.malformed, "avg_seconds": round(s.avg_seconds, 2),
-             "errors": s.errors[:3]} for s in scores]
+             "errors": s.errors[:3], "misses": s.misses} for s in scores]
     if best is None:
         outcome = Outcome(False, "There is nothing else to try (one model installed, already exact).", rows)
     else:

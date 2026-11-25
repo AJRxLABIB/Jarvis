@@ -40,7 +40,32 @@ async def inference_providers(_: NoArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success("\n".join(lines))
 
 
+async def model_registry(_: NoArgs, ctx: ToolContext) -> ToolResult:
+    from app.ai import modelbench
+    from app.core import model_registry as MR
+
+    s = ctx.settings
+    provider = OllamaProvider(s.ollama_host, request_timeout=8.0, offline_mode=s.forced_offline)
+    try:
+        models = await asyncio.wait_for(provider.list_models(), 10)
+        details = {}
+        for m in models[:30]:
+            try:
+                details[m.name] = await provider.model_details(m.name)
+            except Exception:
+                continue
+    except (AIError, asyncio.TimeoutError) as exc:
+        return ToolResult.failure(f"Could not read the model list: {str(exc) or 'timed out'}")
+    finally:
+        await provider.aclose()
+    speed = modelbench.load_history(ctx.paths.data_dir if ctx.paths is not None else None)
+    entries = MR.build(models, speed, details)
+    return ToolResult.success(MR.report(entries), models=len(entries))
+
+
 TOOLS: tuple[Tool, ...] = (
+    Tool("model_registry", "List every installed local AI model with its family, size, quantization, reported capabilities, context length, licence text and measured speed ('what models do I have', 'which models support tools', 'model licences').",
+         model_registry, NoArgs, RiskLevel.SAFE, "info", timeout=60),
     Tool("inference_providers", "Show which local AI engines are set up (Ollama, Foundry Local), whether each is answering and which models they offer ('which AI engines do I have').",
          inference_providers, NoArgs, RiskLevel.SAFE, "info", timeout=30),
 )

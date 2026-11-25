@@ -130,6 +130,65 @@ def spec_tokens(spec: ToolSpec) -> int:
     return tokens
 
 
+GROUP_MAX = 14          # a named group bigger than this is trimmed to its most relevant tools
+GROUP_MIN = 6           # ... but never below this many (padded in registry order when few tools match)
+_WORD = re.compile(r"[a-z][a-z0-9]{2,}")
+_NOISE = frozenset("the and for with that this from what when how are you your can please just tell show give make get was were has have not but now then".split())
+
+# Tools whose group is not what the words of a request suggest: offered whenever one of these phrases appears, whatever groups were named.
+TOOL_HINTS: dict[str, tuple[str, ...]] = {
+    "place_task": ("which device", "what device", "which computer should", "run this on my phone", "should my phone", "where should this run"),
+    "ui_drift": ("interface change", "interface changed", "ui change", "button moved", "control moved", "where did the", "did excel change", "interface of", "layout changed", "renamed button", "ui changed", "moved the button"),
+    "doc_to_plan": ("missing from jarvis", "compare this paper", "turn this into a plan", "recommendations in this", "what in this document"),
+    "verify_claim": ("really saved", "did the save", "verify the file", "check the commit", "did it really", "verify the commit", "was it saved"),
+    "exec_lab": ("in the lab", "is this installer safe", "is this app safe", "is this program safe", "sandbox", "isolated environment", "experiment workspace"),
+    "gesture_control": ("finger detection", "detect my finger", "detect my hand", "hand gesture", "hand tracking", "gesture control", "stop finger", "start finger"),
+    "jarvis_control": ("restart yourself", "restart jarvis", "restart your self", "quit yourself", "close yourself"),
+    "play_music": ("play some music", "play music", "put on some music", "play a song", "music on speaker", "music on the speaker"),
+    "model_registry": ("what models do i have", "installed models", "model licence", "model license", "which models support", "list my models", "local models"),
+    "action_evidence": ("actually verify", "what did you verify", "verified actions", "evidence for", "was it really done", "verification report"),
+    "second_opinion": ("double-check", "double check", "are you sure", "second opinion", "check that answer"),
+    "cognitive_plan": ("how hard is", "break this down", "break down this task", "how much thinking", "split this task"),
+    "experiment_log": ("experiment", "hypothesis", "what i changed", "record what i saw"),
+    "schedule_whatif": ("can i finish", "what if i postpone", "what if i study", "will i make the deadline"),
+    "deadline_risk": ("what am i late on", "deadline risk", "what is overdue"),
+    "investigate_problem": ("why is it slow", "why is my pc slow", "investigate", "what is causing"),
+    "lease": ("limit the mission", "mission lease", "restrict the mission"),
+    "predictions": ("how accurate", "were you right", "your predictions"),
+    "app_adapter": ("how can you control", "how would you save in", "can you drive"),
+}
+
+
+def _words(text: str) -> set[str]:
+    return {w[:6] for w in _WORD.findall(text.lower()) if w not in _NOISE}
+
+
+def relevance(request_words: set[str], spec: ToolSpec) -> float:
+    """How well one tool's name and description match the request words (prefix-stemmed). 0 = no overlap."""
+    if not request_words:
+        return 0.0
+    name = _words(spec.name.replace("_", " "))
+    desc = _words(spec.description or "")
+    return 3.0 * len(request_words & name) + 1.0 * len(request_words & desc)
+
+
+def hinted(text: str) -> set[str]:
+    low = f" {text.lower()} "
+    return {name for name, phrases in TOOL_HINTS.items() if any(p in low for p in phrases)}
+
+
+def rank_group(group: list[ToolSpec], request_words: set[str], keep: set[str] = frozenset()) -> list[ToolSpec]:
+    """Large group -> its most relevant tools (recently used ones are always kept). Small groups are returned unchanged."""
+    if len(group) <= GROUP_MAX:
+        return group
+    scored = sorted(group, key=lambda sp: (-(relevance(request_words, sp) + (100 if sp.name in keep else 0)), group.index(sp)))
+    hits = [sp for sp in scored if relevance(request_words, sp) > 0 or sp.name in keep][:GROUP_MAX]
+    if len(hits) < GROUP_MIN:
+        hits += [sp for sp in group if sp not in hits][:GROUP_MIN - len(hits)]
+    chosen = set(sp.name for sp in hits)
+    return [sp for sp in group if sp.name in chosen]
+
+
 def select_specs(registry: ToolRegistry, text: str, recent_tools: Iterable[str] = (),
                  max_tokens: int | None = None) -> list[ToolSpec]:
     """The tools to offer for ``text``: the groups it names, the groups just used, always the basics;
@@ -146,10 +205,12 @@ def select_specs(registry: ToolRegistry, text: str, recent_tools: Iterable[str] 
     # Tools from groups the router has no keywords for (plugins, custom tools) are always offered.
     all_specs = registry.specs()
     pairs = list(zip(all_specs, registry.tools))
+    request_words = _words(text)
+    recent_names = set(recent_tools)
     chosen = [spec for spec, tool in pairs if tool.category in ALWAYS or tool.category not in KEYWORDS]
     budget = None if max_tokens is None else max_tokens - sum(spec_tokens(s) for s in chosen)
     for category in order:
-        group = [spec for spec, tool in pairs if tool.category == category and tool.category not in ALWAYS]
+        group = rank_group([spec for spec, tool in pairs if tool.category == category and tool.category not in ALWAYS], request_words, recent_names)
         cost = sum(spec_tokens(s) for s in group)
         if budget is not None:
             if cost > budget and category not in named:
@@ -160,6 +221,9 @@ def select_specs(registry: ToolRegistry, text: str, recent_tools: Iterable[str] 
             budget -= cost
         chosen += group
     names = {spec.name for spec in chosen}
+    for spec in all_specs:  # a tool the request names outright is offered even when its group was not named (small, fixed extra cost)
+        if spec.name in hinted(text) and spec.name not in names and (budget is None or spec_tokens(spec) <= max(budget, 0) + 400):
+            names.add(spec.name)
     return [spec for spec in all_specs if spec.name in names]
 
 

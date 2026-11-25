@@ -79,7 +79,7 @@ async def compare_installed(settings, names: str | None = None, out: Callable[[s
     try:
         installed = await probe.refresh_models()
         chat = [m.name for m in installed
-                if m.can_chat and not m.supports_vision and not jarvis_model.is_jarvis(m.name)]
+                if m.can_chat and not m.is_vision_only and not jarvis_model.is_jarvis(m.name)]
         models = [n.strip() for n in names.split(",") if n.strip()] if names else chat
         if not models:
             out("No chat models to compare: install one with  ollama pull qwen3:4b-instruct")

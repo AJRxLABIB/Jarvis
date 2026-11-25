@@ -59,7 +59,11 @@ class Ticket:
 
 
 class Blackboard:
-    def __init__(self) -> None:
+    def __init__(self, task_id: str = "request") -> None:
+        from app.core import interbrain
+
+        self.task_id = task_id
+        self.channel = interbrain.Channel()               # the typed InterBrain record of the same events (who told whom what kind of thing)
         self._lock = threading.Lock()
         self.entries: list[Entry] = []
         self._inflight: dict[str, str] = {}              # key -> agent
@@ -111,6 +115,29 @@ class Blackboard:
     def _add(self, entry: Entry) -> None:
         self.entries.append(entry)
         del self.entries[:-MAX_ENTRIES]
+        self._post(entry)
+
+    def _post(self, entry: Entry) -> None:
+        """Mirror an entry as a validated InterBrain message. Never raises: the record must not be able to stop real work.
+        doing -> TASK_ACCEPTED, result -> EVIDENCE_REPORT (ok) / FAILURE_REPORT, claim -> HYPOTHESIS or EVIDENCE_REPORT by its label, need -> DEPENDENCY_UPDATE."""
+        try:
+            from app.core import interbrain as IB
+
+            kind = {"doing": "TASK_ACCEPTED", "need": "DEPENDENCY_UPDATE"}.get(entry.kind)
+            status = "in_progress" if entry.kind == "doing" else "pending"
+            if entry.kind == "result":
+                kind, status = ("EVIDENCE_REPORT", "done") if entry.ok else ("FAILURE_REPORT", "failed")
+            elif entry.kind == "claim":
+                kind = "EVIDENCE_REPORT" if entry.evidence in ("verified", "retrieved") else "HYPOTHESIS"
+            if kind is None:
+                return
+            refs = [entry.key] if entry.key else ([f"label:{entry.evidence}"] if entry.evidence else [])
+            self.channel.post(IB.Message(self.task_id, entry.agent or "agent", "supervisor", kind, findings=[entry.text[:200]], evidence=refs, status=status))
+        except Exception:
+            pass
+
+    def timeline(self) -> str:
+        return self.channel.timeline(self.task_id)
 
     # ---- what another agent can read -----------------------------------------------------------------------------------------------------
     def view(self, for_agent: str = "") -> dict[str, Any]:
@@ -121,6 +148,7 @@ class Blackboard:
                 "failed": [e.text for e in self.entries if e.kind == "result" and e.ok is False][-5:],
                 "needs": [f"{e.agent}: {e.text}" for e in self.entries if e.kind == "need"][-5:],
                 "claims": [f"[{e.evidence}] {e.text}" for e in self.entries if e.kind == "claim"][-8:],
+                "messages": self.channel.timeline(self.task_id).splitlines()[-8:],
             }
 
     def summary(self) -> str:
@@ -149,7 +177,7 @@ def for_run(run_id: str | None = None) -> Blackboard:
     if not run_id:
         return Blackboard()
     if run_id not in _BOARDS:
-        _BOARDS[run_id] = Blackboard()
+        _BOARDS[run_id] = Blackboard(run_id)
         _ORDER.append(run_id)
         while len(_ORDER) > 20:
             _BOARDS.pop(_ORDER.pop(0), None)

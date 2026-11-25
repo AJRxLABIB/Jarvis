@@ -122,6 +122,11 @@ class ModelInfo:
         return bool(self.capabilities and "vision" in self.capabilities)
 
     @property
+    def is_vision_only(self) -> bool:
+        """Sees images but cannot call tools (e.g. a small VL model): not a chat brain. A model with vision AND tools (qwen3.5) is one."""
+        return self.supports_vision and self.supports_tools is not True
+
+    @property
     def supports_thinking(self) -> bool:
         return bool(self.capabilities and "thinking" in self.capabilities)
 
@@ -132,6 +137,7 @@ class ChatRequest:
     messages: Sequence[ChatMessage]
     tools: Sequence[ToolSpec] = ()
     think: bool | None = None  # only sent to models that support thinking
+    format: Any = None  # a JSON schema (dict) the answer must follow - Ollama "structured outputs"; None = free text
 
 
 @dataclass(frozen=True)

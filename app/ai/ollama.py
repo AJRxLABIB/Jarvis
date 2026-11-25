@@ -283,6 +283,9 @@ class OllamaProvider(AIProvider):
             payload["tools"] = [_tool_to_wire(t) for t in request.tools]
         if request.think is not None:
             payload["think"] = request.think
+        if request.format is not None:                # constrained decoding: the reply must be JSON matching this schema
+            payload["format"] = request.format
+            payload["options"] = {**payload["options"], "temperature": 0}
         return payload
 
     # ------------------------------------------------------------------ interface
@@ -320,6 +323,16 @@ class OllamaProvider(AIProvider):
         if not isinstance(capabilities, list):
             return None  # older Ollama versions do not report capabilities
         return frozenset(str(c).lower() for c in capabilities)
+
+    async def model_details(self, model: str) -> dict[str, Any]:
+        """What the model's own metadata says (``/api/show``): the start of its licence text and its trained context length. Missing fields stay missing."""
+        data = await self._request("POST", "/api/show", payload={"model": model}, timeout=10.0)
+        if not isinstance(data, Mapping):
+            return {}
+        info = data.get("model_info") if isinstance(data.get("model_info"), Mapping) else {}
+        context = next((v for k, v in info.items() if str(k).endswith(".context_length") and isinstance(v, int)), None)
+        licence = " ".join(str(data.get("license") or "").split())[:160]
+        return {"license": licence or None, "context_length": context}
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         data = await self._request("POST", "/api/chat", payload=self._chat_payload(request, stream=False))

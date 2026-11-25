@@ -27,7 +27,7 @@ async def cognitive_plan(args: PlanArgs, ctx: ToolContext) -> ToolResult:
     except Exception:
         pass
     p = C.classify(args.request, vram_free_gb=vram)
-    return ToolResult.success(p.text(), level=p.level, objectives=len(p.objectives), brains=p.brains, clarify=bool(p.clarification))
+    return ToolResult.success(p.text(), level=p.level, objectives=len(p.objectives), brains=p.brains, clarify=bool(p.clarification), decision=p.decision())
 
 
 class ExperimentArgs(ToolArgs):
@@ -71,7 +71,32 @@ def experiment_log(args: ExperimentArgs, ctx: ToolContext) -> ToolResult:
     return ToolResult.success(X.describe(e), strength=e.strength)
 
 
+class OpinionArgs(ToolArgs):
+    question: str = Field(min_length=3, max_length=1500, description="The question to double-check (a question answered in words or numbers, not an action)")
+    runs: int = Field(default=3, ge=2, le=5, description="How many times to ask at most (it stops early when two answers agree)")
+
+
+async def second_opinion(args: OpinionArgs, ctx: ToolContext) -> ToolResult:
+    from app.ai.base import ChatMessage
+    from app.core import consensus as K
+
+    if ctx.ai is None:
+        raise ToolError("The AI service is not available here.", "no_ai")
+
+    async def ask() -> str:
+        r = await ctx.ai.chat([ChatMessage.system("Answer in one or two sentences. If you do not know, say you do not know."), ChatMessage.user(args.question)], smart=True)
+        return str(r.message.content or "")
+
+    c = await K.ask_until(ask, args.runs)
+    if not c.asked:
+        raise ToolError("The model gave no answer.", "no_answer")
+    return ToolResult.success(c.text(), agreed=c.agreed, votes=c.votes, asked=c.asked)
+
+
 TOOLS: tuple[Tool, ...] = (
+    Tool("second_opinion", "Double-check an answer by asking the local model the same question several times and keeping what most runs agree on; says UNCERTAIN when they "
+         "disagree. Slower; for facts and reasoning, never for actions ('double-check that', 'are you sure', 'get a second opinion').", second_opinion, OpinionArgs,
+         RiskLevel.SAFE, "memory", timeout=300),
     Tool("cognitive_plan", "Assess how much thinking a request needs (level 1-5 with a budget), split it into ordered objectives, name the specialist roles to use and say whether one "
          "short question must be asked first. Advisory only ('how hard is this request', 'break this task down').", cognitive_plan, PlanArgs, RiskLevel.SAFE, "memory", timeout=10),
     Tool("experiment_log", "Keep a scientific record when diagnosing a cause: hypothesis, the single change, baseline, observations, and a conclusion graded 'correlation only' / "

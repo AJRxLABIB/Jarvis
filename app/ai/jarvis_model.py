@@ -35,7 +35,7 @@ def is_jarvis(name: str) -> bool:
 
 def choose_base(models: list[ModelInfo], current: str = "") -> ModelInfo | None:
     """The model to build "jarvis" from: the configured one, a known good one, else the biggest chat model."""
-    chat = [m for m in models if m.can_chat and not is_jarvis(m.name) and not m.supports_vision]
+    chat = [m for m in models if m.can_chat and not is_jarvis(m.name) and not m.is_vision_only]
     if not chat:
         return None
     for wanted in (current, *PREFERRED_BASES):

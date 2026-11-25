@@ -1290,6 +1290,30 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX idx_screen_history_ts ON screen_history (ts)",
         ),
     ),
+    Migration(
+        48,
+        "action_evidence",
+        (
+            # one row per independent check of an action: what was expected, what was observed, by which verifier, from which source
+            """
+            CREATE TABLE action_evidence (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts         REAL NOT NULL,
+                execution  TEXT NOT NULL DEFAULT '',
+                action     TEXT NOT NULL,
+                target     TEXT NOT NULL DEFAULT '',
+                expected   TEXT NOT NULL DEFAULT '',
+                observed   TEXT NOT NULL DEFAULT '',
+                verifier   TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                status     TEXT NOT NULL CHECK (status IN ('pass', 'fail', 'unreadable')),
+                digest     TEXT NOT NULL DEFAULT '',
+                recovery   TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            "CREATE INDEX idx_action_evidence_exec ON action_evidence (execution, action)",
+        ),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version

@@ -118,3 +118,15 @@ def is_offline_now(settings: "Settings") -> bool:
     if settings.offline_mode == "on":
         return True
     return settings.offline_mode == "auto" and MONITOR.last_known() is False
+
+
+def mode_name(settings: "Settings") -> str:
+    """The one named network mode in effect, from settings only (no probing): Fully Offline, Restricted Network, Online Research, or Local Network
+    (``auto`` and the connection is down: this PC and your network still work). Resource Saving is a performance profile, shown separately."""
+    if settings.offline_mode == "on":
+        return "Fully Offline"
+    if getattr(settings, "network_hosts", ()):
+        return "Restricted Network"
+    if settings.offline_mode == "auto" and MONITOR.last_known() is False:
+        return "Local Network"
+    return "Online Research"

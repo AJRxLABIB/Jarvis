@@ -987,3 +987,85 @@ architecture diagrams, live-wiring of levels into model routing, real-device val
 - Round 92b: `app/core/scene_graph.py` (detections -> objects + box-geometry relations inside/contains/on/left_of/above/overlaps, appeared/gone/moved diff; no depth or identity claims),
   shown after the detector evidence in `analyze_photo` when a detector model is installed. `docs/ARCHITECTURE_DIAGRAMS.md`: 12 Mermaid diagrams of REAL modules, each box marked
   implemented / advisory / unverified. Tests: tests/test_scene_graph.py (4). The detector itself is still unverified on real photos.
+
+## Round 93 (upgrade pass)
+- Tool router (`app/agent/tool_router.py`): large groups are trimmed to the most RELEVANT tools (name/description overlap with the request; recently used tools kept) instead of the
+  first ones in registry order, and `TOOL_HINTS` offers a named tool outright (place_task, ui_drift, verify_claim, cognitive_plan, ...). Measured on the real registry (314 tools):
+  "remember my favourite colour" offered 56 tools / ~11,400 tokens, now 16 / ~2,650. Description-overlap audit found only 4 near-duplicate pairs, so no tools were merged or removed.
+  tests/test_router_ranking.py (6).
+- Screen grounding: `--ground-trial` now also measures a two-step "point, crop around the guess, point again" pass (qwen2.5vl:3b missed all 3 controls by 14-40 px in the first pass). Whether
+  zoom helps is UNMEASURED until you run it.
+- `scripts/make_user_guide.py` -> `docs/USER_GUIDE.md` (generated from the real tool list, with a "what is not verified yet" section).
+- CI pins `ruff==0.17.3`.
+- Regression in chunks: everything passes except Qt window tests that need libEGL (not available in this sandbox; known non-regression).
+Not done (needs you): real-device checks, wiring the reasoning level into model choice (needs measured results first), sandboxed code foundry, AppFunctions, graphical dashboards.
+
+## Round 94 (audit of the "Autonomous Personal AI Operating Environment" directive: six upgrades)
+1. Execution Laboratory - NEW `app/core/exec_lab.py` + tool `exec_lab`: backend detection (this PC is Windows Home: Windows Sandbox / Hyper-V are NOT available, and are reported so),
+   risk policy (high risk never falls back below strong isolation), per-experiment workspace on COPIES with secrets left out, static analysis that runs nothing, a locked-down
+   Windows Sandbox file generator, artifact listing/export of named files only, checked lifecycle, resource-limit decisions. NOT built: actually running code in a sandbox (no strong
+   backend on this PC; unverified anywhere), live process monitoring, the graphical lab screen.
+2. Reality Verification - NEW `app/core/action_evidence.py` (migration 48 `action_evidence`) + tool `action_evidence`: evidence rows, verdict verified / partially_verified / unverified /
+   failed / conflicting (a self-report never counts), verifier registry, recovery options. `verify_claim` now records evidence; Analytics panel shows the counts. Not yet wired: every
+   tool call writing evidence automatically (only explicit checks do).
+3. MCP - client and local server are now DUAL-ERA per the official 2026-07-28 spec (checked on modelcontextprotocol.io): `server/discover` probe, per-request `_meta` version /
+   client info, `MCP-Protocol-Version` header, UnsupportedProtocolVersionError (-32022) retry, fallback to the `initialize` handshake for older servers (an old server that stops on
+   the probe is restarted in legacy mode; `"era": "legacy"` in mcp.json skips the probe). NOT built: Tasks and Apps extensions, resources/prompts, OAuth authorization.
+4. Health Connect and 5. AppFunctions - NOT built: both need AndroidX + Gradle (and Kotlin for AppFunctions); the app is pure Java without Gradle. Nothing was added that "compiles in theory".
+6. Knowledge-to-Action - already built in round 91 (`doc_to_plan`); unchanged.
+Tests: tests/test_round94.py (10), tests/test_mcp_dual_era.py (7). Real MCP servers, Windows Sandbox and real installers were NOT exercised.
+- Round 94b: the executor now writes an evidence row for EVERY tool world-check (`tool.verify`): pass / fail / unreadable, so the Verification counts fill in by themselves; a tool
+  without a world check leaves no row and can never show as verified. `McpHub.overview()` reports each server's negotiated era/version and names extensions Jarvis does not use.
+  NEW tool `tech_decision` (`knowledge_action.TechDecisions`): why a technology was accepted / rejected / deferred, history kept, re-check dates; `doc_to_plan` shows earlier decisions.
+  Still not built: Health Connect + AppFunctions (need a Gradle/AndroidX migration that cannot be compiled or device-tested here), MCP Tasks/Apps/OAuth, running code inside a sandbox.
+
+## Round 95 (research follow-up)
+- `REASONING_ROUTING` (default false, written to `.env`): when on, the cognition level raises the model role (level >= 3 -> smart; level 1 keeps fast). Unit-tested; effect on answer
+  quality is UNMEASURED - compare with it on and off before leaving it on.
+- `scripts/try_model.ps1 <model>`: one command to pull a candidate and run --compare-models, --longmem-eval --full, --eval-bangla and --ground-trial. Changes no setting.
+- `docs/MODEL_CANDIDATES.md`: researched candidates. `qwen3.5:4b` was confirmed in the official Ollama library (3.3-4.0 GB, text + image, tools, thinking); the rest are unconfirmed leads.
+- NOT done: no model was downloaded or switched; screen-pointing specialist models (ZonUI-3B, KV-Ground) are not in Ollama and were not integrated; Gradle migration not started.
+
+## Round 96 (local brain quality)
+- Structured outputs: `ChatRequest.format` (JSON schema) -> Ollama `format`, temperature 0; `AIManager.structured()` (thinking off for that call).
+- Tool-argument repair: on `invalid_arguments` the executor asks the model ONCE more with the reply forced into the tool's schema (`TOOL_SCHEMA_REPAIR`, default true), then the repaired
+  call goes through every normal check. A bad repair keeps the original error.
+- Embedding model change is now safe: search compares by meaning only against rows made by the CURRENT model (others still match by words), `SemanticIndex.reembed()` +
+  `python run.py --reembed` re-embed from stored text, and Qwen3-Embedding gets its query instruction. Default model unchanged (`nomic-embed-text`).
+- `app/core/consensus.py` + tool `second_opinion`: ask up to N times, keep the majority answer, say UNCERTAIN when runs disagree.
+- Already existed (not rebuilt): training-data export from real use (`--export-training`), LoRA pipeline.
+- NOT built: two-step tool choice (names first, schema second) - the router already narrows the list and the published gain needed fine-tuned adapters.
+Tests: tests/test_round96.py (7, fakes). UNMEASURED on real models: whether repair, the new embedding model or second opinions improve YOUR results.
+- Round 96b: two-step tool choice built as OPT-IN (`TWO_STEP_TOOLS=false` in `.env`; `app/agent/tool_picker.py`): the model first picks tool names from one-line summaries
+  (schema-constrained, cannot invent a name), then gets only those tools plus the basics. Any failure returns the router's list unchanged. UNMEASURED - compare before enabling.
+- Round 96c: `python run.py --ab-test` (`app/agent/ab_switches.py`): normal vs two-step tool choice on your own requests with the self-improvement acceptance rule; prints a verdict, changes nothing. Decision logic tested with fakes; the real Ollama wiring is unverified until run.
+- Round 96d (bugs found by a real run of `--self-improve`): (1) the remembered base model had been removed, so every test call failed in 0.02 s and was shown as "0% right" - the current set-up is now measured through the model that really answers (AI_MODEL / jarvis), and a baseline that never answers is reported as "could not run" with the error, never as a score; (2) Ollama lists models without capabilities, so every other model was silently skipped - capabilities are now fetched per model, unknown tool support is tried, and a model with tools AND vision (qwen3.5) is a chat candidate; MAX_CANDIDATES 4 -> 6. Tests added; the fixed real run is unverified until repeated.
+
+## Round 97 (quality pass driven by real runs)
+- `ModelInfo.is_vision_only`: a model with vision AND tools (qwen3.5) is now a chat candidate everywhere (choose_base, --compare-models, self-improve); a vision-only model still is not.
+- NEW `python run.py --search-eval [--model NAME]` (`app/search_eval.py`): 24 notes + 20 paraphrased questions in English, Bangla and across the two; embeddings only; hit@1, hit@3, MRR
+  per language pair and a side-by-side verdict. This is the check an embedding-model switch needed (`--memory-eval` tests store rules, not meaning search).
+- Lesson recorded: three real runs on the PC found three defects the fake-based tests missed (script without a baseline, self-improve "0%", skipped models). Real runs are worth more than new features.
+- Round 97b (from real runs): self-improve compared "jarvis" with "jarvis:latest" as different names and reported that no jarvis model exists - names are now matched the way Ollama does. `--search-eval` no longer stops when the configured embedding model is missing: it says search by meaning is not working and still measures the candidate. FOUND ON THE PC: `nomic-embed-text` is not installed, so memory/document search has been running on exact words only.
+
+## Round 98 (audit of the "JARVIS 5.0 Ultimate" prompt)
+Audit: this prompt matches the 5.0 prompts audited in Rounds 79-97 (request context, cognition, InterBrain, replay debugger, model bench/roles/health, leases, offline guard, workspaces, Android security all exist). One named item was missing: the five network modes. Fully Offline / Local Network / Online Research already existed as `OFFLINE_MODE` (on / auto with no connection / off); added **Restricted Network**: `NETWORK_ALLOWLIST=host1,host2` (sub-domains included; this PC and your own network stay open) enforced at the socket in `app/utils/egress.py`, a connection is allowed only to an allowed name or an address resolved from one; `network.mode_name(settings)` names the mode and the status bar shows it. Resource Saving = the existing "Battery saver" performance mode. Tests in `tests/test_egress.py` (32). Not built by decision: a second model registry (modelbench + health + roles already hold measured speed, success and memory). Limits: covers Python code in this process (same as strict offline); unverified on real network traffic.
+
+## Round 98b (from the user's real `--self-improve` run)
+Run showed: qwen3.5:4b cases failing with HTTP 400 "prompt is longer than the context length", and qwen3:8b adopted at 28 s per answer (vs 13.6 s) for +9 points. Fixed: `improve_job` retries once with a larger context when Ollama says the prompt does not fit; `self_improve.better` refuses a model that is more than 2x slower unless it gains 20+ points, or that failed to answer more test requests. `qwen3:8b` was already written as the model by that run: check `AI_MODEL` / the Models page and put it back if you prefer speed. Tests in `tests/test_round96.py`.
+
+## Round 98c (measured on the user's PC)
+`--search-eval`: qwen3-embedding:0.6b MRR 0.93 (right note first 90%) vs nomic-embed-text 0.61 (55%); cross-language (en<->bn) 100% vs 0%. `EMBEDDING_MODEL=qwen3-embedding:0.6b` set in `.env`; run `python run.py --reembed` once. `jarvis` rebuilt on qwen3.5:4b (qwen3:8b and qwen2.5:3b-instruct deleted by the user's choice). Small hand-written set (20 questions): the gap is large, exact percentages are not.
+
+## Round 98d (JARVIS 5.0 prompt: model registry, mode names)
+- `model_registry` tool + `app/core/model_registry.py` (+ `OllamaProvider.model_details`): one row per installed model - family, size, quantization, REPORTED capabilities, trained context, licence text as the model states it, latest measured speed / load / GPU share; every missing field says "not reported" / "not measured" (nothing inferred from a model's name). Joins existing sources (engine list, `/api/show`, model-bench history); no new table. A licence line is not a ruling on permitted use.
+- Cognitive modes: `cognition.MODES` names the five existing levels Quick / Standard / Advanced / Expert / Mission; `cognitive_plan` shows the mode.
+Tests: `tests/test_model_registry.py`. Unverified: `/api/show` fields on your Ollama (code tolerates absence).
+
+## Round 98e (from the user's real tool-choice misses, 8 of 21)
+Misses: finger-detection requests (-> emergency_control / research / no tool), "restart yourself" -> power_control (would have restarted the PC), "play music ... on speaker" -> audio_output. Fixed with router hints (`gesture_control`, `jarvis_control`, `play_music`) and sharper descriptions (gesture_control names finger detection; jarvis_control owns restarting Jarvis; power_control says COMPUTER only; audio_output says it never starts music). Three misses NOT changed: "Close Phone Screen" expected emergency_control, "Can you control my phone?" expected jarvis_control, and the garbled "package can short..." - the expected tools look like noisy past labels, not clear errors. Re-run `python run.py --self-improve` to see the effect (unverified).
+
+## Round 98f (JARVIS 5.0 prompt: integration gaps 3.2 items 2-3)
+- InterBrain is now wired into the live agent loop: every request's `Blackboard` mirrors what it records (agent started a call, finished ok / failed, a claim with its evidence label, a need) into an InterBrain `Channel` as validated typed messages (TASK_ACCEPTED, EVIDENCE_REPORT, FAILURE_REPORT, HYPOTHESIS, DEPENDENCY_UPDATE, to "supervisor"). `Blackboard.timeline()` and `view()["messages"]` show it. The blackboard still decides (go / already done / busy / loop); the channel is the record; mirroring never raises.
+- Supervisor decision: `Plan.decision()` returns the prompt's structured decision (goal, complexity, mode, roles, execution_mode direct / approval_required / clarify_first, requires_tools, requires_context, verification_required); `cognitive_plan` returns it. `validate_decision` treats model-written JSON as untrusted (exact fields, known values, types); `at_least` lets a model ask for MORE care only - a risky request can never be downgraded to direct.
+Tests: `tests/test_round92.py` (20). Not done by decision: letting the model's decision drive execution (it is advisory; the executor's policy stays the authority).

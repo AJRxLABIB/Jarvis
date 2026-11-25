@@ -169,3 +169,70 @@ def report(text: str, root: Path | None) -> str:
         out += ["", "Feasibility flags (rules of thumb):", *[f"- {n}" for n in fe]]
     out += ["", "Nothing was changed. Approve a proposal before any code is touched."]
     return "\n".join(out)
+
+
+# ---- remembered technology decisions -------------------------------------------------------------------------------------------------------
+DECISIONS_KEY = "tech_decisions"
+MAX_DECISIONS = 200
+
+
+class TechDecisions:
+    """Why a technology was accepted, rejected or deferred - and when to look again. A note you can change; nothing consults it to act.
+
+    ``revisit_days`` (0 = never) makes a decision DUE after that time: a rejection based on "not stable yet" or "no public code" goes stale, and
+    ``due`` lists those so an old decision is re-checked instead of repeated from memory. Kept in the settings store (no new table)."""
+
+    VERDICTS = ("accepted", "rejected", "deferred")
+
+    def __init__(self, store) -> None:
+        self.store = store
+
+    def _all(self) -> list[dict]:
+        data = self.store.get(DECISIONS_KEY, [])
+        return data if isinstance(data, list) else []
+
+    def record(self, technology: str, verdict: str, reason: str, revisit_days: int = 0, now: float | None = None) -> dict:
+        import time as _time
+
+        if verdict not in self.VERDICTS:
+            raise ValueError(f"verdict must be one of {', '.join(self.VERDICTS)}")
+        if not technology.strip() or not reason.strip():
+            raise ValueError("a decision needs the technology and the reason")
+        now = _time.time() if now is None else now
+        name = technology.strip()[:80]
+        entry = {"technology": name, "verdict": verdict, "reason": reason.strip()[:300], "at": now,
+                 "revisit_at": now + revisit_days * 86400 if revisit_days > 0 else 0}
+        items = [d for d in self._all() if d["technology"].lower() != name.lower()]
+        previous = next((d for d in self._all() if d["technology"].lower() == name.lower()), None)
+        if previous is not None:
+            entry["previous"] = f"{previous['verdict']}: {previous['reason']}"[:200]      # history is kept, not overwritten
+        self.store.set(DECISIONS_KEY, (items + [entry])[-MAX_DECISIONS:])
+        return entry
+
+    def find(self, text: str) -> list[dict]:
+        low = (text or "").lower()
+        return [d for d in self._all() if d["technology"].lower() in low]
+
+    def due(self, now: float | None = None) -> list[dict]:
+        import time as _time
+
+        now = _time.time() if now is None else now
+        return [d for d in self._all() if d.get("revisit_at") and d["revisit_at"] <= now]
+
+    def all(self) -> list[dict]:
+        return self._all()
+
+    def remove(self, technology: str) -> bool:
+        items = self._all()
+        kept = [d for d in items if d["technology"].lower() != technology.strip().lower()]
+        self.store.set(DECISIONS_KEY, kept)
+        return len(kept) != len(items)
+
+
+def describe_decision(d: dict, now: float | None = None) -> str:
+    import time as _time
+
+    now = _time.time() if now is None else now
+    age = int((now - d.get("at", now)) / 86400)
+    stale = " - DUE for a re-check" if d.get("revisit_at") and d["revisit_at"] <= now else ""
+    return f"{d['technology']}: {d['verdict']} {age} day(s) ago - {d['reason']}" + (f" (before: {d['previous']})" if d.get("previous") else "") + stale

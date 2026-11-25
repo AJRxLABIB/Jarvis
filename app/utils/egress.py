@@ -35,6 +35,8 @@ class OfflineViolation(OSError):
 
 _lock = threading.Lock()
 _strict: Callable[[], bool] = lambda: False
+_allow: Callable[[], tuple[str, ...]] = lambda: ()
+_resolved: dict[str, str] = {}                        # address -> allowed name it came from (restricted network: a connection follows its own lookup)
 _originals: dict[str, Any] = {}
 _blocked: deque[str] = deque(maxlen=50)
 _count = 0
@@ -56,13 +58,21 @@ def local_address(host: str) -> bool:
     return bool(ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
 
 
+def allowed(host: str, allow: tuple[str, ...]) -> bool:
+    """Restricted-network rule: ``host`` equals an allowed name or is a sub-domain of one (``example.com`` allows ``api.example.com``)."""
+    h = (host or "").strip().strip("[]").lower().rstrip(".")
+    return any(h == a or h.endswith("." + a) for a in allow)
+
+
 def _check(host: Any, where: str) -> None:
     global _count
-    if not _strict():
+    strict = _strict()
+    allow = () if strict else _allow()                # restricted network: only the listed internet hosts (this PC and your network stay open)
+    if not strict and not allow:
         return
     if isinstance(host, bytes):
         host = host.decode("idna", "ignore")
-    if host is None or local_address(str(host)):
+    if host is None or local_address(str(host)) or (allow and (allowed(str(host), allow) or str(host) in _resolved)):
         return
     with _lock:
         _count += 1
@@ -72,17 +82,19 @@ def _check(host: Any, where: str) -> None:
             _on_block(str(host)[:80])
         except Exception:
             pass
-    raise OfflineViolation(f"Offline mode is on: {where} to {str(host)[:80]} was refused (it is outside this computer and your network).")
+    raise OfflineViolation(f"{'Offline mode is on' if strict else 'Restricted network is on'}: {where} to {str(host)[:80]} was refused (it is outside this computer and your network).")
 
 
 def _address_host(address: Any) -> Any:
     return address[0] if isinstance(address, tuple) and address else None
 
 
-def install(strict: Callable[[], bool], on_block: Callable[[str], None] | None = None) -> None:
-    """Start enforcing. ``strict`` is asked on every connection, so it can follow a setting that changes while running."""
-    global _strict, _on_block
+def install(strict: Callable[[], bool], on_block: Callable[[str], None] | None = None,
+            allow: Callable[[], tuple[str, ...]] | None = None) -> None:
+    """Start enforcing. ``strict`` (and ``allow``, the restricted-network host list) are asked on every connection, so they follow settings that change while running."""
+    global _strict, _on_block, _allow
     _strict, _on_block = strict, on_block
+    _allow = allow or (lambda: ())
     if _originals:
         return
     _originals["connect"] = socket.socket.connect
@@ -108,7 +120,14 @@ def install(strict: Callable[[], bool], on_block: Callable[[str], None] | None =
 
     def getaddrinfo(host, *args, **kwargs):
         _check(host, "a name lookup")
-        return _originals["getaddrinfo"](host, *args, **kwargs)
+        result = _originals["getaddrinfo"](host, *args, **kwargs)
+        allow = _allow()
+        if allow and not _strict() and isinstance(host, str) and allowed(host, allow):
+            for item in result:
+                _resolved[str(item[4][0])] = host
+            while len(_resolved) > 500:
+                _resolved.pop(next(iter(_resolved)))
+        return result
 
     def gethostbyname(host):
         _check(host, "a name lookup")
@@ -123,7 +142,9 @@ def install(strict: Callable[[], bool], on_block: Callable[[str], None] | None =
 
 def uninstall() -> None:
     """Restore the real functions (tests only)."""
-    global _strict, _on_block
+    global _strict, _on_block, _allow
+    _allow = lambda: ()
+    _resolved.clear()
     if _originals:
         socket.socket.connect = _originals["connect"]              # type: ignore[method-assign]
         socket.socket.connect_ex = _originals["connect_ex"]        # type: ignore[method-assign]

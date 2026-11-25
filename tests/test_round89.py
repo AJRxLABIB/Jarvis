@@ -89,3 +89,23 @@ def test_gesture_diagnostic_action_does_not_crash():
 
     lines = diagnostic(NS(settings=NS(gesture_control=False), paths=None))
     assert lines and "off" in lines[0]
+
+
+def test_ground_trial_zoom_second_pass_can_fix_a_near_miss():
+    from app.validation import grounding_trial as GT
+
+    ctl = [GT.Target("Save", (300, 20, 340, 50))]
+    box = GT.crop_box((355, 30), (1000, 800))
+    assert box[2] - box[0] >= GT.MIN_CROP and 0 <= box[0] and box[2] <= 1000 and 0 <= box[1] and box[3] <= 800
+    assert GT.map_back((10, 10), (100, 200)) == (110, 210)
+
+    def ask(prompt):
+        return "(355, 30)"                      # first guess: 15 px right of the control (a near miss)
+
+    def zoom(b, prompt):
+        return f"({320 - b[0]}, {35 - b[1]})"   # inside the crop, maps back to (320, 35): a hit
+
+    t = GT.run("m", ctl, (1000, 800), ask)
+    assert t.hits == 0 and not t.refined_tried
+    t2 = GT.run("m", ctl, (1000, 800), ask, zoom=lambda b, p: f"({320 - b[0]}, {35 - b[1]})")
+    assert t2.hits == 0 and t2.hits_refined == 1 and "with zoom" in GT.report(t2)

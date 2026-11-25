@@ -526,7 +526,7 @@ TOOLS: tuple[Tool, ...] = (
     Tool("media_control", "Control music/video that is ALREADY playing in any app: pause, resume, next or previous "
          "track, stop. To start new music use play_music.",
          media_control, MediaArgs, RiskLevel.SAFE, category="info", timeout=5),
-    Tool("play_music", "Start playing music now: a song, artist or kind of music (or anything, if none is named). "
+    Tool("play_music", "Start playing music now: a song, artist or kind of music (or anything, if none is named); also 'play some music on the speaker'. "
          "Plays the best match from YouTube in the browser.", play_music, PlayMusicArgs, RiskLevel.SAFE,
          category="info", needs_network=True, timeout=25),
     Tool("daily_briefing", "A short briefing: greeting, time and date, weather, battery, today's reminders, to-dos, "

@@ -618,7 +618,7 @@ TOOLS: tuple[Tool, ...] = (
          direct_without_confirmation=lambda a, _: True),
     Tool("jarvis_control", "Jarvis's own screens and features: settings, memory, privacy, logs, automations, the "
          "system page, voice enrollment, wake word, voice training, the Jarvis model, self-test, speed report, "
-         "updates, phone remote, new conversation, hide/show the window.", jarvis_control, JarvisArgs,
+         "updates, phone remote, new conversation, hide/show the window, and restarting or quitting Jarvis ITSELF ('restart yourself', 'restart Jarvis') - never the PC.", jarvis_control, JarvisArgs,
          RiskLevel.SAFE, category="voice", timeout=20),
     Tool("change_setting", "Change one of Jarvis's settings by voice (screen capture, voice speed, language, "
          "hands-free follow-up time, speak replies, only my voice ...).", change_setting, SettingArgs,

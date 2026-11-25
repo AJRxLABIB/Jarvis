@@ -146,3 +146,32 @@ def test_security_view_states_the_real_network_mode(tmp_path):
         egress.uninstall()
     broken = security.network_mode(SimpleNamespace(offline_mode="on"))
     assert any(i.level == "warn" and "not installed" in i.text for i in broken.items)
+
+
+def test_restricted_network_allows_only_listed_hosts_and_their_own_lookups():
+    blocked: list[str] = []
+    egress.install(lambda: False, blocked.append, lambda: ("example.com",))
+    try:
+        assert egress.allowed("api.example.com", ("example.com",)) and not egress.allowed("badexample.com", ("example.com",))
+        with pytest.raises(egress.OfflineViolation, match="Restricted network"):
+            socket.getaddrinfo("evil.org", 80)
+        with pytest.raises(egress.OfflineViolation):
+            socket.socket().connect(("93.184.216.34", 80))             # an IP nobody looked up from an allowed name
+        socket.socket().connect_ex(("127.0.0.1", 9))                   # this PC stays open
+        egress._resolved["93.184.216.34"] = "example.com"              # what getaddrinfo records after resolving an allowed name
+        egress._check("93.184.216.34", "a connection")                 # ...so the connection that follows is not refused
+        assert "evil.org" in blocked
+    finally:
+        egress.uninstall()
+
+
+def test_network_mode_names():
+    from types import SimpleNamespace as NS
+
+    from app.config.settings import Settings
+    from app.utils import network
+
+    assert Settings(network_allowlist=" Example.com , b.org ").network_hosts == ("example.com", "b.org")
+    assert network.mode_name(NS(offline_mode="on", network_hosts=())) == "Fully Offline"
+    assert network.mode_name(NS(offline_mode="auto", network_hosts=("a.com",))) == "Restricted Network"
+    assert network.mode_name(NS(offline_mode="off", network_hosts=())) == "Online Research"

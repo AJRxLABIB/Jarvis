@@ -34,6 +34,8 @@ class Trial:
     model: str
     targets: int = 0
     hits: int = 0
+    hits_refined: int = 0
+    refined_tried: bool = False
     no_coordinates: int = 0
     errors: list[str] = field(default_factory=list)
     times_ms: list[int] = field(default_factory=list)
@@ -62,6 +64,24 @@ def parse_point(reply: str, w: int, h: int) -> tuple[float, float] | None:
     return None
 
 
+ZOOM_SPAN = 0.22        # the zoom crop is this share of the window's width / height around the first guess (at least MIN_CROP px)
+MIN_CROP = 240
+ZOOM_PROMPT = "This is a zoomed crop of a window, {w} by {h} pixels. Where is the control named \"{name}\"? Answer with the pixel coordinates of its centre as (x, y) and nothing else."
+
+
+def crop_box(point: tuple[float, float], size: tuple[int, int]) -> tuple[int, int, int, int]:
+    """The crop (left, top, right, bottom) around a first guess: ``ZOOM_SPAN`` of the window, at least ``MIN_CROP`` px, kept inside the image."""
+    w, h = size
+    cw, ch = min(w, max(MIN_CROP, int(w * ZOOM_SPAN))), min(h, max(MIN_CROP, int(h * ZOOM_SPAN)))
+    left = int(min(max(0, point[0] - cw / 2), w - cw))
+    top = int(min(max(0, point[1] - ch / 2), h - ch))
+    return left, top, left + cw, top + ch
+
+
+def map_back(point_in_crop: tuple[float, float], box: tuple[int, int, int, int]) -> tuple[float, float]:
+    return point_in_crop[0] + box[0], point_in_crop[1] + box[1]
+
+
 def pick_targets(controls: list[Target], limit: int = MAX_TARGETS) -> list[Target]:
     """Named controls with a real size, each name once (an ambiguous name has no single right answer)."""
     counts: dict[str, int] = {}
@@ -71,8 +91,11 @@ def pick_targets(controls: list[Target], limit: int = MAX_TARGETS) -> list[Targe
     return ok[:limit]
 
 
-def run(model: str, controls: list[Target], size: tuple[int, int], ask: Callable[[str], str], timer: Callable[[], float] = time.perf_counter) -> Trial:
+def run(model: str, controls: list[Target], size: tuple[int, int], ask: Callable[[str], str], timer: Callable[[], float] = time.perf_counter,
+        zoom: Callable[[tuple[int, int, int, int], str], str] | None = None) -> Trial:
+    """``zoom(box, prompt)`` asks the model about the CROP; when given, a second answer is measured next to the first (two-step: point, zoom, point again)."""
     trial = Trial(model)
+    trial.refined_tried = zoom is not None
     w, h = size
     for t in pick_targets(controls):
         trial.targets += 1
@@ -91,6 +114,16 @@ def run(model: str, controls: list[Target], size: tuple[int, int], ask: Callable
             trial.hits += 1
         else:
             trial.misses.append(f"{t.name}: pointed at ({point[0]:.0f}, {point[1]:.0f}), control is at {t.rect}")
+        if zoom is not None and point is not None:
+            box = crop_box(point, size)
+            try:
+                second = parse_point(zoom(box, ZOOM_PROMPT.format(w=box[2] - box[0], h=box[3] - box[1], name=t.name)), box[2] - box[0], box[3] - box[1])
+            except Exception as exc:
+                trial.errors.append(f"{t.name} (zoom): {type(exc).__name__}: {str(exc)[:60]}")
+                continue
+            if second is not None:
+                x, y = map_back(second, box)
+                trial.hits_refined += int(t.rect[0] <= x <= t.rect[2] and t.rect[1] <= y <= t.rect[3])
     return trial
 
 
@@ -99,6 +132,8 @@ def report(t: Trial) -> str:
         return "No usable controls were found in the foreground window (UI Automation gave none with a unique name). Open a normal program window, e.g. Notepad or Settings, and run the trial again."
     lines = [f"Grounding trial - {t.model}", f"  hit: {t.hits} of {t.targets} controls ({t.rate:.0%})",
              f"  replies without usable coordinates: {t.no_coordinates}", f"  errors: {len(t.errors)}"]
+    if t.refined_tried:
+        lines.insert(2, f"  with zoom (point, crop around it, point again): {t.hits_refined} of {t.targets} controls ({t.hits_refined / t.targets:.0%})")
     if t.times_ms:
         lines.append(f"  median time per answer: {int(statistics.median(t.times_ms))} ms")
     lines += [f"  miss - {m}" for m in t.misses[:6]] + [f"  error - {e}" for e in t.errors[:3]]

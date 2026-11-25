@@ -168,3 +168,53 @@ def test_tools_run():
 
     r = asyncio.run(cognitive_plan(PlanArgs(request="fix the bug, then run the tests"), NS()))
     assert r.data["level"] >= 2 and "advisory" in r.message
+
+
+def test_reasoning_routing_is_opt_in_and_only_raises_the_role():
+    from types import SimpleNamespace as NS
+
+    from app.agent.conversation import ConversationManager as CM
+    from app.config.settings import Settings
+
+    assert Settings().reasoning_routing is False
+
+    def routed(text, on):
+        me = NS(_current_text=text, settings=NS(reasoning_routing=on, performance_mode="balanced"), _apply_performance=lambda d: d, last_route=None)
+        return CM._route(me).kind
+
+    risky = "delete the old backups"                       # short, so the plain router calls it simple -> fast
+    assert routed(risky, False) == "fast"
+    assert routed(risky, True) == "smart"                  # level 3 (costly if wrong) -> the bigger model
+    assert routed("what time is it", True) == routed("what time is it", False) == "fast"
+
+
+def test_live_blackboard_leaves_a_typed_interbrain_record():
+    from app.core import blackboard as B
+
+    bb = B.Blackboard("run1")
+    t = bb.begin("developer", "run_tests", {"x": 1}, mutating=False)
+    bb.finish(t, True, "12 passed")
+    t2 = bb.begin("developer", "git_commit", {"m": "a"}, mutating=True)
+    bb.finish(t2, False, "hook failed")
+    bb.claim("reviewer", "the change is small", "inferred")
+    bb.claim("verifier", "tests pass", "verified")
+    bb.need("planner", "which branch?")
+    types = [m.type for m in bb.channel.for_task("run1")]
+    assert types == ["TASK_ACCEPTED", "EVIDENCE_REPORT", "TASK_ACCEPTED", "FAILURE_REPORT", "HYPOTHESIS", "EVIDENCE_REPORT", "DEPENDENCY_UPDATE"]
+    assert all(m.recipient == "supervisor" for m in bb.channel.log)
+    assert "developer -> supervisor: FAILURE_REPORT" in bb.timeline() and bb.view()["messages"]
+    assert B.for_run("zz").task_id == "zz"
+
+
+def test_supervisor_decision_is_structured_and_model_json_is_untrusted():
+    d = C.classify("delete the old backups").decision()
+    assert d["execution_mode"] == "approval_required" and d["verification_required"] and d["mode"] in C.MODES.values()
+    assert C.validate_decision(d) == d
+    for bad in ({**d, "mode": "God"}, {**d, "extra": 1}, {k: v for k, v in d.items() if k != "goal"}, {**d, "requires_tools": "yes"}, {**d, "roles": [1]}, "text", None):
+        with pytest.raises(ValueError):
+            C.validate_decision(bad)
+    lax = {**d, "execution_mode": "direct", "verification_required": False, "mode": "Quick"}
+    safe = C.at_least(lax, d)
+    assert safe["execution_mode"] == "approval_required" and safe["verification_required"] and safe["mode"] == d["mode"]
+    assert C.classify("delete it").decision()["execution_mode"] == "clarify_first"
+    assert C.classify("what time is it").decision()["execution_mode"] == "direct"

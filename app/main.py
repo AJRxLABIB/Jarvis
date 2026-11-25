@@ -196,7 +196,8 @@ def bootstrap(root: Path | None = None, environ: Mapping[str, str] | None = None
     from app.utils import egress
 
     egress.install(lambda: context.settings.forced_offline,        # OFFLINE_MODE=on: nothing leaves this computer / your network
-                   lambda host: log_event(log, "egress_blocked", host=host))
+                   lambda host: log_event(log, "egress_blocked", host=host),
+                   lambda: context.settings.network_hosts)       # NETWORK_ALLOWLIST: restricted network (only these internet hosts)
     return context
 
 
@@ -425,6 +426,24 @@ def _make_jarvis_model(ctx: AppContext, base_name: str | None) -> int:
             pass
 
 
+def _ab_test(ctx: AppContext) -> int:
+    """`--ab-test`: normal vs two-step tool choice on your own requests (app/agent/ab_switches.py). Changes nothing."""
+    from app.agent.ab_switches import run_real
+    from app.tools.catalog import build_default_registry
+    from app.utils.async_runner import AsyncRunner
+
+    print("Comparing on your real requests (this uses the AI for a few minutes)...")
+    runner = AsyncRunner("abtest").start()
+    try:
+        print(runner.run(run_real(ctx.settings, ctx.database, build_default_registry()), timeout=3600))
+        return EXIT_OK
+    except Exception as exc:
+        print(f"Couldn't run: {exc} (is Ollama running?)")
+        return EXIT_CHECK_FAILED
+    finally:
+        runner.stop()
+
+
 def _self_improve(ctx: AppContext) -> int:
     from app.agent.improve_job import improve_now
     from app.tools.catalog import build_default_registry
@@ -443,6 +462,13 @@ def _self_improve(ctx: AppContext) -> int:
     for row in outcome.scores:
         print(f"  {row['label']:11} {row['base']} @ {row['temperature']}: right tool {row['accuracy']:.0%}, "
               f"broken calls {row['malformed']}, {row['avg_seconds']} s")
+        if row.get("errors"):
+            print(f"      could not answer: {row['errors'][0]}")
+    first = next((r for r in outcome.scores if r.get("misses")), None)
+    if first:
+        print(f"\nWrong answers of the current set-up ({len(first['misses'])}):")
+        for m in first["misses"]:
+            print(f"  \"{m['request']}\" -> chose {m['chose'] or 'no tool'}, expected {m['expected']}")
     print(outcome.message + (" Restart Jarvis to use it." if outcome.changed else ""))
     return EXIT_OK
 
@@ -529,6 +555,88 @@ def _longmem_eval(ctx: AppContext, file: str, with_model: bool) -> int:
                 runner.stop()
 
 
+def _search_eval(ctx: AppContext, model: str | None) -> int:
+    """`--search-eval [--model NAME]` (app/search_eval.py): the configured embedding model, and next to it another installed one if named."""
+    from app import search_eval as SE
+    from app.ai.manager import create_provider
+    from app.utils.async_runner import AsyncRunner
+
+    runner = AsyncRunner("searcheval").start()
+    provider = create_provider(ctx.settings)
+    try:
+        def measure(name: str):
+            return runner.run(SE.run(lambda texts: provider.embed(name, texts), name), timeout=600)
+
+        current = ctx.settings.embedding_model
+        base = None
+        try:
+            base = measure(current)
+            print(SE.report(base))
+        except Exception as exc:
+            print(f"Your configured embedding model '{current}' cannot be used: {exc}")
+            print("That means search by meaning is NOT working right now - Jarvis has been finding memories and documents by exact words only.")
+            if not model:
+                print(f"Fix: ollama pull {current}   (or try another model with --model NAME)")
+                return EXIT_CHECK_FAILED
+        if model and model != current:
+            try:
+                print()
+                print(SE.report(measure(model), base))
+            except Exception as exc:
+                print(f"Could not use {model}: {exc}")
+                try:                                              # show what IS installed, so a name mismatch is obvious
+                    names = sorted(m.name for m in runner.run(provider.list_models(), timeout=20))
+                    print("Installed on this Ollama: " + (", ".join(names) or "nothing"))
+                    near = [n for n in names if model.split(":")[0].split("-")[0] in n]
+                    if near:
+                        print(f"Similar names: {', '.join(near)} - try --model with one of them.")
+                except Exception:
+                    pass
+                print(f"If it is missing: ollama pull {model}   (Ollama 0.12 or newer is needed for qwen3-embedding; check with: ollama --version)")
+                return EXIT_CHECK_FAILED
+        return EXIT_OK
+    finally:
+        try:
+            runner.run(provider.aclose(), timeout=10)
+        finally:
+            runner.stop()
+
+
+def _reembed(ctx: AppContext) -> int:
+    """`--reembed`: after changing EMBEDDING_MODEL, re-embed stored memory and document text with the new model (no files are re-read)."""
+    from app.ai.manager import AIManager
+    from app.memory.semantic import SemanticIndex
+    from app.utils.async_runner import AsyncRunner
+
+    runner = AsyncRunner("reembed").start()
+    manager = AIManager.from_settings(ctx.settings)
+    try:
+        index = SemanticIndex(ctx.database, manager.embed, ctx.settings.embedding_model)
+        total = index.stale_count()
+        if not total:
+            print(f"Nothing to do: every stored item already uses {ctx.settings.embedding_model}.")
+            return EXIT_OK
+        print(f"Re-embedding {total} item(s) with {ctx.settings.embedding_model} ...")
+        done = 0
+        while True:
+            try:
+                n = runner.run(index.reembed(200), timeout=900)
+            except Exception as exc:
+                print(f"Stopped after {done} of {total}: {exc}. Items not done yet still match by exact words; run this again to continue.")
+                return EXIT_CHECK_FAILED
+            if not n:
+                break
+            done += n
+            print(f"  {done} / {total}")
+        print("Done. Search by meaning now uses the new model for everything.")
+        return EXIT_OK
+    finally:
+        try:
+            runner.run(manager.aclose(), timeout=10)
+        finally:
+            runner.stop()
+
+
 def _ground_trial(ctx: AppContext, model: str) -> int:
     """`--ground-trial MODEL`: the screen-grounding trial (app/validation/grounding_trial.py). Uses a model that is ALREADY installed; downloads nothing."""
     import time as _t
@@ -557,7 +665,18 @@ def _ground_trial(ctx: AppContext, model: str) -> int:
             reply = runner.run(manager.vision_chat(ModelInfo(model), "You locate controls in screenshots.", prompt, png), timeout=180)
             return str(getattr(getattr(reply, "message", reply), "content", "") or getattr(reply, "content", "") or "")
 
-        print(GT.report(GT.run(model, controls, size, ask)))
+        def zoom(box, prompt: str) -> str:
+            import io
+
+            from PIL import Image
+
+            with Image.open(io.BytesIO(png)) as im:
+                buf = io.BytesIO()
+                im.crop(box).save(buf, format="PNG")
+            reply = runner.run(manager.vision_chat(ModelInfo(model), "You locate controls in screenshots.", prompt, buf.getvalue()), timeout=180)
+            return str(getattr(getattr(reply, "message", reply), "content", "") or getattr(reply, "content", "") or "")
+
+        print(GT.report(GT.run(model, controls, size, ask, zoom=zoom)))
         return EXIT_OK
     finally:
         try:
@@ -1085,6 +1204,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="score installed models (or a comma-separated list) on the Bangla questions")
     mode.add_argument("--memory-eval", action="store_true",
                       help="check the memory rules (updates, history, forgetting, expiry, privacy) on a throw-away database")
+    mode.add_argument("--ab-test", action="store_true", help="measure the two-step tool choice against the normal one on your own requests (changes nothing)")
+    mode.add_argument("--search-eval", action="store_true", help="check search by meaning in English and Bangla with the embedding model (add --model NAME to compare another)")
+    mode.add_argument("--reembed", action="store_true", help="after changing EMBEDDING_MODEL: re-embed stored memories and documents with the new model")
     mode.add_argument("--longmem-eval", nargs="?", const="", metavar="FILE",
                       help="long-term memory retrieval check in the LongMemEval format (built-in cases, or a dataset file); add --full to also ask the model")
     mode.add_argument("--ground-trial", metavar="MODEL",
@@ -1274,6 +1396,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             results = memory_eval.run()
             print(memory_eval.report(results))
             exit_code = EXIT_OK if all(r.passed for r in results) else EXIT_CHECK_FAILED
+        elif args.ab_test:
+            exit_code = _ab_test(ctx)
+        elif args.search_eval:
+            exit_code = _search_eval(ctx, getattr(args, "model", None))
+        elif args.reembed:
+            exit_code = _reembed(ctx)
         elif args.longmem_eval is not None:
             exit_code = _longmem_eval(ctx, args.longmem_eval, args.full)
         elif args.ground_trial:

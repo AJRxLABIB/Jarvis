@@ -345,7 +345,7 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="power_control",
         description="Lock the PC (shows the Windows lock screen: 'lock my PC/laptop/screen'), sleep, sign out, restart "
-                    "or shut down the computer (save_work=true for 'save and restart'), or cancel a restart/shutdown.",
+                    "or shut down the COMPUTER (save_work=true for 'save and restart'), or cancel a restart/shutdown. Not for restarting Jarvis itself (jarvis_control).",
         handler=power_control, args_model=PowerArgs, level=RiskLevel.SAFE, category="windows", timeout=30,
         risk=lambda a, _: _POWER_LEVELS[a.action], confirmation=_power_question,
         direct_without_confirmation=_direct_power_ok,

@@ -108,18 +108,31 @@ class McpServer:
         self.lock = threading.Lock()
         self.error = ""
 
+    def _make(self):
+        c = self.config
+        timeout = float(c.get("timeout", 30))
+        if c.get("url"):
+            return HttpClient(str(c["url"]), c.get("headers"), timeout=timeout)
+        if c.get("command"):
+            return StdioClient(str(c["command"]), [str(a) for a in c.get("args", [])], c.get("env"), c.get("cwd"), timeout=timeout)
+        raise McpError("needs a 'command' or a 'url'")
+
     def connect(self):
         if self.client is None:
-            c = self.config
-            timeout = float(c.get("timeout", 30))
-            if c.get("url"):
-                self.client = HttpClient(str(c["url"]), c.get("headers"), timeout=timeout)
-            elif c.get("command"):
-                self.client = StdioClient(str(c["command"]), [str(a) for a in c.get("args", [])], c.get("env"),
-                                          c.get("cwd"), timeout=timeout)
-            else:
-                raise McpError("needs a 'command' or a 'url'")
-            self.client.initialize()
+            probe = str(self.config.get("era", "auto")).lower() != "legacy" and not getattr(self, "legacy_only", False)
+            self.client = self._make()
+            self.client.probe = probe                                   # "era": "legacy" in mcp.json skips the modern probe
+            try:
+                self.client.initialize()
+            except McpError as exc:
+                if not probe or "no common MCP version" in str(exc):
+                    raise
+                # An old server may stop when it sees the modern probe. Start it again and use the handshake only; remembered for this run.
+                self.close()
+                self.legacy_only = True
+                self.client = self._make()
+                self.client.probe = False
+                self.client.initialize()
         return self.client
 
     def call(self, tool: str, arguments: dict, timeout: float) -> dict:
@@ -228,6 +241,21 @@ class McpHub:
             self.servers[name] = server
             self.status[name] = f"{added} tool(s)"
             log_event(_log, "mcp_server_ready", server=name, tools=added)
+
+    def overview(self) -> list[str]:
+        """One line per configured server: transport, protocol era and version actually negotiated, what it offers. Server names are self-reported."""
+        lines = []
+        for name, text in self.status.items():
+            server = self.servers.get(name)
+            client = getattr(server, "client", None)
+            if server is None or client is None:
+                lines.append(f"{name}: {text}")
+                continue
+            transport = "http" if server.config.get("url") else "stdio"
+            offers = ", ".join(sorted(k for k in (client.capabilities or {}) if k != "extensions")) or "tools"
+            ext = ", ".join(sorted((client.capabilities or {}).get("extensions") or {}))
+            lines.append(f"{name}: {text}, {transport}, {client.era} protocol {client.version}, offers {offers}" + (f"; extensions it names (not used by Jarvis): {ext}" if ext else ""))
+        return lines
 
     def close(self) -> None:
         for server in self.servers.values():

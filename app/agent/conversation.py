@@ -1070,6 +1070,11 @@ class ConversationManager:
                 self.on_tool_start(shortcuts[0])
             return await self._direct(user_message, shortcuts, on_delta)
         specs = self._tool_specs(user_message.content)
+        if getattr(self.settings, "two_step_tools", False) and self.tools is not None:      # opt-in: names first, schemas second (app/agent/tool_picker.py)
+            from app.agent.tool_picker import narrow
+
+            basics = [t.name for t in self.tools.registry.tools if t.category == "basic"]
+            specs = await narrow(self.ai, user_message.content, specs, keep=basics)
         known = {spec.name for spec in specs}
         turn: list[ChatMessage] = [user_message]
         executions: list[ToolExecution] = []
@@ -1216,7 +1221,17 @@ class ConversationManager:
         except Exception:
             pass
         text = self._current_text
-        decision = route(text, simple=is_simple_request(text), hard=is_hard_request(text), task=is_task(text),
+        simple, hard = is_simple_request(text), is_hard_request(text)
+        if getattr(self.settings, "reasoning_routing", False):          # opt-in: the cognition level may raise (never silently lower past 'simple') the role
+            try:
+                from app.core import cognition
+
+                level = cognition.classify(text).level
+                hard = hard or level >= 3
+                simple = simple and level <= 1
+            except Exception:
+                _log.debug("reasoning routing skipped", exc_info=True)
+        decision = route(text, simple=simple, hard=hard, task=is_task(text),
                          in_editor=in_editor, private_mode=not (modes.STATE.current.remember and privacy_zones.allows("memory")))
         decision = self._apply_performance(decision)
         self.last_route = decision

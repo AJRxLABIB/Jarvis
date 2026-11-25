@@ -101,7 +101,49 @@ class DocPlanArgs(ToolArgs):
 
 def doc_to_plan(args: DocPlanArgs, ctx: ToolContext) -> ToolResult:
     root = Path(__file__).resolve().parents[2]
-    return ToolResult.success(KA.report(args.text, root if (root / "app").is_dir() else None), source="untrusted_document")
+    text = KA.report(args.text, root if (root / "app").is_dir() else None)
+    if getattr(ctx, "database", None) is not None:     # earlier accept / reject decisions about technologies this document mentions
+        try:
+            from app.memory.settings_store import SettingsStore
+
+            known = KA.TechDecisions(SettingsStore(ctx.database)).find(args.text)
+            if known:
+                text += "\n\nEarlier decisions about things mentioned here:\n" + "\n".join("- " + KA.describe_decision(d) for d in known[:6])
+        except Exception:
+            pass
+    return ToolResult.success(text, source="untrusted_document")
+
+
+class DecisionArgs(ToolArgs):
+    action: Literal["record", "list", "due", "delete"] = Field(default="list", description="record = remember why a technology was accepted / rejected / deferred; list; due = decisions "
+                                                               "that should be re-checked now; delete")
+    technology: str = Field(default="", max_length=80, description="record / delete: the technology or library, e.g. 'Windows Sandbox', 'Graphiti'")
+    verdict: Literal["accepted", "rejected", "deferred"] = Field(default="deferred", description="record: the decision")
+    reason: str = Field(default="", max_length=300, description="record: why, in one sentence")
+    revisit_days: int = Field(default=0, ge=0, le=3650, description="record: look again after this many days (0 = never)")
+
+
+def _decision_risk(args: DecisionArgs, ctx: ToolContext) -> RiskLevel:
+    return RiskLevel.MODERATE if args.action == "delete" else RiskLevel.SAFE
+
+
+def tech_decision(args: DecisionArgs, ctx: ToolContext) -> ToolResult:
+    if ctx.database is None:
+        raise ToolError("Needs the local database.", "no_database")
+    from app.memory.settings_store import SettingsStore
+
+    st = KA.TechDecisions(SettingsStore(ctx.database))
+    if args.action == "record":
+        try:
+            d = st.record(args.technology, args.verdict, args.reason, args.revisit_days)
+        except ValueError as exc:
+            raise ToolError(str(exc), "bad_argument")
+        return ToolResult.success("Recorded. " + KA.describe_decision(d))
+    if args.action == "delete":
+        return ToolResult.success("Deleted." if st.remove(args.technology) else "No decision recorded for that.")
+    items = st.due() if args.action == "due" else st.all()
+    empty = "Nothing is due for a re-check." if args.action == "due" else "No technology decisions recorded yet."
+    return ToolResult.success("\n".join(KA.describe_decision(d) for d in items[-20:]) or empty, count=len(items))
 
 
 class VerifyArgs(ToolArgs):
@@ -133,10 +175,23 @@ def verify_claim(args: VerifyArgs, ctx: ToolContext) -> ToolResult:
 
         v = CV.check_git(path, run, args.branch.strip(), args.message.strip(), [f for f in args.files.split(";") if f.strip()] if args.files.strip() else None,
                          {"yes": True, "no": False}.get(args.clean))
+    if ctx.database is not None:                       # every independent check leaves an evidence record (core/action_evidence.py)
+        try:
+            from app.core import action_evidence as AE
+
+            failed = "; ".join(f"{what}: {detail}" for what, ok, detail in v.checks if not ok)[:300]
+            AE.Store(ctx.database).add(AE.Evidence(action=f"verify_{args.kind}", verifier=f"claim_verify.check_{args.kind}", source="filesystem" if args.kind == "file" else "git",
+                                                   status={"verified": "pass", "failed": "fail"}.get(v.status, "unreadable"), target=path.name,
+                                                   expected=(args.contains or args.message or args.branch)[:200], observed=failed or "all checks passed"))
+        except Exception:
+            pass                                       # recording must never break the check itself
     return ToolResult.success(v.text(), status=v.status)
 
 
 TOOLS: tuple[Tool, ...] = (
+    Tool("tech_decision", "Remember why a technology or library was accepted, rejected or deferred, and when to look again; lists decisions that are due for a re-check so an old "
+         "rejection is revisited instead of repeated ('remember we rejected X because ...', 'which decisions should I revisit').", tech_decision, DecisionArgs, RiskLevel.SAFE,
+         "memory", timeout=10, risk=_decision_risk),
     Tool("verify_claim", "Independently check a claim that something was done by looking at the real result: a file that was saved (exists, size, recent, expected text, can be reopened) "
          "or a Git operation (branch, latest commit message, files touched, clean tree). Read-only; never returns file contents ('did the save really work', 'check the commit').",
          verify_claim, VerifyArgs, RiskLevel.SAFE, "files", timeout=40),

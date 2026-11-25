@@ -10,7 +10,7 @@ Built on the existing agent / blackboard infrastructure (``core/agents.py``, ``c
 * ``debate`` - proposals with evidence labels and challenges. Score = evidence weight (verified 3, retrieved 2, inferred 1, predicted 0.5) scaled by
   stated confidence, minus unresolved challenges. A proposal with NO evidence scores 0 however confident it sounds, and an unresolved severe challenge
   keeps the result "contested". The result is a recommendation with its reasons, never an action.
-Honest status: pure logic + tests. It is not yet wired into the live mission loop; the orchestrator can adopt it per task.
+Wiring: every request's ``Blackboard`` mirrors its entries (an agent starting / finishing a call, a claim, a need) into a ``Channel`` as validated messages, so the live agent loop leaves a typed record. The blackboard still makes the decisions (go / duplicate / loop); the channel is the record.
 """
 
 from __future__ import annotations

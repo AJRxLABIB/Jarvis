@@ -86,7 +86,7 @@ async def audio_output(args: AudioArgs, ctx: ToolContext) -> ToolResult:
 
 
 TOOLS: tuple[Tool, ...] = (
-    Tool("audio_output", "Change where sound plays: put it on the PC speakers, headphones, a Bluetooth / connected speaker, or a named device. If the "
+    Tool("audio_output", "Change WHERE sound plays (it never starts any music - use play_music for that): put it on the PC speakers, headphones, a Bluetooth / connected speaker, or a named device. If the "
          "wanted device is not connected it plays on the PC speakers. Also lists the active sound outputs.", audio_output, AudioArgs, RiskLevel.SAFE,
          "windows", timeout=30),
 )

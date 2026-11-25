@@ -468,6 +468,23 @@ class AIManager:
         async with _gateway().observe("chat", request.model):
             return await self._chat_prepared(request)
 
+    async def structured(self, messages: Sequence[ChatMessage], schema: dict, fast: bool = True) -> dict | None:
+        """One answer forced into ``schema`` (a JSON schema) by the provider's constrained decoding; None when the model or provider cannot.
+
+        Thinking is switched OFF for this call: with thinking on, some models put the JSON in the hidden reasoning instead of the answer.
+        The schema guarantees the SHAPE, never that the content is right - callers must still validate."""
+        import json as _json
+
+        request = await self._prepare(messages, (), fast, False, False, False, False)
+        request = ChatRequest(model=request.model, messages=request.messages, tools=(), think=False if request.think is not None else None, format=schema)
+        try:
+            async with _gateway().observe("structured", request.model):
+                response = await self._chat_prepared(request)
+            data = _json.loads(response.message.content or "")
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
     async def _chat_prepared(self, request: ChatRequest) -> ChatResponse:
         started = time.monotonic()
         try:

@@ -262,7 +262,8 @@ def _mcp(ctx: Any) -> Status:
     broken = [name for name, text in status.items() if str(text).startswith("failed")]
     if broken:
         return Status("problem", f"could not start: {', '.join(broken)}")
-    return Status("ready", f"{len(servers)} server(s) listed")
+    detail = "; ".join(hub.overview()) if hub is not None and hasattr(hub, "overview") and status else ""
+    return Status("ready", f"{len(servers)} server(s) listed" + (f" - {detail}"[:400] if detail else ""))
 
 
 def _outlook(ctx: Any) -> Status:

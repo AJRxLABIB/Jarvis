@@ -24,8 +24,17 @@ def _ask_factory(settings, registry):
         specs = select_specs(registry, text)
         system = build_system_prompt(assistant_name=settings.assistant_name, now=datetime.now(), tools=specs,
                                      user_address=settings.user_address)
-        response = await provider.chat(ChatRequest(model=model, messages=(ChatMessage.system(system),
-                                                                         ChatMessage.user(text)), tools=tuple(specs)))
+        request = ChatRequest(model=model, messages=(ChatMessage.system(system), ChatMessage.user(text)), tools=tuple(specs))
+        try:
+            response = await provider.chat(request)
+        except Exception as exc:
+            if "context length" not in str(exc).lower():
+                raise
+            big = providers.get(("big", temperature))        # the tool list did not fit the context: ask once more with a larger one
+            if big is None:
+                big = providers[("big", temperature)] = create_provider(settings.model_copy(update={
+                    "ai_temperature": temperature, "ai_context_window": max(settings.ai_context_window * 2, 16384)}))
+            response = await big.chat(request)
         calls = response.message.tool_calls
         if not calls:
             return None, False
@@ -42,6 +51,23 @@ def _ask_factory(settings, registry):
     return ask, providers
 
 
+async def _with_capabilities(provider, models):
+    """Ollama's model list has no capabilities; ask per model (one quick local call each) so tool-capable models are not skipped."""
+    from dataclasses import replace
+
+    out = []
+    for m in models:
+        if m.capabilities is None:
+            try:
+                caps = await provider.model_capabilities(m.name)
+                if caps is not None:
+                    m = replace(m, capabilities=caps)
+            except Exception:
+                pass
+        out.append(m)
+    return out
+
+
 async def improve_now(settings, paths, database, registry, *, apply_changes: bool = True):
     from app.ai import jarvis_model
     from app.ai.health import total_memory_bytes
@@ -56,8 +82,24 @@ async def improve_now(settings, paths, database, registry, *, apply_changes: boo
         jarvis_model.choose_base(models).name if jarvis_model.choose_base(models) else "")
     if not current_base:
         return self_improve.Outcome(False, "No chat model is installed to improve.")
+    models = await _with_capabilities(provider, models)
+    names = [m.name for m in models]
+
+    def find(wanted: str) -> str:
+        """The installed name for ``wanted`` ("jarvis" and "jarvis:latest" are the same model to Ollama), or ''."""
+        return next((n for n in names if wanted and jarvis_model._same(n, wanted)), "")
+    # The base "jarvis" was built from may have been removed since (ollama rm). Then the CURRENT set-up is measured through the model that is
+    # really answering today (AI_MODEL, e.g. jarvis:latest) instead of a name that no longer exists.
+    running = find(settings.ai_model) or find(jarvis_model.JARVIS_MODEL)
+    missing_base = not find(current_base)
+    if missing_base and not running:
+        return self_improve.Outcome(False, f"The current base model '{current_base}' is not installed any more and no 'jarvis' model exists. "
+                                           "Run: jarvis-cli --make-jarvis-model")
     options = self_improve.candidates(current_base, float(settings.ai_temperature), models, total_memory_bytes())
     ask, providers = _ask_factory(settings, registry)
+
+    def model_for(c: self_improve.Candidate) -> str:
+        return running if (missing_base and c.base == current_base) else c.base
 
     async def apply(candidate: self_improve.Candidate) -> None:
         if not apply_changes:
@@ -71,7 +113,7 @@ async def improve_now(settings, paths, database, registry, *, apply_changes: boo
                                          "AI_TEMPERATURE": str(candidate.temperature)})
 
     try:
-        return await self_improve.run(ask, apply, cases, options, paths.data_dir)
+        return await self_improve.run(ask, apply, cases, options, paths.data_dir, model_for=model_for)
     finally:
         for p in (provider, *providers.values()):
             try:

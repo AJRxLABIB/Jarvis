@@ -291,7 +291,7 @@ def _question(args: GestureArgs, _ctx: ToolContext) -> str:
 
 
 TOOLS: tuple[Tool, ...] = (
-    Tool("gesture_control", "Control the mouse with hand gestures from the webcam: enable/disable/pause/resume, status, calibrate, settings, "
+    Tool("gesture_control", "Hand / finger detection and gesture control of the mouse from the webcam ('detect my finger', 'finger detection', 'stop finger detection'): enable/disable/pause/resume, status, calibrate, settings, "
          "list gestures, map a gesture to a tool, diagnostic. Opt-in, camera only while on, local only, emergency stop always works.",
          gesture_control, GestureArgs, RiskLevel.SAFE, "system", timeout=30, risk=_risk, confirmation=_question),
 )

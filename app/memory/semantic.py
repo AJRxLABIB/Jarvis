@@ -173,11 +173,47 @@ def _vector(values: Iterable[float]) -> np.ndarray:
     return v / (np.linalg.norm(v) + 1e-9)
 
 
+QUERY_INSTRUCTIONS = {
+    # Qwen3-Embedding is trained with an instruction on the QUERY side only (documents are embedded as they are).
+    "qwen3-embedding": "Instruct: Given a question, retrieve the notes, chats and documents that answer it\nQuery: ",
+}
+
+
+def query_text(model: str, query: str) -> str:
+    """The text to embed for a search. Models trained with a query instruction get it; every other model gets the query unchanged
+    (so nothing changes for nomic-embed-text, whose stored vectors were made without a prefix)."""
+    base = (model or "").split(":")[0].lower()
+    return QUERY_INSTRUCTIONS.get(base, "") + query
+
+
 class SemanticIndex:
     def __init__(self, database: Database, embed: Embedder, model: str) -> None:
         self.database = database
         self.embed = embed
         self.model = model
+
+    # ---------------------------------------------------------------- changing the embedding model
+
+    def stale_count(self) -> int:
+        """Rows whose vectors were made by a different embedding model than the one configured now."""
+        with self.database.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM semantic_items WHERE embedding IS NOT NULL AND COALESCE(model, '') != ?", (self.model,)).fetchone()[0])
+
+    async def reembed(self, limit: int = 500, batch: int = 32) -> int:
+        """Re-embed up to ``limit`` stale rows from their STORED text with the current model (no file is re-read). Returns rows updated.
+        Safe to stop and continue: each batch is committed on its own, and a failing batch leaves its rows untouched."""
+        with self.database.connect() as conn:
+            rows = conn.execute("SELECT id, text FROM semantic_items WHERE embedding IS NOT NULL AND COALESCE(model, '') != ? ORDER BY id LIMIT ?",
+                                (self.model, int(limit))).fetchall()
+        done = 0
+        for start in range(0, len(rows), batch):
+            part = rows[start:start + batch]
+            vectors = await self.embed([r[1] for r in part])
+            with self.database.transaction() as conn:
+                conn.executemany("UPDATE semantic_items SET embedding = ?, model = ? WHERE id = ?",
+                                 [(_vector(v).tobytes(), self.model, r[0]) for r, v in zip(part, vectors)])
+            done += len(part)
+        return done
 
     # ---------------------------------------------------------------- writing
 
@@ -293,7 +329,7 @@ class SemanticIndex:
 
     async def search(self, query: str, kind: str, limit: int = 5, min_score: float = 0.3) -> list[Hit]:
         with self.database.connect() as conn:
-            rows = conn.execute("SELECT kind, source, chunk, text, embedding, created_at FROM semantic_items "
+            rows = conn.execute("SELECT kind, source, chunk, text, embedding, created_at, model FROM semantic_items "
                                 "WHERE kind=? AND embedding IS NOT NULL", (kind,)).fetchall()
         if kind == "document":
             from app.memory.sources import exclusions, is_excluded
@@ -305,20 +341,23 @@ class SemanticIndex:
             return []
         terms = query_terms(query)
         try:
-            query_vector = _vector((await self.embed([query]))[0])
+            query_vector = _vector((await self.embed([query_text(self.model, query)]))[0])
         except Exception:
             if not terms:
                 raise
             # no embedding model right now: exact-word search still works, and says so in the log
             _log.warning("embedding unavailable; using keyword search only", exc_info=True)
             query_vector = None
+        vector_scores = np.zeros(len(rows), dtype=np.float32)
         if query_vector is not None:
-            matrix = np.stack([np.frombuffer(r[4], dtype=np.float32) for r in rows])
-            if matrix.shape[1] != query_vector.shape[0]:
-                raise ValueError("The embedding model changed; re-index your documents.")
-            vector_scores = matrix @ query_vector
-        else:
-            vector_scores = np.zeros(len(rows), dtype=np.float32)
+            # Only rows made by the CURRENT embedding model can be compared by meaning; older rows still match by exact words until
+            # they are re-embedded (``reembed`` / `python run.py --reembed`). Mixing models would give meaningless scores.
+            same = [i for i, r in enumerate(rows) if (r[6] or self.model) == self.model and len(r[4]) == query_vector.shape[0] * 4]
+            if same:
+                matrix = np.stack([np.frombuffer(rows[i][4], dtype=np.float32) for i in same])
+                vector_scores[same] = matrix @ query_vector
+            elif not terms:
+                raise ValueError("The embedding model changed; re-index with: python run.py --reembed")
         scored = []
         for i, row in enumerate(rows):
             vec, kw = float(vector_scores[i]), keyword_score(terms, row[3])

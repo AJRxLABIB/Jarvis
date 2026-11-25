@@ -470,7 +470,8 @@ class CommandCenterView(QWidget):
 
             s = c.ctx.settings
             offline = network.is_offline_now(s)
-            self.status.set_all(network="Network: offline mode" if s.forced_offline else ("Network: no internet" if offline else "Network: online"))
+            name = network.mode_name(s)
+            self.status.set_all(network="Network: offline mode" if s.forced_offline else (f"Network: {name}" if name == "Restricted Network" else ("Network: no internet" if offline else "Network: online")))
         except Exception:
             pass
         if self._cards_cache:

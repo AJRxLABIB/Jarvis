@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass, field
 
 LEVELS = {1: "instant", 2: "standard", 3: "advanced", 4: "deep", 5: "experimental"}
+MODES = {1: "Quick", 2: "Standard", 3: "Advanced", 4: "Expert", 5: "Mission"}      # the user-facing names of the same five levels
 BUDGETS = {  # tokens, seconds, candidate approaches, independent review, gather evidence first
     1: (400, 15, 1, False, False),
     2: (1200, 40, 1, False, False),
@@ -56,9 +57,21 @@ class Plan:
     def name(self) -> str:
         return LEVELS[self.level]
 
+    @property
+    def mode(self) -> str:
+        return MODES[self.level]
+
+    def decision(self) -> dict:
+        """The supervisor's structured decision (schema in ``DECISION_FIELDS``), derived from the rules above - never from free text."""
+        return {"goal": (self.objectives[0] if self.objectives else "")[:200], "complexity": "low" if self.level <= 2 else ("medium" if self.level == 3 else "high"),
+                "mode": self.mode, "roles": list(self.brains),
+                "execution_mode": "clarify_first" if self.clarification else ("approval_required" if self.risky else "direct"),
+                "requires_tools": self.level >= 2 or self.risky, "requires_context": "context" in self.brains or self.level >= 3,
+                "verification_required": bool(self.budget["review"] or self.budget["evidence"] or "verification" in self.brains)}
+
     def text(self) -> str:
         b = self.budget
-        lines = [f"Reasoning level {self.level} ({self.name}): " + "; ".join(self.reasons) + ".",
+        lines = [f"{self.mode} mode - reasoning level {self.level} ({self.name}): " + "; ".join(self.reasons) + ".",
                  f"Budget: about {b['tokens']} tokens, {b['seconds']} s, {b['candidates']} candidate approach(es)"
                  + (", independent review" if b["review"] else "") + (", gather evidence first" if b["evidence"] else "") + "."]
         if self.capped_by:
@@ -215,3 +228,40 @@ def postcheck(completed: bool, verified: bool, plan_worked: bool, unexpected: st
     if unexpected:
         p.notes.append("unexpected: " + unexpected[:120])
     return p
+
+
+DECISION_FIELDS = {"goal": str, "complexity": ("low", "medium", "high"), "mode": tuple(MODES.values()), "roles": list,
+                   "execution_mode": ("direct", "approval_required", "clarify_first"), "requires_tools": bool, "requires_context": bool,
+                   "verification_required": bool}
+
+
+def validate_decision(raw: object) -> dict:
+    """Model-written JSON is untrusted: only a dict with exactly the known fields, known values and right types gets through (ValueError otherwise).
+    A risky request can never be downgraded to ``direct`` by a model: pass the rule-based ``floor`` through ``at_least``."""
+    if not isinstance(raw, dict):
+        raise ValueError("a decision is a JSON object")
+    if set(raw) != set(DECISION_FIELDS):
+        raise ValueError("fields must be exactly: " + ", ".join(DECISION_FIELDS))
+    for key, rule in DECISION_FIELDS.items():
+        v = raw[key]
+        ok = (isinstance(v, tuple(rule)) if isinstance(rule, tuple) and rule and isinstance(rule[0], type) else v in rule) if isinstance(rule, tuple) else isinstance(v, rule)
+        if key == "roles":
+            ok = isinstance(v, list) and all(isinstance(x, str) and 0 < len(x) <= 30 for x in v) and len(v) <= 12
+        if rule is bool:
+            ok = isinstance(v, bool)
+        if not ok:
+            raise ValueError(f"bad value for '{key}'")
+    return dict(raw)
+
+
+def at_least(model_decision: dict, rules: dict) -> dict:
+    """Combine a validated model decision with the rule-based one: the model may ask for MORE care (approval, verification, a larger mode), never less."""
+    order = {"direct": 0, "approval_required": 1, "clarify_first": 2}
+    out = dict(model_decision)
+    if order[rules["execution_mode"]] > order[out["execution_mode"]]:
+        out["execution_mode"] = rules["execution_mode"]
+    out["verification_required"] = out["verification_required"] or rules["verification_required"]
+    levels = list(MODES.values())
+    if levels.index(rules["mode"]) > levels.index(out["mode"]):
+        out["mode"] = rules["mode"]
+    return out
